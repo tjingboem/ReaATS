@@ -40,6 +40,21 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   leaves the file. Phase values are not moved (the saved file has no phase anyway).
   Two partials CAN overlap in time and frequency (different rows); a row holds one value per frame.
 
+- Audition (9 Nov 2026, not yet heard by tjingboem): button "AUDITION" top right, or key A; Space stops.
+  Saves the current data to `$TMPDIR/reaats_audition.ats` (type 3), writes a small .csd, runs the real
+  Csound (`/usr/local/bin/csound`, needs Csound installed; ~0.1 s for 2 s of sound) with `atsadd` (sines)
+  and `atsaddnz` (noise bands), and plays the WAV through `Xen_StartSourcePreview` (REAPER's source
+  preview: the project is not touched). P / N decide whether sines / noise are included ("what you see
+  is what you hear"). Measured: sines alone match the original level (-12.7 dBFS); the noise bands are
+  about 30 dB lower (-42.8 dBFS), as in the analysis. `ExecProcess` blocks REAPER for the render.
+  Not built: audition of the selection only, placing the render on a track (a "print" button).
+  CRASH 9 Nov 2026 (tjingboem: first audition fine, the second crashed REAPER). NOT reproduced (a scratch
+  REAPER instance did not load the SWS extension, so `Xen_*` was nil there; the user's install has SWS).
+  Hypothesis: the second audition was the first to call `PCM_Source_Destroy` on a previewed source. Changes:
+  sources are never destroyed from the script, each render has its own WAV (`reaats_audition_N.wav`, old ones
+  deleted 4 auditions later), `Xen_StopSourcePreview` is only called while a preview can still be running.
+  If it still crashes, switch to a real temporary item on a track (how ReaShapeM's Audition does it).
+
 ## Next (not started, wait for tjingboem)
 More edit operations (delete, transpose, shift, scale, move, copy,
 stretch), undo, a writer (`ats_file.save`), the Python helper for analysis from an item and for

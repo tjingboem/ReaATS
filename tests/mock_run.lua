@@ -12,6 +12,8 @@ gfx.measurestr = function(s) return #s * 7, 14 end
 local script = { keys = {}, frame = 0 }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
+local previews = {}
+local destroyed, stops = 0, 0
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
 local work = scratch .. "mock_sax.ats"                 -- the viewer edits a COPY, never examples/sax.ats
 do
@@ -21,6 +23,11 @@ do
 end
 reaper = {
   time_precise = function() return os.clock() end,
+  ExecProcess = function(cmd, timeout) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
+  PCM_Source_CreateFromFile = function(path) return { path = path } end,
+  PCM_Source_Destroy = function() destroyed = destroyed + 1 end,
+  Xen_StartSourcePreview = function(src) previews[#previews + 1] = src.path; return true end,
+  Xen_StopSourcePreview = function() stops = stops + 1 end,
   get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
   GetExtState = function() return work end,
   SetExtState = function() end,
@@ -153,6 +160,35 @@ end end
 assert(zeros > 1000, "deleted points should be silent in the saved file, got " .. zeros)
 assert(edited.type == 3 and not edited.has_phase, "edited file should be saved without phase")
 print(string.format("edit round trip OK: %d points silenced in the saved file (type %d)", zeros, edited.type))
+-- audition: render with the real Csound and 'play' through the mocked preview
+do
+  local function wav_info(path)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local size = f:seek("end"); f:close(); return size
+  end
+  gfx.mouse_cap = 0
+  script.keys = { 97 }; strings = {}; frame(); frame()                          -- A
+  assert(#previews == 1, "audition did not start a preview; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  local size = wav_info(previews[1])
+  assert(size and size > 300000, "rendered WAV missing or too short: " .. tostring(size))
+  assert(saw("^auditioning [%d%.]+ s %(sines %+ noise%)"), "status should say sines + noise")
+  script.keys = { 112 }; frame()                                                -- P off: noise only
+  script.keys = { 97 }; strings = {}; frame(); frame()
+  assert(#previews == 2 and saw("%(noise%)"), "noise-only audition expected")
+  script.keys = { 112 }; frame(); script.keys = { 110 }; frame()                -- P on, N off: sines only
+  script.keys = { 97 }; strings = {}; frame(); frame()
+  assert(#previews == 3 and saw("%(sines%)"), "sines-only audition expected")
+  script.keys = { 112 }; frame(); script.keys = { 112 }; frame()                -- P off, then on again
+  script.keys = { 110 }; frame()                                                -- N on again
+  script.keys = { 32 }; strings = {}; frame(); frame()                          -- Space stops
+  assert(saw("audition stopped"), "stop status missing")
+  assert(destroyed == 0, "preview sources must never be destroyed from the script")
+  assert(previews[1] ~= previews[2] and previews[2] ~= previews[3], "every render needs its own WAV name")
+  assert(stops >= 1, "an audition during a running preview should stop it first")
+  print("audition OK: 3 renders with real Csound (sines+noise, noise, sines); stops=" .. stops .. ", destroyed=" .. destroyed)
+  for _, w in ipairs(previews) do os.remove(w) end
+  os.remove("/tmp/reaats_audition.ats"); os.remove("/tmp/reaats_audition.csd")
+end
 -- a plain click on empty space clears the selection
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 400; frame()
 gfx.mouse_cap = 0; strings = {}; frame(); frame()

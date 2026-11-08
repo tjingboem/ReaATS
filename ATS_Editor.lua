@@ -18,6 +18,8 @@
           Up / Down     transpose the selection (1 semitone; Shift 10 cents; Ctrl octave)
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
+          A or AUDITION render the edited data with Csound (atsadd/atsaddnz) and play it; Space stops
+                        (partials / noise follow the P / N switches)
           Ctrl+S        save as <name>_edit.ats (no phase; never overwrites)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
           Esc           clear the selection, then close
@@ -303,6 +305,92 @@ local function move_selection(df, ratio)
   end
 end
 
+-- ----------------------------------------------------------------- audition
+-- Renders the current (edited) data with Csound's own ATS opcodes (atsadd = the sines, atsaddnz = the
+-- noise bands) to a temporary WAV and plays it through REAPER's source preview, so the project is not
+-- touched. What you see is what you hear: the P / N switches decide whether sines / noise are included.
+-- Crash safety (a REAPER crash on the second audition, 9 Nov 2026): the preview sources are never
+-- destroyed from here (they were destroyed right after stopping, which is the one thing the second audition
+-- did that the first did not); every render gets its own WAV name, so a file REAPER may still hold open is
+-- never rewritten; old WAVs are only deleted several auditions later; and the stop call is only made while a
+-- preview can still be playing.
+local preview_until = 0        -- time_precise() at which the running preview ends
+local audition_count = 0
+local wav_history = {}
+
+local function stop_audition()
+  if reaper.Xen_StopSourcePreview and reaper.time_precise() < preview_until + 0.3 then
+    reaper.Xen_StopSourcePreview(-1)
+  end
+  preview_until = 0
+end
+
+local function find_csound()
+  for _, c in ipairs({ "/usr/local/bin/csound", "/usr/bin/csound", "/opt/csound/bin/csound" }) do
+    if reaper.file_exists(c) then return c end
+  end
+  return "csound"            -- hope it is on REAPER's PATH
+end
+
+local function audition()
+  if not data then return end
+  local use_sines = show_partials
+  local use_noise = show_noise and data.has_noise
+  if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
+  stop_audition()
+  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+  local base = dir .. "/reaats_audition"
+  local ok, err = ats.save(base .. ".ats", data)
+  if not ok then set_status("audition failed: " .. tostring(err)); return end
+  local dur = math.max(data.times[data.frames], data.dur) + 0.05
+  audition_count = audition_count + 1
+  local wav = string.format("%s_%d.wav", base, audition_count)
+  local lines = {
+    "<CsoundSynthesizer>", "<CsOptions>", "-d -m0 -W -f -o " .. wav, "</CsOptions>",
+    "<CsInstruments>", "sr = " .. math.floor(data.sr), "ksmps = 32", "nchnls = 1", "0dbfs = 1",
+    "instr 1", string.format("  ktime line 0, p3, %.6f", dur),
+  }
+  if use_sines then
+    lines[#lines + 1] = string.format('  asine atsadd ktime, 1, "%s.ats", 1, %d', base, data.partials)
+  else
+    lines[#lines + 1] = "  asine = 0"
+  end
+  if use_noise then
+    lines[#lines + 1] = string.format('  anz atsaddnz ktime, "%s.ats", %d', base, ats.NUM_NOISE_BANDS)
+  else
+    lines[#lines + 1] = "  anz = 0"
+  end
+  lines[#lines + 1] = "  out asine + anz"
+  lines[#lines + 1] = "endin"
+  lines[#lines + 1] = "</CsInstruments>"
+  lines[#lines + 1] = "<CsScore>"
+  lines[#lines + 1] = "f1 0 16384 10 1"
+  lines[#lines + 1] = string.format("i1 0 %.4f", dur)
+  lines[#lines + 1] = "</CsScore>"
+  lines[#lines + 1] = "</CsoundSynthesizer>"
+  local fh = io.open(base .. ".csd", "w")
+  if not fh then set_status("audition failed: cannot write " .. base .. ".csd"); return end
+  fh:write(table.concat(lines, "\n"), "\n")
+  fh:close()
+  local out = reaper.ExecProcess(find_csound() .. " " .. base .. ".csd", 60000)
+  if not reaper.file_exists(wav) then
+    local why = (out or ""):gsub("%s+", " "):sub(1, 120)
+    set_status("audition failed: Csound produced no sound (" .. why .. ")")
+    return
+  end
+  local src = reaper.PCM_Source_CreateFromFile(wav)
+  if src and reaper.Xen_StartSourcePreview then
+    reaper.Xen_StartSourcePreview(src, 1.0, false)
+    preview_until = reaper.time_precise() + dur
+    wav_history[#wav_history + 1] = wav
+    if #wav_history > 4 then os.remove(table.remove(wav_history, 1)) end
+    set_status(string.format("auditioning %.1f s (%s)  Space stops",
+      dur, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")))
+  else
+    set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
+  end
+end
+
 -- Saves next to the original as <name>_edit.ats (never overwrites; numbers further copies).
 local function save_file()
   if not data or not fname then return end
@@ -530,6 +618,25 @@ local function checkbox_rect()
   return math.floor(gfx.w) - 128, 8, 118, 16
 end
 
+local function audition_rect()
+  local x, y, w, h = checkbox_rect()
+  return x - 96, y - 2, 86, 20
+end
+
+local function draw_audition_button()
+  local x, y, w, h = audition_rect()
+  gfx.set(0.18, 0.42, 0.30, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.45, 0.80, 0.60, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 14)
+  local label = "AUDITION"
+  gfx.set(0.92, 1, 0.95, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
 local function draw_checkbox()
   local x, y, w, h = checkbox_rect()
   gfx.setfont(1, "Arial", 14)
@@ -578,8 +685,9 @@ local function draw_header(px, py, pw, ph)
     name, modified and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or ""))
   draw_checkbox()
+  draw_audition_button()
   if status_msg and reaper.time_precise() < status_until then
-    text_at(math.floor(gfx.w) - 128 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
+    text_at(math.floor(gfx.w) - 128 - 96 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
   end
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
@@ -619,7 +727,7 @@ local function draw_header(px, py, pw, ph)
   end
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 18,
-    "drag select (Shift adds)  drag a selected point = move (Shift locks axis)  Del delete  Up/Down transpose  Left/Right move in time  Ctrl+Z undo  Ctrl+Y redo  Ctrl+S save  right-drag pan  wheel zoom  Esc clear/close",
+    "drag select (Shift adds)  drag a selected point = move (Shift locks axis)  Del delete  Up/Down transpose  Left/Right move in time  Ctrl+Z undo  Ctrl+Y redo  Ctrl+S save  A audition (Space stops)  right-drag pan  wheel zoom  Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -690,9 +798,12 @@ local function handle_input(px, py, pw, ph)
   local down = (cap & 1) ~= 0
   if down and not prev_down then
     local cx, cy, cw, chh = checkbox_rect()
+    local ax, ay, aw, ah = audition_rect()
     if mx >= cx and mx < cx + cw and my >= cy and my < cy + chh then
       show_noise = not show_noise
       dirty = true
+    elseif mx >= ax and mx < ax + aw and my >= ay and my < ay + ah then
+      audition()
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -733,9 +844,9 @@ local function handle_input(px, py, pw, ph)
   prev_down = down
 
   local ch = gfx.getchar()
-  if ch < 0 then return false end
+  if ch < 0 then stop_audition(); return false end
   if ch == 27 then
-    if sel_info then clear_selection() else return false end
+    if sel_info then clear_selection() else stop_audition(); return false end
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
   if ch == 6579564 then delete_selection()                      -- Delete
@@ -748,6 +859,8 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then save_file()                              -- Ctrl+S
+  elseif ch == 97 or ch == 65 then audition()                    -- A
+  elseif ch == 32 then stop_audition(); set_status("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
   elseif ch == 102 or ch == 70 or ch == 1752132965 then fit_view()
