@@ -13,10 +13,15 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   = level, floor -80 dB below the loudest), the 25 noise bands as a faint shaded layer, hover
   readout (time, frequency, note, nearest partial), wheel / Ctrl+wheel / Shift+wheel / drag, keys
   O R F P N. `lua5.4 tests/mock_run.lua` runs it against a fake gfx (catches runtime errors only).
-- NOT yet seen in a real REAPER window when written (REAPER was open on tjingboem's session).
+- Seen working in REAPER by tjingboem 8 Nov 2026 ("gorgeous", "very fast"); noise layer has a checkbox
+  (top right), note-name scale on the right edge (C's when zoomed out, naturals, then semitones).
+- Selection (9 Nov 2026, not yet seen by tjingboem): left-drag draws a box that selects POINTS
+  (a partial at a frame, SPEAR-style: part of a partial, not the whole line); Shift adds; a plain
+  click on empty space clears; Esc clears, then closes. Pan moved to right/middle drag. Selected
+  points are drawn bright pink, header shows "selected: N points in M partials, time, frequency".
 
 ## Next (not started, wait for tjingboem)
-Selection (box, Shift = add), edit operations (delete, transpose, shift, scale, move, copy,
+Edit operations (delete, transpose, shift, scale, move, copy,
 stretch), undo, a writer (`ats_file.save`), the Python helper for analysis from an item and for
 Audition, then the Audition button.
 

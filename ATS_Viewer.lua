@@ -33,6 +33,10 @@ local dirty = true
 local last_w, last_h = 0, 0
 local drag = nil               -- { x, y } of the last mouse position while dragging
 local prev_down = false        -- left button state in the previous frame (for click detection)
+local sel = {}                 -- sel[p] = { [frame] = true }: selected points (partial p at that frame)
+local sel_info = nil           -- { points, partials, t0, t1, f0, f1 } of the selection, or nil
+local clear_selection          -- defined with the selection functions below
+local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
 local amp_thresh = 0
 
 local LOG = math.log
@@ -123,6 +127,7 @@ local function load_file(path)
     return false
   end
   data, fname, load_error = d, path, nil
+  clear_selection()
   amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
   fit_view()
@@ -144,6 +149,48 @@ local function frame_at(t)
   end
   if math.abs(times[hi] - t) < math.abs(times[lo] - t) then return hi end
   return lo
+end
+
+
+-- ---------------------------------------------------------------- selection
+function clear_selection()
+  sel, sel_info = {}, nil
+end
+
+-- Selects every point (partial p at frame f) whose time and frequency lie inside the box.
+-- add = true keeps the existing selection and adds to it.
+local function select_box(ta, tb, fa, fb, add)
+  if not data then return end
+  if ta > tb then ta, tb = tb, ta end
+  if fa > fb then fa, fb = fb, fa end
+  if not add then sel = {} end
+  for p = 1, data.partials do
+    local amp, frq = data.amp[p], data.frq[p]
+    for f = 1, data.frames do
+      local t = data.times[f]
+      if t >= ta and t <= tb and amp[f] > amp_thresh and frq[f] >= fa and frq[f] <= fb then
+        sel[p] = sel[p] or {}
+        sel[p][f] = true
+      end
+    end
+  end
+  -- summary
+  local points, partials = 0, 0
+  local i0, i1, g0, g1 = math.huge, -math.huge, math.huge, -math.huge
+  for p, frames in pairs(sel) do
+    local n = 0
+    for f in pairs(frames) do
+      n = n + 1
+      local t, fr = data.times[f], data.frq[p][f]
+      if t < i0 then i0 = t end
+      if t > i1 then i1 = t end
+      if fr < g0 then g0 = fr end
+      if fr > g1 then g1 = fr end
+    end
+    if n > 0 then points = points + n; partials = partials + 1 end
+  end
+  sel_info = (points > 0) and { points = points, partials = partials, t0 = i0, t1 = i1, f0 = g0, f1 = g1 } or nil
+  if not sel_info then sel = {} end
 end
 
 -- ------------------------------------------------------------------- drawing
@@ -280,6 +327,38 @@ local function draw_axes(px, py, pw, ph)
   if data then draw_note_scale(px, py, pw, ph) end
 end
 
+-- Selected points (bright pink) and the rubber-band box, drawn on the screen each frame.
+local function draw_selection(px, py, pw, ph)
+  if not data then return end
+  if sel_info then
+    local times = data.times
+    gfx.set(1, 0.35, 0.75, 1)
+    for p, frames in pairs(sel) do
+      local frq = data.frq[p]
+      for f in pairs(frames) do
+        local x1, y1 = tx(times[f], pw), fy(frq[f], ph)
+        if frames[f + 1] then
+          local cx1, cy1, cx2, cy2 = clip_segment(x1, y1, tx(times[f + 1], pw), fy(frq[f + 1], ph), pw, ph)
+          if cx1 then
+            gfx.line(px + cx1, py + cy1, px + cx2, py + cy2, 1)
+            gfx.line(px + cx1, py + cy1 + 1, px + cx2, py + cy2 + 1, 1)
+          end
+        elseif not frames[f - 1] and x1 >= 0 and x1 <= pw and y1 >= 0 and y1 <= ph then
+          gfx.rect(px + x1 - 1, py + y1 - 1, 3, 3, 1)   -- isolated point
+        end
+      end
+    end
+  end
+  if box then
+    local x0, x1 = math.min(box.x0, box.x1), math.max(box.x0, box.x1)
+    local y0, y1 = math.min(box.y0, box.y1), math.max(box.y0, box.y1)
+    gfx.set(1, 1, 1, 0.10)
+    gfx.rect(x0, y0, x1 - x0, y1 - y0, 1)
+    gfx.set(1, 1, 1, 0.8)
+    gfx.rect(x0, y0, x1 - x0, y1 - y0, 0)
+  end
+end
+
 -- Noise-layer checkbox, top right of the header.
 local function checkbox_rect()
   return math.floor(gfx.w) - 128, 8, 118, 16
@@ -333,6 +412,11 @@ local function draw_header(px, py, pw, ph)
     name, data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or ""))
   draw_checkbox()
+  if sel_info then
+    local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
+      sel_info.points, sel_info.partials, sel_info.t0, sel_info.t1, fmt_freq(sel_info.f0), fmt_freq(sel_info.f1))
+    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 28, msg, 1, 0.5, 0.82)
+  end
   -- hover readout
   local mx, my = gfx.mouse_x, gfx.mouse_y
   if mx >= px and mx < px + pw and my >= py and my < py + ph then
@@ -366,7 +450,7 @@ local function draw_header(px, py, pw, ph)
   end
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 18,
-    "wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   drag pan   O open   R reload   F fit   P partials   N noise",
+    "drag = select (Shift adds)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   R reload   F fit   P partials   N noise   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -411,7 +495,8 @@ local function handle_input(px, py, pw, ph)
     end
   end
 
-  if data and cap & 1 ~= 0 then
+  -- Right or middle button drag = pan.
+  if data and (cap & (2 + 64)) ~= 0 then
     if drag then
       local dx, dy = mx - drag.x, my - drag.y
       if dx ~= 0 or dy ~= 0 then
@@ -432,18 +517,37 @@ local function handle_input(px, py, pw, ph)
     drag = nil
   end
 
+  -- Left button: checkbox click, or a rubber-band box that selects points.
   local down = (cap & 1) ~= 0
   if down and not prev_down then
     local cx, cy, cw, chh = checkbox_rect()
     if mx >= cx and mx < cx + cw and my >= cy and my < cy + chh then
       show_noise = not show_noise
       dirty = true
+    elseif data and inside then
+      box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0 }
+    end
+  elseif down and box then
+    box.x1 = clamp(mx, px, px + pw)
+    box.y1 = clamp(my, py, py + ph)
+  elseif (not down) and prev_down and box then
+    local b = box
+    box = nil
+    if math.abs(b.x1 - b.x0) < 4 and math.abs(b.y1 - b.y0) < 4 then
+      if not b.add then clear_selection() end            -- a plain click on empty space clears
+    else
+      local function t_of(x) return view.t0 + (x - px) / pw * (view.t1 - view.t0) end
+      local function f_of(y) return view.f0 * (view.f1 / view.f0) ^ ((py + ph - y) / ph) end
+      select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
   prev_down = down
 
   local ch = gfx.getchar()
-  if ch < 0 or ch == 27 then return false end
+  if ch < 0 then return false end
+  if ch == 27 then
+    if sel_info then clear_selection() else return false end
+  end
   if ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
   elseif ch == 102 or ch == 70 or ch == 1752132965 then fit_view()
@@ -465,6 +569,7 @@ local function loop()
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   gfx.blit(1, 1, 0, 0, 0, pw, ph, px, py, pw, ph)
+  draw_selection(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_header(px, py, pw, ph)
   gfx.update()
