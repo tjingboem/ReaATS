@@ -104,4 +104,50 @@ function M.load(path)
   return d
 end
 
+-- Writes `d` (as returned by M.load, possibly edited) to `path` in little-endian ATS format.
+-- opts.phase = true keeps the phase data (only if d has it); the default drops it, because
+-- edits make the stored phases wrong. Noise bands are kept when d has them.
+-- ampmax and frqmax in the header are recomputed from the active points. Returns true, or nil + message.
+function M.save(path, d, opts)
+  opts = opts or {}
+  local with_phase = opts.phase and d.has_phase
+  local type_
+  if d.has_noise then type_ = with_phase and 4 or 3 else type_ = with_phase and 2 or 1 end
+  local P, NF = d.partials, d.frames
+  local ampmax, frqmax = 0, 0
+  for p = 1, P do
+    local a, fr = d.amp[p], d.frq[p]
+    for f = 1, NF do
+      if a[f] > 0 then
+        if a[f] > ampmax then ampmax = a[f] end
+        if fr[f] > frqmax then frqmax = fr[f] end
+      end
+    end
+  end
+  local out = { string.pack("<dddddddddd", 123.0, d.sr, d.frame_size, d.window_size,
+                            P, NF, ampmax, frqmax, d.dur, type_) }
+  local per_partial = with_phase and 3 or 2
+  local per_frame = 1 + per_partial * P + (d.has_noise and M.NUM_NOISE_BANDS or 0)
+  local fmt = "<" .. string.rep("d", per_frame)
+  local v = {}
+  for f = 1, NF do
+    v[1] = d.times[f]
+    local k = 2
+    for p = 1, P do
+      v[k] = d.amp[p][f]; v[k + 1] = d.frq[p][f]
+      if with_phase then v[k + 2] = d.pha[p][f] end
+      k = k + per_partial
+    end
+    if d.has_noise then
+      for b = 1, M.NUM_NOISE_BANDS do v[k + b - 1] = d.noise[b][f] end
+    end
+    out[#out + 1] = string.pack(fmt, table.unpack(v, 1, per_frame))
+  end
+  local fh, err = io.open(path, "wb")
+  if not fh then return nil, "cannot write file: " .. tostring(err) end
+  fh:write(table.concat(out))
+  fh:close()
+  return true
+end
+
 return M

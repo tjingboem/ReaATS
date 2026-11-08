@@ -37,5 +37,35 @@ check("rejects a non-ATS file", bad == nil and e2 ~= nil, e2)
 local f = io.open("/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/short.ats", "wb"); f:write(string.rep("x", 100)); f:close()
 local bad2, e3 = ats.load("/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/short.ats")
 check("rejects junk", bad2 == nil, e3)
+-- round trips through save()
+local tmp = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/roundtrip.ats"
+local function same(a, b, label)
+  check(label .. " header", a.partials == b.partials and a.frames == b.frames and a.sr == b.sr and a.dur == b.dur)
+  local worst = 0
+  for p = 1, a.partials do for f = 1, a.frames do
+    worst = math.max(worst, math.abs(a.amp[p][f] - b.amp[p][f]), math.abs(a.frq[p][f] - b.frq[p][f]))
+  end end
+  check(label .. " amp/freq identical", worst == 0, worst)
+  local nw = 0
+  for b_ = 1, 25 do for f = 1, a.frames do nw = math.max(nw, math.abs(a.noise[b_][f] - b.noise[b_][f])) end end
+  check(label .. " noise identical", nw == 0, nw)
+end
+check("save type 4", ats.save(tmp, d, { phase = true }))
+local r4 = ats.load(tmp)
+check("reload type 4", r4 and r4.type == 4 and r4.has_phase)
+same(d, r4, "type 4")
+check("phase kept", r4.pha[1][101] == d.pha[1][101])
+check("save type 3 (default)", ats.save(tmp, d))
+local r3 = ats.load(tmp)
+check("reload type 3", r3 and r3.type == 3 and not r3.has_phase and r3.has_noise)
+same(d, r3, "type 3")
+-- edited data: header maxima follow the data
+local saved_amp = d.amp[1][101]
+d.amp[1][101] = 0
+ats.save(tmp, d)
+local r5 = ats.load(tmp)
+check("edit survives", r5.amp[1][101] == 0)
+check("ampmax recomputed", r5.ampmax <= d.ampmax + 1e-12)
+d.amp[1][101] = saved_amp
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -1,25 +1,34 @@
 --[[----------------------------------------------------------------------------
-  ATS_Viewer.lua  --  read-only viewer for Csound/ATS ".ats" files (first step
-  of a SPEAR-like partial editor for REAPER; nothing is edited here).
+  ATS_Editor.lua  --  a SPEAR-like partial editor for Csound/ATS ".ats" files, in REAPER.
 
   Shows the sine partials as lines (time across, frequency up on a log axis,
-  brighter = louder) and the 25 noise bands as a faint shaded layer behind them.
+  brighter = louder) and the 25 noise bands as a faint shaded layer behind them
+  (checkbox top right). Select points of partials with a box, then delete or
+  transpose them. Edits are saved to a NEW file next to the original.
 
   Run it from the action list (Actions > Show action list > ReaScript: Load...).
   The first run asks for a .ats file; later runs reopen the last one.
 
-  Mouse:  wheel = zoom time        Ctrl+wheel = zoom frequency
-          Shift+wheel = scroll time    left drag = pan
-          hover = time / frequency / nearest partial
-  Keys:   O open file   R reload   F or Home fit view
-          P partials on/off   N noise on/off   Esc close
+  Mouse:  left drag = select box (Shift adds, click on empty space clears)
+          left drag ON a selected point = move the selection (Shift locks to one axis)
+          right/middle drag = pan       wheel = zoom time
+          Ctrl+wheel = zoom frequency   Shift+wheel = scroll time
+          hover = time / frequency / note / nearest partial
+  Keys:   Delete        silence the selected points
+          Up / Down     transpose the selection (1 semitone; Shift 10 cents; Ctrl octave)
+          Ctrl+Z / Ctrl+Y   undo / redo
+          Left / Right  move the selection one frame in time (Ctrl: ten frames)
+          Ctrl+S        save as <name>_edit.ats (no phase; never overwrites)
+          O open   R reload   F or Home fit view   P partials on/off   N noise on/off
+          Esc           clear the selection, then close
 --------------------------------------------------------------------------------]]
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*)[/\\]") or "."
 local ats = dofile(script_dir .. "/lib/ats_file.lua")
+local edit = dofile(script_dir .. "/lib/ats_edit.lua")
 
 -- ------------------------------------------------------------------ settings
-local TITLE = "ATS Viewer"
+local TITLE = "ATS Editor"
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
 local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 52, 38
@@ -35,7 +44,11 @@ local drag = nil               -- { x, y } of the last mouse position while drag
 local prev_down = false        -- left button state in the previous frame (for click detection)
 local sel = {}                 -- sel[p] = { [frame] = true }: selected points (partial p at that frame)
 local sel_info = nil           -- { points, partials, t0, t1, f0, f1 } of the selection, or nil
-local clear_selection          -- defined with the selection functions below
+local clear_selection, update_sel_info   -- defined with the selection functions below
+local undo_stack, redo_stack = {}, {}   -- each entry: { name = ..., changes = { {p, f, oa, na, of, nf}, ... } }
+local modified = false
+local status_msg, status_until = nil, 0
+local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lock }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
 local amp_thresh = 0
 
@@ -128,6 +141,7 @@ local function load_file(path)
   end
   data, fname, load_error = d, path, nil
   clear_selection()
+  undo_stack, redo_stack, modified = {}, {}, false
   amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
   fit_view()
@@ -174,7 +188,11 @@ local function select_box(ta, tb, fa, fb, add)
       end
     end
   end
-  -- summary
+  update_sel_info()
+end
+
+-- Recomputes the selection summary (point count, time and frequency range) from sel.
+function update_sel_info()
   local points, partials = 0, 0
   local i0, i1, g0, g1 = math.huge, -math.huge, math.huge, -math.huge
   for p, frames in pairs(sel) do
@@ -191,6 +209,119 @@ local function select_box(ta, tb, fa, fb, add)
   end
   sel_info = (points > 0) and { points = points, partials = partials, t0 = i0, t1 = i1, f0 = g0, f1 = g1 } or nil
   if not sel_info then sel = {} end
+end
+
+-- ------------------------------------------------------------------ editing
+local function set_status(msg)
+  status_msg, status_until = msg, reaper.time_precise() + 4
+end
+
+local function apply_changes(changes, forward)
+  for _, c in ipairs(changes) do
+    data.amp[c.p][c.f] = forward and c.na or c.oa
+    data.frq[c.p][c.f] = forward and c.nf or c.of
+  end
+  dirty = true
+end
+
+local function do_edit(name, changes, rows_before, rows_after)
+  if #changes == 0 then return end
+  if rows_after and rows_after > data.partials then edit.add_rows(data, rows_after - data.partials) end
+  apply_changes(changes, true)
+  undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after }
+  redo_stack = {}
+  modified = true
+  set_status(string.format("%s: %d points", name, #changes))
+end
+
+local function undo()
+  local e = table.remove(undo_stack)
+  if not e then set_status("nothing to undo"); return end
+  apply_changes(e.changes, false)
+  if e.rows_before and data.partials > e.rows_before then edit.truncate_rows(data, e.rows_before) end
+  redo_stack[#redo_stack + 1] = e
+  clear_selection()
+  modified = #undo_stack > 0
+  set_status("undo " .. e.name)
+end
+
+local function redo()
+  local e = table.remove(redo_stack)
+  if not e then set_status("nothing to redo"); return end
+  if e.rows_after and e.rows_after > data.partials then edit.add_rows(data, e.rows_after - data.partials) end
+  apply_changes(e.changes, true)
+  undo_stack[#undo_stack + 1] = e
+  clear_selection()
+  modified = true
+  set_status("redo " .. e.name)
+end
+
+-- Delete: the selected points become silent (amplitude 0 = partial not sounding, as in ATS).
+local function delete_selection()
+  if not sel_info then return end
+  local changes = {}
+  for p, frames in pairs(sel) do
+    for f in pairs(frames) do
+      if data.amp[p][f] > 0 then
+        changes[#changes + 1] = { p = p, f = f, oa = data.amp[p][f], na = 0, of = data.frq[p][f], nf = data.frq[p][f] }
+      end
+    end
+  end
+  do_edit("delete", changes)
+  clear_selection()
+end
+
+-- Transpose the selected points by `semitones` (frequencies only; phases are not touched).
+local function transpose_selection(semitones)
+  if not sel_info then return end
+  local ratio = 2 ^ (semitones / 12)
+  local ny = data.sr / 2 - 1
+  local changes = {}
+  for p, frames in pairs(sel) do
+    for f in pairs(frames) do
+      local fr = data.frq[p][f]
+      changes[#changes + 1] = { p = p, f = f, oa = data.amp[p][f], na = data.amp[p][f],
+                                of = fr, nf = clamp(fr * ratio, 1, ny) }
+    end
+  end
+  do_edit(string.format("transpose %+.2f st", semitones), changes)
+  update_sel_info()
+end
+
+-- Move the selected points by df frames in time and by `ratio` in frequency (see lib/ats_edit.lua
+-- for how colliding pieces get other rows). The selection follows the moved points.
+local function move_selection(df, ratio)
+  if not sel_info then return end
+  local plan = edit.plan_move(data, sel, df, ratio)
+  if not plan then set_status("nothing to move"); return end
+  local label = string.format("move %+d frames, %+.2f st", plan.df, 12 * math.log(ratio, 2))
+  do_edit(label, plan.changes, plan.rows_before, plan.rows_after)
+  sel = plan.sel
+  update_sel_info()
+  if plan.rows_after > plan.rows_before then
+    set_status(string.format("%s (+%d new partial rows)", label, plan.rows_after - plan.rows_before))
+  end
+end
+
+-- Saves next to the original as <name>_edit.ats (never overwrites; numbers further copies).
+local function save_file()
+  if not data or not fname then return end
+  local base, ext = fname:match("^(.*)(%.[^./\\]+)$")
+  base = (base or fname):gsub("_edit%d*$", "")
+  ext = ext or ".ats"
+  local path = base .. "_edit" .. ext
+  local n = 2
+  while reaper.file_exists(path) do
+    path = base .. "_edit" .. n .. ext
+    n = n + 1
+  end
+  local ok, err = ats.save(path, data)
+  if ok then
+    modified = false
+    set_status("saved " .. (path:match("([^/\\]+)$") or path) .. " (no phase)")
+  else
+    set_status("save failed: " .. tostring(err))
+  end
 end
 
 -- ------------------------------------------------------------------- drawing
@@ -327,26 +458,46 @@ local function draw_axes(px, py, pw, ph)
   if data then draw_note_scale(px, py, pw, ph) end
 end
 
--- Selected points (bright pink) and the rubber-band box, drawn on the screen each frame.
+-- Draws the selected points at an offset (ox, oy) in pixels, in the given colour.
+local function draw_sel_points(px, py, pw, ph, ox, oy, r, g, bl, a)
+  local times = data.times
+  gfx.set(r, g, bl, a)
+  for p, frames in pairs(sel) do
+    local frq = data.frq[p]
+    for f in pairs(frames) do
+      local x1, y1 = tx(times[f], pw) + ox, fy(frq[f], ph) + oy
+      if frames[f + 1] then
+        local cx1, cy1, cx2, cy2 = clip_segment(x1, y1, tx(times[f + 1], pw) + ox, fy(frq[f + 1], ph) + oy, pw, ph)
+        if cx1 then
+          gfx.line(px + cx1, py + cy1, px + cx2, py + cy2, 1)
+          gfx.line(px + cx1, py + cy1 + 1, px + cx2, py + cy2 + 1, 1)
+        end
+      elseif not frames[f - 1] and x1 >= 0 and x1 <= pw and y1 >= 0 and y1 <= ph then
+        gfx.rect(px + x1 - 1, py + y1 - 1, 3, 3, 1)   -- isolated point
+      end
+    end
+  end
+end
+
+-- How far the current move-drag goes: whole frames in time, a continuous factor in frequency.
+local function mover_delta(pw, ph)
+  local dx, dy = mover.x - mover.x0, mover.y - mover.y0
+  if mover.lock == "x" then dy = 0 elseif mover.lock == "y" then dx = 0 end
+  local span = view.t1 - view.t0
+  local frame_dt = (data.times[data.frames] - data.times[1]) / math.max(data.frames - 1, 1)
+  local df = math.floor(dx / pw * span / frame_dt + 0.5)
+  local ratio = math.exp(-dy / ph * (LOG(view.f1) - LOG(view.f0)))
+  return df, ratio, df * frame_dt / span * pw, dy, frame_dt
+end
+
+-- Selected points (bright pink), the move ghost and the rubber-band box, drawn on the screen each frame.
 local function draw_selection(px, py, pw, ph)
   if not data then return end
   if sel_info then
-    local times = data.times
-    gfx.set(1, 0.35, 0.75, 1)
-    for p, frames in pairs(sel) do
-      local frq = data.frq[p]
-      for f in pairs(frames) do
-        local x1, y1 = tx(times[f], pw), fy(frq[f], ph)
-        if frames[f + 1] then
-          local cx1, cy1, cx2, cy2 = clip_segment(x1, y1, tx(times[f + 1], pw), fy(frq[f + 1], ph), pw, ph)
-          if cx1 then
-            gfx.line(px + cx1, py + cy1, px + cx2, py + cy2, 1)
-            gfx.line(px + cx1, py + cy1 + 1, px + cx2, py + cy2 + 1, 1)
-          end
-        elseif not frames[f - 1] and x1 >= 0 and x1 <= pw and y1 >= 0 and y1 <= ph then
-          gfx.rect(px + x1 - 1, py + y1 - 1, 3, 3, 1)   -- isolated point
-        end
-      end
+    draw_sel_points(px, py, pw, ph, 0, 0, 1, 0.35, 0.75, mover and 0.35 or 1)
+    if mover and mover.active then
+      local _, _, ox, oy = mover_delta(pw, ph)
+      draw_sel_points(px, py, pw, ph, ox, oy, 1, 0.9, 0.95, 0.95)
     end
   end
   if box then
@@ -357,6 +508,21 @@ local function draw_selection(px, py, pw, ph)
     gfx.set(1, 1, 1, 0.8)
     gfx.rect(x0, y0, x1 - x0, y1 - y0, 0)
   end
+end
+
+-- True when the mouse is within a few pixels of a selected point.
+local function hit_selected(px, py, pw, ph, mx, my)
+  for p, frames in pairs(sel) do
+    local frq = data.frq[p]
+    for f in pairs(frames) do
+      local x = px + tx(data.times[f], pw)
+      if math.abs(x - mx) <= 7 then
+        local y = py + fy(frq[f], ph)
+        if math.abs(y - my) <= 7 then return true end
+      end
+    end
+  end
+  return false
 end
 
 -- Noise-layer checkbox, top right of the header.
@@ -408,10 +574,13 @@ local function draw_header(px, py, pw, ph)
   end
   local name = fname:match("([^/\\]+)$") or fname
   local hop_ms = data.frame_size / data.sr * 1000
-  text_at(px, 8, string.format("%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
-    name, data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
+  text_at(px, 8, string.format("%s%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
+    name, modified and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or ""))
   draw_checkbox()
+  if status_msg and reaper.time_precise() < status_until then
+    text_at(math.floor(gfx.w) - 128 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
+  end
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
       sel_info.points, sel_info.partials, sel_info.t0, sel_info.t1, fmt_freq(sel_info.f0), fmt_freq(sel_info.f1))
@@ -450,7 +619,7 @@ local function draw_header(px, py, pw, ph)
   end
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 18,
-    "drag = select (Shift adds)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   R reload   F fit   P partials   N noise   Esc clear/close",
+    "drag select (Shift adds)  drag a selected point = move (Shift locks axis)  Del delete  Up/Down transpose  Left/Right move in time  Ctrl+Z undo  Ctrl+Y redo  Ctrl+S save  right-drag pan  wheel zoom  Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -517,7 +686,7 @@ local function handle_input(px, py, pw, ph)
     drag = nil
   end
 
-  -- Left button: checkbox click, or a rubber-band box that selects points.
+  -- Left button: checkbox click; on a selected point it drags the selection, elsewhere a box selects.
   local down = (cap & 1) ~= 0
   if down and not prev_down then
     local cx, cy, cw, chh = checkbox_rect()
@@ -525,11 +694,31 @@ local function handle_input(px, py, pw, ph)
       show_noise = not show_noise
       dirty = true
     elseif data and inside then
-      box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0 }
+      if sel_info and hit_selected(px, py, pw, ph, mx, my) then
+        mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
+      else
+        box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0 }
+      end
+    end
+  elseif down and mover then
+    mover.x, mover.y = mx, my
+    if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then
+      mover.active = true
+      if mover.shift then
+        mover.lock = (math.abs(mx - mover.x0) >= math.abs(my - mover.y0)) and "x" or "y"
+      end
     end
   elseif down and box then
     box.x1 = clamp(mx, px, px + pw)
     box.y1 = clamp(my, py, py + ph)
+  elseif (not down) and prev_down and mover then
+    local m = mover
+    if m.active then
+      local df, ratio = mover_delta(pw, ph)
+      mover = nil
+      move_selection(df, ratio)
+    end
+    mover = nil
   elseif (not down) and prev_down and box then
     local b = box
     box = nil
@@ -548,7 +737,18 @@ local function handle_input(px, py, pw, ph)
   if ch == 27 then
     if sel_info then clear_selection() else return false end
   end
-  if ch == 111 or ch == 79 then open_dialog()
+  local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
+  if ch == 6579564 then delete_selection()                      -- Delete
+  elseif ch == 30064 or ch == 1685026670 then                   -- Up / Down arrow
+    local step = ctrl and 12 or (shift and 0.1 or 1)
+    transpose_selection(ch == 30064 and step or -step)
+  elseif ch == 1818584692 or ch == 1919379572 then              -- Left / Right arrow: move in time
+    local frames = ctrl and 10 or 1
+    move_selection(ch == 1919379572 and frames or -frames, 1)
+  elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
+  elseif ch == 25 then redo()                                   -- Ctrl+Y
+  elseif ch == 19 then save_file()                              -- Ctrl+S
+  elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
   elseif ch == 102 or ch == 70 or ch == 1752132965 then fit_view()
   elseif ch == 112 or ch == 80 then show_partials = not show_partials; dirty = true

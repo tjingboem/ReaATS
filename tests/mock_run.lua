@@ -1,5 +1,5 @@
 -- Run: lua5.4 tests/mock_run.lua   (from the ATSEditor folder)
--- Runs ATS_Viewer.lua against a fake `gfx` and `reaper` with scripted input, to catch
+-- Runs ATS_Editor.lua against a fake `gfx` and `reaper` with scripted input, to catch
 -- runtime errors (nothing is drawn). Also counts the draw calls of one cache render.
 local root = os.getenv("PWD")
 local calls = {}
@@ -12,15 +12,23 @@ gfx.measurestr = function(s) return #s * 7, 14 end
 local script = { keys = {}, frame = 0 }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
+local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
+local work = scratch .. "mock_sax.ats"                 -- the viewer edits a COPY, never examples/sax.ats
+do
+  local src = assert(io.open(root .. "/examples/sax.ats", "rb")); local data = src:read("a"); src:close()
+  local dst = assert(io.open(work, "wb")); dst:write(data); dst:close()
+  os.remove(scratch .. "mock_sax_edit.ats")
+end
 reaper = {
-  get_action_context = function() return true, root .. "/ATS_Viewer.lua", 0, 0 end,
-  GetExtState = function() return root .. "/examples/sax.ats" end,
+  time_precise = function() return os.clock() end,
+  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  GetExtState = function() return work end,
   SetExtState = function() end,
   file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
-  GetUserFileNameForRead = function() return true, root .. "/examples/sax.ats" end,
+  GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Viewer.lua")
+dofile("ATS_Editor.lua")
 local function frame(setup)
   if setup then setup() end
   local fn = deferred; deferred = nil
@@ -77,6 +85,74 @@ frame()                                                                     -- o
 local summary = saw("^selected:")
 assert(summary, "no selection summary after box selects")
 print(summary)
+-- moving: Right arrow, then a mouse drag on a selected point
+do
+  local ats0 = dofile("lib/ats_file.lua")
+  script.keys = { 114 }; frame(); script.keys = { 102 }; frame()               -- reload the copy, fit the view
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()                -- select the left part of the plot (t < ~1.2 s)
+  gfx.mouse_x, gfx.mouse_y = 600, 600; frame()
+  gfx.mouse_cap = 0; frame(); frame()
+  gfx.mouse_cap = 0
+  script.keys = { 1919379572 }; strings = {}; frame(); frame()                 -- Right
+  assert(saw("^move %+0 frames") == nil)
+  gfx.mouse_cap = 0
+  -- screen position of partial 1 at frame 101, replicating the viewer's fit
+  local d0 = ats0.load(work)
+  local thr = d0.ampmax * 10 ^ (-80 / 20)
+  local fmin, fmax = math.huge, 0
+  for p = 1, d0.partials do for f = 1, d0.frames do
+    if d0.amp[p][f] > thr and d0.frq[p][f] > 0 then
+      fmin = math.min(fmin, d0.frq[p][f]); fmax = math.max(fmax, d0.frq[p][f]) end end end
+  local f0, f1 = math.max(10, fmin / 1.4), math.min(40000, fmax * 1.4)
+  local px, py, pw, ph = 62, 52, 988, 550
+  local tmax = d0.times[d0.frames]
+  local function screen(t, fr) return px + t / tmax * pw, py + ph * (1 - (math.log(fr) - math.log(f0)) / (math.log(f1) - math.log(f0))) end
+  local x, y = screen(d0.times[101], d0.frq[1][101])
+  local frame_px = pw * 0.01 / tmax
+  -- the selection is one frame to the right after the Right key, so grab the point there
+  x = x + frame_px
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x, y; frame()
+  gfx.mouse_x, gfx.mouse_y = x + 30, y - 20; frame(); frame()
+  gfx.mouse_cap = 0; strings = {}; frame(); frame()
+  local expected = math.floor(30 / frame_px + 0.5)
+  assert(saw("^move %+" .. expected .. " frames"), "drag move status missing, expected +" .. expected .. ": "
+         .. table.concat(strings, " / ", 1, math.min(#strings, 30)))
+  gfx.mouse_cap = 4; script.keys = { 26 }; strings = {}; frame(); frame()
+  assert(saw("^undo move"), "undo of the drag move missing")
+  gfx.mouse_cap = 0
+  print("move OK: arrow and drag (+" .. expected .. " frames), undo works")
+end
+
+-- editing: transpose, delete, undo, redo, save
+local ats = dofile("lib/ats_file.lua")
+gfx.mouse_cap = 0
+gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 100, 100; frame()              -- select a big box again (R/O reloaded the file)
+gfx.mouse_x, gfx.mouse_y = 900, 560; frame()
+gfx.mouse_cap = 0; frame(); frame()
+script.keys = { 30064 }; strings = {}; frame(); frame()
+assert(saw("^transpose %+1%.00 st"), "transpose status missing")
+script.keys = { 6579564 }; strings = {}; frame(); frame()
+assert(saw("^delete: "), "delete status missing")
+assert(saw(" %*   |"), "modified marker missing")
+gfx.mouse_cap = 4
+script.keys = { 26 }; strings = {}; frame(); frame()
+assert(saw("^undo delete"), "undo status missing")
+gfx.mouse_cap = 4
+script.keys = { 25 }; strings = {}; frame(); frame()
+assert(saw("^redo delete"), "redo status missing")
+gfx.mouse_cap = 4
+script.keys = { 19 }; strings = {}; frame(); frame()
+assert(saw("^saved mock_sax_edit%.ats"), "save status missing; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+gfx.mouse_cap = 0
+local orig = ats.load(root .. "/examples/sax.ats")
+local edited = assert(ats.load(scratch .. "mock_sax_edit.ats"))
+local zeros, moved = 0, 0
+for p = 1, orig.partials do for f = 1, orig.frames do
+  if orig.amp[p][f] > 0 and edited.amp[p][f] == 0 then zeros = zeros + 1 end
+end end
+assert(zeros > 1000, "deleted points should be silent in the saved file, got " .. zeros)
+assert(edited.type == 3 and not edited.has_phase, "edited file should be saved without phase")
+print(string.format("edit round trip OK: %d points silenced in the saved file (type %d)", zeros, edited.type))
 -- a plain click on empty space clears the selection
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 400; frame()
 gfx.mouse_cap = 0; strings = {}; frame(); frame()
@@ -85,8 +161,8 @@ local line_before = calls.line or 0
 script.keys = { 102 }; frame()                                              -- fit -> full re-render
 print(string.format("one full render: %d line calls, %d rect calls", (calls.line or 0) - line_before, calls.rect or 0))
 -- Esc: clears a selection first, then closes
-gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 100, 100; frame()
-gfx.mouse_x, gfx.mouse_y = 900, 560; frame()
+gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()                -- whole plot (earlier box was deleted)
+gfx.mouse_x, gfx.mouse_y = 1040, 600; frame()
 gfx.mouse_cap = 0; frame(); strings = {}; frame()
 assert(saw("^selected:"), "selection expected before Esc")
 script.keys = { 27 }; frame()
