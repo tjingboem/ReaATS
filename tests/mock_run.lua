@@ -12,6 +12,7 @@ gfx.measurestr = function(s) return #s * 7, 14 end
 local script = { keys = {}, frame = 0 }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
+local project, projext = { tracks = {} }, {}
 local previews = {}
 local destroyed, stops = 0, 0
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
@@ -29,8 +30,27 @@ reaper = {
   Xen_StartSourcePreview = function(src) previews[#previews + 1] = src.path; return true end,
   Xen_StopSourcePreview = function() stops = stops + 1 end,
   get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
-  GetExtState = function() return work end,
+  GetExtState = function(sec, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
+  ShowConsoleMsg = function() end,
+  -- a tiny fake project for PRINT
+  Undo_BeginBlock = function() end, Undo_EndBlock = function() end, UpdateArrange = function() end,
+  CountTracks = function() return #project.tracks end,
+  InsertTrackAtIndex = function(i) table.insert(project.tracks, i + 1, { items = {}, selected = false }) end,
+  GetTrack = function(_, i) return project.tracks[i + 1] end,
+  GetSelectedTrack = function() for _, t in ipairs(project.tracks) do if t.selected then return t end end end,
+  SetOnlyTrackSelected = function(tr) for _, t in ipairs(project.tracks) do t.selected = (t == tr) end end,
+  GetSetMediaTrackInfo_String = function(tr, what, val, set) if set then tr.name = val end return true, tr.name end,
+  InsertMedia = function(path) local t = reaper.GetSelectedTrack(); t.items[#t.items + 1] = { src = path, guid = "{GUID-" .. (#t.items + 1) .. "}" }; return true end,
+  CountTrackMediaItems = function(tr) return #tr.items end,
+  GetTrackMediaItem = function(tr, i) return tr.items[i + 1] end,
+  GetActiveTake = function(it) return it end,
+  GetMediaItemTake_Source = function(take) return take end,
+  GetMediaSourceFileName = function(src) return src.src end,
+  GetSetMediaItemInfo_String = function(it, what, val, set) return true, it.guid end,
+  GetSetMediaItemTakeInfo_String = function(take, what, val, set) if set then take.name = val end return true, take.name end,
+  SetProjExtState = function(_, sec, key, val) projext[sec .. "|" .. key] = val; return 1 end,
+  GetProjExtState = function(_, sec, key) return 1, projext[sec .. "|" .. key] or "" end,
   file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
@@ -111,7 +131,7 @@ do
     if d0.amp[p][f] > thr and d0.frq[p][f] > 0 then
       fmin = math.min(fmin, d0.frq[p][f]); fmax = math.max(fmax, d0.frq[p][f]) end end end
   local f0, f1 = math.max(10, fmin / 1.4), math.min(40000, fmax * 1.4)
-  local px, py, pw, ph = 62, 52, 988, 550
+  local px, py, pw, ph = 62, 52, 988, 534
   local tmax = d0.times[d0.frames]
   local function screen(t, fr) return px + t / tmax * pw, py + ph * (1 - (math.log(fr) - math.log(f0)) / (math.log(f1) - math.log(f0))) end
   local x, y = screen(d0.times[101], d0.frq[1][101])
@@ -188,6 +208,35 @@ do
   print("audition OK: 3 renders with real Csound (sines+noise, noise, sines); stops=" .. stops .. ", destroyed=" .. destroyed)
   for _, w in ipairs(previews) do os.remove(w) end
   os.remove("/tmp/reaats_audition.ats"); os.remove("/tmp/reaats_audition.csd")
+end
+-- print to track + ReaSnap item settings
+do
+  local ser = dofile("lib/reaats_serial.lua")
+  -- an unsaved edit first: select the whole plot and delete it, so PRINT has to save the edit
+  gfx.mouse_cap = 0
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()
+  gfx.mouse_x, gfx.mouse_y = 1040, 540; frame()
+  gfx.mouse_cap = 0; frame(); frame()
+  script.keys = { 6579564 }; frame()                                           -- Delete: now modified
+  gfx.mouse_cap = 0; strings = {}
+  script.keys = { 16 }; frame(); frame()                                       -- Ctrl+P
+  assert(saw("^printed [%d%.]+ s %("), "print status missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  assert(#project.tracks == 1 and project.tracks[1].name == "ReaATS", "a ReaATS track should be created")
+  local item = project.tracks[1].items[1]
+  assert(item and item.src:match("_print1%.wav$"), "print item missing: " .. tostring(item and item.src))
+  local f = io.open(item.src, "rb"); assert(f, "printed WAV missing"); local size = f:seek("end"); f:close()
+  assert(size > 300000, "printed WAV too small")
+  local stored = projext["ReaATS_ItemSettings|" .. item.guid]
+  assert(stored and stored ~= "", "item settings not written under the item's GUID")
+  local st = ser.deserialize(stored)
+  assert(st and st.file:match("_edit%d*%.ats$") and io.open(st.file, "rb"), "stored state should name the saved edited .ats file")
+  assert(st.view.t1 > st.view.t0 and st.view.f1 > st.view.f0 and st.partials == true and st.noise == true, "stored view/switches wrong")
+  print("print OK: item " .. item.src:match("([^/]+)$") .. ", state -> " .. st.name)
+  -- second print goes onto the same (selected) track with a new numbered WAV
+  gfx.mouse_cap = 0; script.keys = { 16 }; frame(); frame()
+  assert(#project.tracks == 1 and #project.tracks[1].items == 2 and project.tracks[1].items[2].src:match("_print2%.wav$"), "second print")
+  for _, it in ipairs(project.tracks[1].items) do os.remove(it.src) end
+  os.remove(st.file)
 end
 -- a plain click on empty space clears the selection
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 400; frame()

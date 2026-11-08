@@ -55,6 +55,21 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   deleted 4 auditions later), `Xen_StopSourcePreview` is only called while a preview can still be running.
   If it still crashes, switch to a real temporary item on a track (how ReaShapeM's Audition does it).
 
+- PRINT + ReaSnap hookup (9 Nov 2026, not yet tried by tjingboem). Audition plays through the source preview
+  and creates no item, so ReaSnap (which keys on item GUIDs) needed a "generate" action: PRINT / Ctrl+P
+  renders the current data (unsaved edits are saved first as `<name>_editN.ats`) to a permanent
+  `<ats stem>_printN.wav` next to the .ats file and inserts it on the selected track (or a new "ReaATS" track)
+  at the edit cursor. All five pieces of the ReaSnap Integration Contract (`ReaSnap/doc/ReaSnap_Integration_Contract.md`):
+  1 own serializer `lib/reaats_serial.lua` (the template with the name replaced; rejects code), 2 window title
+  "ATS Editor #n", 3 `SetProjExtState(0, "ReaATS_ItemSettings", item_guid, {file, name, view, partials, noise})`
+  at PRINT, 4 startup apply of `pending_ReaATS_settings` (a missing .ats file is reported, then the last file
+  opens), 5 Close All (`close_ReaATS_signal`, project identity + birth-time guard). Not built: live follow
+  (selecting a printed item reloads its file). `ReaATS = "_RSd54b3e518c70fbdf5b5f6264be9a55593608e6f3"` was added to
+  KNOWN_SCRIPTS in ReaSnap_Core.lua (the id depends on the script's path in REAPER's action list).
+  `modified` now means "undo depth differs from the last save" and `current_file` is the file that holds the
+  current data. Tests: `lua5.4 tests/mock_run.lua`, `tests/mock_snap.lua` (restore, Close All, missing file),
+  `tests/test_ats_edit.lua`, `tests/test_ats_file.lua`.
+
 ## Next (not started, wait for tjingboem)
 More edit operations (delete, transpose, shift, scale, move, copy,
 stretch), undo, a writer (`ats_file.save`), the Python helper for analysis from an item and for

@@ -20,6 +20,8 @@
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
           A or AUDITION render the edited data with Csound (atsadd/atsaddnz) and play it; Space stops
                         (partials / noise follow the P / N switches)
+          Ctrl+P / PRINT render to a permanent WAV (unsaved edits are saved first) and put it on the selected
+                        track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
           Ctrl+S        save as <name>_edit.ats (no phase; never overwrites)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
           Esc           clear the selection, then close
@@ -28,12 +30,32 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*)[/\\]") or "."
 local ats = dofile(script_dir .. "/lib/ats_file.lua")
 local edit = dofile(script_dir .. "/lib/ats_edit.lua")
+local Serial = dofile(script_dir .. "/lib/reaats_serial.lua")     -- the tool's own save format (ReaSnap contract piece 1)
+
+-- ReaSnap Integration Contract, optional: pieces 2 and 5. The editor works exactly the same without ReaSnap;
+-- these only read values ReaSnap may have left for it, once, at the very start.
+local reasnap_instance_number = nil          -- piece 2: "ATS Editor #2" in the window title
+local reasnap_project_identity = nil         -- piece 5: which project this instance belongs to (Close All)
+local reasnap_launch_time = reaper.time_precise()
+do
+  local pending = reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_instance_number")
+  if pending ~= "" then
+    reasnap_instance_number = tonumber(pending)
+    reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_instance_number", "", false)   -- consume it
+  end
+  pending = reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_project_identity")
+  if pending ~= "" then
+    reasnap_project_identity = pending
+    reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_project_identity", "", false)  -- consume it
+  end
+end
+local closecheck_last = 0
 
 -- ------------------------------------------------------------------ settings
-local TITLE = "ATS Editor"
+local TITLE = "ATS Editor" .. (reasnap_instance_number and (" #" .. reasnap_instance_number) or "")
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
-local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 52, 38
+local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 52, 54
 local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
 -- --------------------------------------------------------------------- state
@@ -49,6 +71,8 @@ local sel_info = nil           -- { points, partials, t0, t1, f0, f1 } of the se
 local clear_selection, update_sel_info   -- defined with the selection functions below
 local undo_stack, redo_stack = {}, {}   -- each entry: { name = ..., changes = { {p, f, oa, na, of, nf}, ... } }
 local modified = false
+local saved_depth = 0          -- undo depth at the last save/load: modified = (#undo_stack ~= saved_depth)
+local current_file = nil       -- the .ats file that holds the data as it is now (the opened file, or the last save)
 local status_msg, status_until = nil, 0
 local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lock }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
@@ -144,6 +168,7 @@ local function load_file(path)
   data, fname, load_error = d, path, nil
   clear_selection()
   undo_stack, redo_stack, modified = {}, {}, false
+  saved_depth, current_file = 0, path
   amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
   fit_view()
@@ -232,7 +257,7 @@ local function do_edit(name, changes, rows_before, rows_after)
   apply_changes(changes, true)
   undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after }
   redo_stack = {}
-  modified = true
+  modified = (#undo_stack ~= saved_depth)
   set_status(string.format("%s: %d points", name, #changes))
 end
 
@@ -243,7 +268,7 @@ local function undo()
   if e.rows_before and data.partials > e.rows_before then edit.truncate_rows(data, e.rows_before) end
   redo_stack[#redo_stack + 1] = e
   clear_selection()
-  modified = #undo_stack > 0
+  modified = (#undo_stack ~= saved_depth)
   set_status("undo " .. e.name)
 end
 
@@ -254,7 +279,7 @@ local function redo()
   apply_changes(e.changes, true)
   undo_stack[#undo_stack + 1] = e
   clear_selection()
-  modified = true
+  modified = (#undo_stack ~= saved_depth)
   set_status("redo " .. e.name)
 end
 
@@ -332,19 +357,17 @@ local function find_csound()
   return "csound"            -- hope it is on REAPER's PATH
 end
 
-local function audition()
-  if not data then return end
+-- Renders the current data to `wav` with Csound. Returns the duration and a label ("sines + noise", ...),
+-- or nil plus a message.
+local function render_wav(wav)
   local use_sines = show_partials
   local use_noise = show_noise and data.has_noise
-  if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
-  stop_audition()
+  if not use_sines and not use_noise then return nil, "nothing to render (partials and noise are both off)" end
   local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
   local base = dir .. "/reaats_audition"
   local ok, err = ats.save(base .. ".ats", data)
-  if not ok then set_status("audition failed: " .. tostring(err)); return end
+  if not ok then return nil, tostring(err) end
   local dur = math.max(data.times[data.frames], data.dur) + 0.05
-  audition_count = audition_count + 1
-  local wav = string.format("%s_%d.wav", base, audition_count)
   local lines = {
     "<CsoundSynthesizer>", "<CsOptions>", "-d -m0 -W -f -o " .. wav, "</CsOptions>",
     "<CsInstruments>", "sr = " .. math.floor(data.sr), "ksmps = 32", "nchnls = 1", "0dbfs = 1",
@@ -369,23 +392,31 @@ local function audition()
   lines[#lines + 1] = "</CsScore>"
   lines[#lines + 1] = "</CsoundSynthesizer>"
   local fh = io.open(base .. ".csd", "w")
-  if not fh then set_status("audition failed: cannot write " .. base .. ".csd"); return end
+  if not fh then return nil, "cannot write " .. base .. ".csd" end
   fh:write(table.concat(lines, "\n"), "\n")
   fh:close()
   local out = reaper.ExecProcess(find_csound() .. " " .. base .. ".csd", 60000)
   if not reaper.file_exists(wav) then
-    local why = (out or ""):gsub("%s+", " "):sub(1, 120)
-    set_status("audition failed: Csound produced no sound (" .. why .. ")")
-    return
+    return nil, "Csound produced no sound (" .. ((out or ""):gsub("%s+", " "):sub(1, 120)) .. ")"
   end
+  return dur, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
+end
+
+local function audition()
+  if not data then return end
+  stop_audition()
+  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+  audition_count = audition_count + 1
+  local wav = string.format("%s/reaats_audition_%d.wav", dir, audition_count)
+  local dur, mode = render_wav(wav)
+  if not dur then set_status("audition failed: " .. tostring(mode)); return end
   local src = reaper.PCM_Source_CreateFromFile(wav)
   if src and reaper.Xen_StartSourcePreview then
     reaper.Xen_StartSourcePreview(src, 1.0, false)
     preview_until = reaper.time_precise() + dur
     wav_history[#wav_history + 1] = wav
     if #wav_history > 4 then os.remove(table.remove(wav_history, 1)) end
-    set_status(string.format("auditioning %.1f s (%s)  Space stops",
-      dur, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")))
+    set_status(string.format("auditioning %.1f s (%s)  Space stops", dur, mode))
   else
     set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
   end
@@ -406,10 +437,71 @@ local function save_file()
   local ok, err = ats.save(path, data)
   if ok then
     modified = false
+    saved_depth, current_file = #undo_stack, path
     set_status("saved " .. (path:match("([^/\\]+)$") or path) .. " (no phase)")
+    return path
   else
     set_status("save failed: " .. tostring(err))
   end
+end
+
+-- ------------------------------------------------------------------ print to track
+-- Renders the current data (unsaved edits are saved first as <name>_edit.ats) to a permanent WAV next to the
+-- .ats file and puts it on the selected track (or a new "ReaATS" track) at the edit cursor. This is the tool's
+-- "generate" moment for the ReaSnap Integration Contract (piece 3): the settings that made the item are written
+-- to the project under the item's GUID, so ReaSnap (or anything else) can bring them back.
+local function build_state(ats_path)
+  return {
+    file = ats_path,
+    name = (ats_path:match("([^/\\]+)$") or ats_path),
+    view = { t0 = view.t0, t1 = view.t1, f0 = view.f0, f1 = view.f1 },
+    partials = show_partials,
+    noise = show_noise,
+  }
+end
+
+local function print_to_track()
+  if not data then return end
+  local ats_path = current_file or fname
+  if modified then
+    ats_path = save_file()
+    if not ats_path then return end
+  end
+  local stem = ats_path:gsub("%.[^./\\]+$", "")
+  local n, wav = 1, nil
+  repeat wav = string.format("%s_print%d.wav", stem, n); n = n + 1 until not reaper.file_exists(wav)
+  local dur, mode = render_wav(wav)
+  if not dur then set_status("print failed: " .. tostring(mode)); return end
+
+  reaper.Undo_BeginBlock()
+  local track = reaper.GetSelectedTrack(0, 0)
+  if not track then
+    reaper.InsertTrackAtIndex(reaper.CountTracks(0), true)
+    track = reaper.GetTrack(0, reaper.CountTracks(0) - 1)
+    reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS", true)
+  end
+  reaper.SetOnlyTrackSelected(track)
+  reaper.InsertMedia(wav, 0)
+  local item
+  for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+    local it = reaper.GetTrackMediaItem(track, i)
+    local take = reaper.GetActiveTake(it)
+    local src = take and reaper.GetMediaItemTake_Source(take)
+    if src and reaper.GetMediaSourceFileName(src, "") == wav then item = it end
+  end
+  if item then
+    local ok_g, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
+    if ok_g and guid ~= "" then
+      local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path))
+      if ok_enc then reaper.SetProjExtState(0, "ReaATS_ItemSettings", guid, encoded) end
+    end
+    local take = reaper.GetActiveTake(item)
+    if take then reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "ReaATS " .. (wav:match("([^/\\]+)$") or wav), true) end
+  end
+  reaper.Undo_EndBlock("ReaATS print", -1)
+  reaper.UpdateArrange()
+  set_status(item and string.format("printed %.1f s (%s) to the track", dur, mode)
+                  or "printed, but the new item was not found on the track")
 end
 
 -- ------------------------------------------------------------------- drawing
@@ -623,6 +715,25 @@ local function audition_rect()
   return x - 96, y - 2, 86, 20
 end
 
+local function print_rect()
+  local x, y, w, h = audition_rect()
+  return x - 72, y, 62, h
+end
+
+local function draw_print_button()
+  local x, y, w, h = print_rect()
+  gfx.set(0.22, 0.30, 0.46, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.55, 0.68, 0.92, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 14)
+  local label = "PRINT"
+  gfx.set(0.93, 0.96, 1, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
 local function draw_audition_button()
   local x, y, w, h = audition_rect()
   gfx.set(0.18, 0.42, 0.30, 1)
@@ -686,8 +797,9 @@ local function draw_header(px, py, pw, ph)
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or ""))
   draw_checkbox()
   draw_audition_button()
+  draw_print_button()
   if status_msg and reaper.time_precise() < status_until then
-    text_at(math.floor(gfx.w) - 128 - 96 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
+    text_at(math.floor(gfx.w) - 128 - 96 - 72 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
   end
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
@@ -726,8 +838,9 @@ local function draw_header(px, py, pw, ph)
     end
   end
   gfx.setfont(1, "Arial", 12)
-  text_at(px, gfx.h - 18,
-    "drag select (Shift adds)  drag a selected point = move (Shift locks axis)  Del delete  Up/Down transpose  Left/Right move in time  Ctrl+Z undo  Ctrl+Y redo  Ctrl+S save  A audition (Space stops)  right-drag pan  wheel zoom  Esc clear/close",
+  text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
+    0.5, 0.53, 0.58)
+  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move in time   Ctrl+Z undo   Ctrl+Y redo   Ctrl+S save   A audition (Space stops)   Ctrl+P print to track   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -804,6 +917,8 @@ local function handle_input(px, py, pw, ph)
       dirty = true
     elseif mx >= ax and mx < ax + aw and my >= ay and my < ay + ah then
       audition()
+    elseif (function() local rx, ry, rw, rh = print_rect(); return mx >= rx and mx < rx + rw and my >= ry and my < ry + rh end)() then
+      print_to_track()
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -859,6 +974,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then save_file()                              -- Ctrl+S
+  elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
@@ -877,6 +993,23 @@ local function loop()
     dirty = true
   end
   local keep = handle_input(px, py, pw, ph)
+  -- ReaSnap "Close All" (piece 5): only for an instance ReaSnap launched (it knows its project then).
+  if keep and reasnap_project_identity then
+    local now = reaper.time_precise()
+    if now - closecheck_last >= 0.25 then
+      closecheck_last = now
+      local raw = reaper.GetExtState("ReaSculpt_Registry", "close_ReaATS_signal")
+      if raw ~= "" then
+        local sig_project, sig_time = raw:match("^(.-)|([%d%.]+)$")
+        sig_time = tonumber(sig_time)
+        -- same project AND broadcast after this instance was born (a lingering signal must not kill a new window)
+        if sig_project == reasnap_project_identity and sig_time and sig_time > reasnap_launch_time then
+          stop_audition()
+          keep = false
+        end
+      end
+    end
+  end
   if dirty then render_cache(pw, ph) end
 
   gfx.set(0.09, 0.10, 0.12, 1)
@@ -890,10 +1023,37 @@ local function loop()
 end
 
 gfx.init(TITLE, 1100, 640)
-local last = reaper.GetExtState(EXT_SECTION, EXT_LAST)
-if last ~= "" and reaper.file_exists(last) then
-  load_file(last)
-else
-  open_dialog()
+-- Piece 4: settings ReaSnap left for this instance (restoring a snapshot). Checked after everything the
+-- apply touches exists (load_file, view, the switches). The snapshot names a file: if it has gone, say so.
+local applied = false
+do
+  local pending = reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_settings")
+  if pending ~= "" then
+    reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_settings", "", false)   -- consume it
+    local st = Serial.deserialize(pending)                                         -- nil + a console message on failure
+    if type(st) == "table" and type(st.file) == "string" then
+      if reaper.file_exists(st.file) and load_file(st.file) then
+        local v = st.view
+        if type(v) == "table" and type(v.t0) == "number" and type(v.t1) == "number" and v.t1 > v.t0
+           and type(v.f0) == "number" and type(v.f1) == "number" and v.f0 > 0 and v.f1 > v.f0 then
+          view.t0, view.t1, view.f0, view.f1 = v.t0, v.t1, v.f0, v.f1
+        end
+        show_partials = st.partials ~= false
+        show_noise = st.noise ~= false
+        dirty = true
+        applied = true
+      else
+        set_status("snapshot file not found: " .. st.file)
+      end
+    end
+  end
+end
+if not applied then
+  local last = reaper.GetExtState(EXT_SECTION, EXT_LAST)
+  if last ~= "" and reaper.file_exists(last) then
+    load_file(last)
+  else
+    open_dialog()
+  end
 end
 loop()
