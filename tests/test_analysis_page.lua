@@ -25,7 +25,7 @@ for key, f in pairs(page.FIELDS) do
     check("the engine has " .. flag, help:find(flag, 1, true) ~= nil, key)
   end
 end
-check("checked every flag", flags == 24, flags)
+check("checked every flag", flags == 25, flags)
 for _, wt in ipairs(page.WINDOW_TYPES) do check("engine knows window type " .. wt, help:find(wt, 1, true) ~= nil, wt) end
 
 -- arguments
@@ -38,6 +38,8 @@ check("defaults: window type", has(a, "--window-type", "blackman-harris-4-1"))
 check("defaults: hop 0.25", has(a, "--hop-size", "0.25"))
 check("defaults: no flags for phase/noise/optimise", not has(a, "--no-phase") and not has(a, "--no-noise") and not has(a, "--no-optimize") and not has(a, "--mono-mix"))
 check("always asks for the Lua summary", has(a, "--summary-format", "lua"))
+check("no result file unless asked", not has(a, "--result-file"))
+check("background mode asks for a result file", has(page.build_args(s, "/x/in.wav", "/x/out.ats", "/tmp/r.txt"), "--result-file", "/tmp/r.txt"))
 s.lowest_frequency, s.start, s.duration, s.channels = 100, 0.5, 1.25, 2
 s.window_type, s.fft_size, s.window_length = "hann", 8192, 2001
 s.optimize, s.store_phase, s.store_noise, s.mono_mix, s.optimize_threshold_db = false, false, false, true, -50
@@ -46,6 +48,16 @@ check("changed values go through", has(a, "--lowest-frequency", "100") and has(a
   and has(a, "--channels", "2") and has(a, "--window-type", "hann") and has(a, "--fft-size", "8192") and has(a, "--window-length", "2001")
   and has(a, "--optimize-amp-threshold-db", "-50"))
 check("switches become flags", has(a, "--no-optimize") and has(a, "--no-phase") and has(a, "--no-noise") and has(a, "--mono-mix"))
+
+-- cores
+check("jobs: not passed unless set", not has(page.build_args(page.default_settings(), "a.wav", "o.ats"), "--jobs"))
+local sj = page.default_settings(); sj.jobs = 3
+check("jobs: passed when set", has(page.build_args(sj, "a.wav", "o.ats"), "--jobs", "3"))
+check("workers: automatic leaves two cores", page.workers({ jobs = 0, channels = 8, mono_mix = false }, 8) == 6)
+check("workers: never more than the channels", page.workers({ jobs = 0, channels = 2, mono_mix = false }, 8) == 2)
+check("workers: asked for 4 of 8 channels", page.workers({ jobs = 4, channels = 8, mono_mix = false }, 8) == 4)
+check("workers: never fewer than one", page.workers({ jobs = 0, channels = 4, mono_mix = false }, 2) == 1)
+check("workers: mono mix is one channel", page.workers({ jobs = 0, channels = 4, mono_mix = true }, 8) == 1)
 
 -- output names, the same as the engine's
 local f1 = page.output_files("/m/a.ats", 1)

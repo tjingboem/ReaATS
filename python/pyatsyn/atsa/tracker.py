@@ -73,6 +73,7 @@ def tracker_array ( in_sound,
                 SMR_continuity = 0.0,              
                 residual_file = None, # path of a WAV to write the residual to (optional)
                 compute_noise = True, # compute the residual and the 25 noise bands (needs no file)
+                progress = None,      # ReaATS: a function called with 0..1 while the analysis runs (may raise to stop it)
                 optimize = True,
                 optimize_amp_threshold = None, # in amplitude
                 force_M = None, # None, or a forced window length in samples
@@ -231,6 +232,8 @@ def tracker_array ( in_sound,
     report_flag = 0
 
     for frame_n in range(frames):
+        if progress is not None:
+            progress(0.8 * frame_n / frames)
         if verbose:
             done = frame_n * 100.0 / frames
             if done > report_flag:
@@ -344,6 +347,9 @@ def tracker_array ( in_sound,
             ats_snd.amp[pk.track][frame_n] = pk.amp
             ats_snd.pha[pk.track][frame_n] = pk.pha     
 
+    if progress is not None:
+        progress(0.85 if (compute_noise or residual_file) else 0.95)
+
     #####################
     # RESIDUAL ANALYSIS #
     #####################
@@ -352,6 +358,8 @@ def tracker_array ( in_sound,
         if verbose:
             print("Computing Residual...")
         residual = compute_residual(ats_snd, in_sound, st, nd, residual_file)
+        if progress is not None:
+            progress(0.93)
 
         if verbose:
             print("Analyzing Residual...")

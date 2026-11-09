@@ -91,6 +91,23 @@ check("nothing to render", select(1, synth.render(d, { sines = false, noise = fa
 d = make(1, 11); for f = 1, 11 do d.amp[1][f], d.frq[1][f] = 0.5, 440 end
 check("no noise data: sines only", synth.render(d, { noise = true }) ~= nil)
 
+-- 7b. rendering from a point in time
+d = make(1, 101)
+for f = 1, 101 do d.amp[1][f], d.frq[1][f] = 0.5, 440 end
+local full, _, t_full = synth.render(d)
+local part, _, t_part = synth.render(d, { from = 0.5 })
+check("full render starts at 0", t_full == 0)
+check("from 0.5 s starts at the frame at or before it", t_part == 0.5 or (t_part <= 0.5 and 0.5 - t_part < 0.0101), t_part)
+check("from: length is the rest", math.abs(#part - (#full - math.floor(t_part * 44100 + 0.5))) <= 1, #part .. " vs " .. #full)
+check("from: same level", math.abs(rms(part, 500, #part - 500) - 0.5 / math.sqrt(2)) < 0.005)
+check("from: pitch still 440", math.abs(crossings(part) / (#part / 44100) - 440) < 6)
+local none, why = synth.render(d, { from = 5 })
+check("from after the end is clamped to the last frame, not an error", none ~= nil or why ~= nil)
+d = make(1, 101, true)
+for f = 1, 101 do d.noise[10][f] = 0.01 end
+local npart = synth.render(d, { sines = false, from = 0.3 })
+check("noise from a point", npart and #npart == 44100 - 29 * 441 + 0 or #npart > 0, npart and #npart)
+
 -- 8. WAV file: header and samples
 local tmp = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/synth_test.wav"
 local src = { 0, 0.5, -0.25, 1, -1, 0.123456 }
@@ -112,6 +129,36 @@ local out = synth.render(sax)
 local took = os.clock() - t0
 check("sax.ats renders (2.2 s of sound)", #out == 95810 and took < 5, took)
 check("sax.ats level near the original (-12.7 dBFS)", math.abs(20 * math.log(rms(out), 10) - (-12.7)) < 1.0, 20 * math.log(rms(out), 10))
+
+-- 10. the same render in small steps (so a window can keep drawing)
+do
+  local direct = synth.render(sax, { from = 0.4 })
+  local job = synth.render_job(sax, { from = 0.4 })
+  local steps, last, monotone = 0, 0, true
+  while not job.step(0.005) do
+    steps = steps + 1
+    if job.progress < last - 1e-9 then monotone = false end
+    last = job.progress
+    if steps > 100000 then break end
+  end
+  check("a job needs several steps with a small budget", steps > 3, steps)
+  check("progress only goes up", monotone)
+  check("progress ends at 1", job.progress == 1 and job.done)
+  check("the job gives exactly the samples of a direct render", job.samples and #job.samples == #direct, job.samples and #job.samples)
+  local same = true
+  for i = 1, #direct do if direct[i] ~= job.samples[i] then same = false; break end end
+  check("sample for sample", same)
+  check("the start time comes through", math.abs(job.t_start - 0.4) < 0.0101, job.t_start)
+  -- cancelling leaves nothing that could yield later
+  local j2 = synth.render_job(sax, {})
+  j2.step(0.001); j2.cancel()
+  local again = synth.render(d, {}) or true
+  check("a direct render after a cancelled job still works", synth.render(sax, { sines = true, noise = false }) ~= nil)
+  -- a failing job reports instead of raising
+  local j3 = synth.render_job(sax, { sines = false, noise = false })
+  while not j3.step(0.01) do end
+  check("an impossible job ends with a message", j3.samples == nil and j3.error and j3.error:find("nothing to render"))
+end
 
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

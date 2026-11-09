@@ -26,15 +26,21 @@ M.NOISE_GAIN = 0.30           -- calibrated against Csound's atsaddnz on example
 local EDGES = { 0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720,
                 2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 15500, 20000 }
 
+-- A render can run in small steps (render_job below): while one runs, `hook` is called with how far it is (0..1) and
+-- may yield. The loops call tick() at convenient points; `base` and `span` place the current part (sines, noise) in 0..1.
+local hook = nil
+local base, span = 0, 1
+local function tick(frac) if hook then hook(base + span * frac) end end
+
 -- Adds all partials into out[1..n].
-local function add_sines(d, out, n)
+local function add_sines(d, out, n, k0)
   local fs = floor(d.frame_size + 0.5)
   local w_scale = TWO_PI / d.sr
   for p = 1, d.partials do
     local amp, frq = d.amp[p], d.frq[p]
     local phase = 0
-    for k = 1, d.frames - 1 do
-      local base = (k - 1) * fs
+    for k = k0, d.frames - 1 do
+      local base = (k - k0) * fs
       if base >= n then break end
       local a0, a1, f0, f1 = amp[k], amp[k + 1], frq[k], frq[k + 1]
       if (a0 > 0 or a1 > 0) and (f0 > 0 or f1 > 0) then
@@ -52,6 +58,7 @@ local function add_sines(d, out, n)
         phase = phase % TWO_PI
       end
     end
+    tick(p / d.partials)
   end
 end
 
@@ -80,7 +87,7 @@ local function make_rng(seed)
 end
 
 -- Adds the noise bands into out[1..n].
-local function add_noise(d, out, n, seed)
+local function add_noise(d, out, n, seed, k0)
   local fs = floor(d.frame_size + 0.5)
   local nyq = d.sr / 2
   local rng = make_rng(seed)
@@ -88,7 +95,7 @@ local function add_noise(d, out, n, seed)
   for b = 1, 25 do
     local nb = d.noise[b]
     local any = false
-    for f = 1, d.frames do if nb[f] > 0 then any = true; break end end
+    for f = k0, d.frames do if nb[f] > 0 then any = true; break end end
     local lo, hi = EDGES[b], EDGES[b + 1]
     if any and lo < nyq * 0.98 then
       hi = math.min(hi, nyq * 0.98)
@@ -106,6 +113,7 @@ local function add_noise(d, out, n, seed)
       end
       local noise, sumsq = {}, 0
       for i = 1, n do
+        if i % 16384 == 0 then tick((b - 1 + i / n * 0.8) / 25) end
         local x = rng()
         for s = 1, #stages do
           local st = stages[s]
@@ -118,8 +126,8 @@ local function add_noise(d, out, n, seed)
         sumsq = sumsq + x * x
       end
       local norm = (sumsq > 0) and (1 / sqrt(sumsq / n)) or 0          -- unit RMS
-      for k = 1, d.frames - 1 do
-        local base = (k - 1) * fs
+      for k = k0, d.frames - 1 do
+        local base = (k - k0) * fs
         if base >= n then break end
         local e0, e1 = nb[k], nb[k + 1]
         if e0 > 0 or e1 > 0 then
@@ -134,25 +142,66 @@ local function add_noise(d, out, n, seed)
         end
       end
     end
+    tick(b / 25)
   end
 end
 
--- Renders d. opts: sines (default true), noise (default true; needs noise data), seed.
--- Returns samples (a 1-based Lua array) and the sample rate, or nil plus a message.
+-- Renders d. opts: sines (default true), noise (default true; needs noise data), seed, from (seconds: start there; the start
+-- is moved back to the beginning of its frame). Returns samples (a 1-based Lua array), the sample rate and the time in the
+-- sound at which the samples start, or nil plus a message.
 function M.render(d, opts)
   opts = opts or {}
   local use_sines = opts.sines ~= false
   local use_noise = (opts.noise ~= false) and d.has_noise
   if not use_sines and not use_noise then return nil, "nothing to render (sines and noise are both off)" end
-  local n = floor(d.dur * d.sr)
-  local last = (d.frames - 1) * floor(d.frame_size + 0.5)
-  if last < n then n = last end
-  if n < 1 then return nil, "the file has no sound" end
+  local fs = floor(d.frame_size + 0.5)
+  local n_total = floor(d.dur * d.sr)
+  local last = (d.frames - 1) * fs
+  if last < n_total then n_total = last end
+  if n_total < 1 then return nil, "the file has no sound" end
+  local k0 = 1
+  if opts.from and opts.from > 0 then k0 = math.min(1 + floor(opts.from * d.sr / fs + 1e-6), d.frames - 1) end
+  local n = n_total - (k0 - 1) * fs
+  if n < 1 then return nil, "nothing to play after this point" end
   local out = {}
   for i = 1, n do out[i] = 0 end
-  if use_sines then add_sines(d, out, n) end
-  if use_noise then add_noise(d, out, n, opts.seed) end
-  return out, d.sr
+  local both = use_sines and use_noise
+  if use_sines then base, span = 0, both and 0.15 or 1; add_sines(d, out, n, k0) end
+  if use_noise then base, span = both and 0.15 or 0, both and 0.85 or 1; add_noise(d, out, n, opts.seed, k0) end
+  base, span = 0, 1
+  return out, d.sr, (k0 - 1) * fs / d.sr
+end
+
+-- The same render, in steps, so that a window can keep drawing while it runs. job.step(seconds) works for about that long
+-- (CPU time) and returns true when the job is finished; job.progress is 0..1; when done, job.samples, job.sr and job.t_start
+-- are the results of M.render (job.samples is nil and job.error the message when it failed); job.cancel() drops it.
+-- Only one job may run at a time.
+function M.render_job(d, opts)
+  local job = { progress = 0, done = false }
+  local deadline = 0
+  local co = coroutine.create(function()
+    hook = function(frac)
+      job.progress = frac
+      if os.clock() >= deadline and coroutine.isyieldable() then coroutine.yield() end
+    end
+    local samples, sr, t_start = M.render(d, opts)
+    hook = nil
+    if samples then job.samples, job.sr, job.t_start = samples, sr, t_start else job.error = sr end
+    job.progress, job.done = 1, true
+  end)
+  function job.step(budget)
+    if job.done then return true end
+    deadline = os.clock() + (budget or 0.03)
+    local ok, err = coroutine.resume(co)
+    if not ok then hook = nil; job.error, job.done = tostring(err), true end
+    return job.done
+  end
+  function job.cancel()
+    hook = nil
+    base, span = 0, 1
+    job.done, job.cancelled = true, true
+  end
+  return job
 end
 
 -- Writes a mono 32-bit float WAV file.

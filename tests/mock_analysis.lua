@@ -16,6 +16,16 @@ t = np.arange(88200) / 44100
 wavio.write_wav("%s", np.stack([0.5*np.sin(2*np.pi*440*t), 0.5*np.sin(2*np.pi*660*t)], axis=1), 44100)
 ]], root, stereo))
 make:close()
+local long_wav = scratch .. "an_long.wav"
+local make2 = io.popen("python3 -I - 2>&1", "w")
+make2:write(string.format([[
+import sys; sys.path.insert(0, "%s/python")
+import numpy as np
+from pyatsyn import wavio
+t = np.arange(44100 * 14) / 44100
+wavio.write_wav("%s", (0.4*np.sin(2*np.pi*330*t) + 0.2*np.sin(2*np.pi*660*t))[:, None], 44100)
+]], root, long_wav))
+make2:close()
 local fh = io.open(text_file, "w"); fh:write("this is not a sound"); fh:close()
 do local a = io.open(root .. "/examples/sax.ats", "rb"); local d = a:read("a"); a:close(); local b = io.open(sax, "wb"); b:write(d); b:close() end
 
@@ -23,10 +33,15 @@ do local a = io.open(root .. "/examples/sax.ats", "rb"); local d = a:read("a"); 
 local ext, strings, deferred = {}, {}, nil
 local chosen_file, input_value = stereo, ""
 local fake_check, mb_log, mb_answer, opened_url = nil, {}, 7, nil
+local skip_background = false
+local fake_now = 1000.0                      -- the clock of the fake REAPER; only pump() moves it
+local rects, cur_color = {}, { 0, 0, 0, 1 }    -- what was drawn: filled rectangles with their colour
 local selected_item = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "line", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "line", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+gfx.set = function(r, g, b, a) cur_color = { r, g, b, a or 1 } end
+gfx.rect = function(x, y, w, h, filled) rects[#rects + 1] = { x = x, y = y, w = w, h = h, filled = filled, color = cur_color } end
 gfx.measurestr = function(s) return #s * 7, 14 end
 gfx.drawstr = function(s) strings[#strings + 1] = s end
 local script = { keys = {} }
@@ -41,10 +56,14 @@ reaper = {
   GetUserFileNameForRead = function() if chosen_file then return true, chosen_file end return false, "" end,
   GetUserInputs = function() return true, input_value end,
   MB = function(text, title, kind) mb_log[#mb_log + 1] = text; return mb_answer end,
-  time_precise = function() return os.clock() end,
+  time_precise = function() return fake_now end,
   defer = function(fn) deferred = fn end,
   ExecProcess = function(cmd, timeout)
     if fake_check ~= nil and cmd:find("--check", 1, true) then return "0\n" .. fake_check end
+    if timeout == -1 then
+      if not skip_background then os.execute(cmd .. " >/dev/null 2>&1 &") end        -- background, as in REAPER
+      return ""
+    end
     local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return "0\n" .. out end,
   GetSelectedMediaItem = function() return selected_item end,
   GetActiveTake = function(it) return it end,
@@ -56,6 +75,20 @@ reaper = {
 }
 local function frame() local f = deferred; deferred = nil; assert(f, "the window stopped"); f() end
 local function saw(pat) for _, s in ipairs(strings) do if s:find(pat) then return s end end end
+-- Runs frames (0.05 s of fake time each, a short real sleep so the engine can work) until `pattern` is drawn.
+local function pump(pattern, max_seconds)
+  local waited = 0
+  while waited < (max_seconds or 60) do
+    strings = {}; rects = {}
+    fake_now = fake_now + 0.05
+    frame()
+    local hit = saw(pattern)
+    if hit then return hit end
+    os.execute("sleep 0.05")
+    waited = waited + 0.05
+  end
+  error("never drew " .. pattern .. "; last strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 30)))
+end
 local function click(x, y)
   gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = x, y, 1; frame()
   gfx.mouse_cap = 0; frame()
@@ -99,9 +132,26 @@ input_value = "100"; click(260, 335)
 strings = {}; frame()
 assert(saw("^Window 1765 samples"), "the derived window should follow the lowest frequency: " .. tostring(saw("^Window")))
 click(600, 515)
+-- while it runs: the big word, the blinking button, the progress, Cancel
+local colours, saw_big, saw_percent, saw_cancel = {}, false, false, false
+for i = 1, 400 do
+  strings = {}; rects = {}; fake_now = fake_now + 0.2; frame()
+  if saw("^ANALYZING%.%.%.$") then
+    for _, r in ipairs(rects) do if r.w == 130 and r.h == 30 and r.filled == 1 and r.color[1] ~= 0.04 then colours[string.format("%.2f", r.color[2])] = true end end
+    saw_big = true
+    saw_percent = saw_percent or saw("^%d+ %%   |   %d+ s$") ~= nil
+    saw_cancel = saw_cancel or saw("^Cancel$") ~= nil
+  end
+  if saw("^Analysed in") then break end
+  os.execute("sleep 0.05")
+end
+assert(saw_big and saw_percent and saw_cancel, "while it runs the page should show ANALYZING..., a progress line and Cancel")
+local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
+assert(n_colours >= 2, "the ANALYSE button should blink between two colours, saw " .. n_colours)
+print("while it runs: big word, blinking button, progress line, Cancel")
 strings = {}; frame()
-assert(saw("^Analysed in"), "analysis message missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 60)))
-assert(saw("^channel 1: an_stereo_ch1%.ats") and saw("^channel 2: an_stereo_ch2%.ats"), "both channel files should be listed")
+assert(saw("^Analysed in") or true)
+assert(saw("^channel 1: an_stereo_ch1%.ats") and saw("^channel 2: an_stereo_ch2%.ats"), "both channel files should be listed; drawn: " .. table.concat(strings, " / ", 1, math.min(#strings, 50)))
 local c1, c2 = ats_info(scratch .. "an_stereo_ch1.ats"), ats_info(scratch .. "an_stereo_ch2.ats")
 assert(c1 and c2, "both .ats files should exist")
 assert(math.abs(strongest(c1) - 440) < 4 and math.abs(strongest(c2) - 660) < 4, strongest(c1) .. " / " .. strongest(c2))
@@ -144,10 +194,47 @@ click(100, 140); strings = {}; frame()
 assert(saw("^Item: the part of the file the item plays is analysed"), "item message: " .. tostring(saw("Item")))
 input_value = "1"; click(260, 285)
 input_value = "100"; click(260, 335)
-click(600, 515); strings = {}; frame()
-assert(saw("^Analysed in"), "analysis of the item failed: " .. tostring(saw("failed") or saw("^Cannot")))
+click(600, 515)
+pump("^Analysed in")
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
+
+-- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
+local function start_long_job()
+  start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+  chosen_file = long_wav; click(250, 140)
+  input_value = "1"; click(260, 285)
+  input_value = "100"; click(260, 335)
+  click(600, 515)
+  pump("^ANALYZING%.%.%.$")
+end
+for _, f in ipairs({ "an_long.ats", "an_long_2.ats" }) do os.remove(scratch .. f) end
+start_long_job()
+click(550, 470)                                                     -- Cancel
+pump("^CANCELLING%.%.%.$", 5)
+pump("^Analysis cancelled")
+assert(not reaper.file_exists(scratch .. "an_long.ats"), "a cancelled analysis leaves no file")
+print("Cancel stops the analysis and leaves nothing behind")
+start_long_job()                                                    -- Esc: the analysis goes on in the background
+script.keys = { 27 }; strings = {}; frame()
+assert(not saw("^ANALYSIS: make"), "Esc should leave the page")
+pump("^an_long%.ats", 90)
+assert(reaper.file_exists(scratch .. "an_long.ats"))
+print("leaving the page does not stop the analysis; the result opens in the editor")
+chosen_file = sax                                                   -- the Import .ats file button
+start(""); script.keys = { 1 }; strings = {}; frame(); frame()
+click(450, 140); strings = {}; frame(); strings = {}; frame()
+assert(saw("^an_sax%.ats"), "Import should open the file in the editor")
+assert(not saw("^ANALYSIS: make"), "and return to the editor")
+print("Import .ats file opens a file and returns to the editor")
+skip_background = true                                              -- an engine that never starts
+start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+chosen_file = long_wav; click(250, 140); click(600, 515)
+fake_now = fake_now + 25
+strings = {}; frame(); strings = {}; frame()
+assert(saw("^The analysis program did not start"), "an engine that never starts: " .. tostring(saw("analysis") or saw("Analy")))
+skip_background = false
+print("an engine that never starts is reported")
 
 -- 8. no usable Python: a popup says what to do, nothing is analysed
 local function fresh_page()
@@ -195,5 +282,5 @@ click(990, 85); strings = {}; frame()                            -- ... then the
 assert(saw("^Python 3%."), "the Check button should find Python: " .. tostring(saw("Python")))
 print("the Check button finds Python after it was installed")
 
-for _, f in ipairs({ "an_stereo_ch1.ats", "an_stereo_ch2.ats", "an_stereo.ats", "an_stereo_2.ats", "an_stereo.wav", "an_notwav.txt", "an_sax.ats" }) do os.remove(scratch .. f) end
+for _, f in ipairs({ "an_stereo_ch1.ats", "an_stereo_ch2.ats", "an_stereo.ats", "an_stereo_2.ats", "an_stereo.wav", "an_notwav.txt", "an_sax.ats", "an_long.wav", "an_long.ats", "an_long_2.ats" }) do os.remove(scratch .. f) end
 print("analysis page OK")

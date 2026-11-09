@@ -26,6 +26,8 @@ The first time, ReaATS asks for an .ats file. After that it reopens the file you
 
 The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analysis page. It is there even when no .ats file is open yet. The page analyses a sound into .ats files and opens the result in the editor. Esc, or the BACK button, returns to the editor.
 
+**Importing an .ats file.** The button Import .ats file... on the page opens an existing .ats file, for example one that you made with Csound, and returns to the editor. It does the same as the O key in the editor.
+
 **Choosing the sound.** Select an audio item in REAPER and click Use selected item. Only the part of the file that the item plays is analysed, from its start offset for its length. Volume, fades, effects and pitch changes on the item are not applied, because the analysis reads the file itself. Or click Choose WAV file... and pick any WAV file. The sound must be a WAV file (PCM, 8 to 32 bit, or float). If the item's file is another format, render it to WAV first (Glue, or File, Render) and select the new item. The page shows the sample rate, the channels and the length of the sound.
 
 **The options.** The page has every option of the analysis. Click a value to type a new one, or point at it and use the mouse wheel (Shift for finer steps). Point at an option to see a short explanation at the bottom. The line under the options shows what the settings mean for this sound: the window length in samples and milliseconds, the FFT size, the hop and the number of frames. It warns when the window is longer than the part that is analysed.
@@ -35,6 +37,7 @@ The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analys
 | Start, Duration | Where to start and how long to analyse, in seconds. 0 means the whole sound. | 0 |
 | Channels to analyse | How many channels are analysed, each into a file of its own (see below). | 1 |
 | Mix all channels to mono first | Analyse the average of all channels as one sound. | off |
+| CPU cores | How many channels are analysed at the same time, one per core. 0 is automatic: all cores but two, so that REAPER keeps room to play, and at least one. Next to the box the page shows how many run at once. It does nothing for a single channel. | 0 |
 | Lowest frequency | The analysis window is four cycles of this frequency long, so a low value gives a long window: good frequency detail, but fast changes are smeared in time. Set it a little below the lowest note in the sound. | 20 Hz |
 | Highest frequency | The highest frequency analysed. | 20000 Hz |
 | Window cycles | How many periods of the lowest frequency fit in the window. | 4 |
@@ -50,9 +53,9 @@ The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analys
 
 The buttons Defaults and Csound defaults reset the options. Csound's analyser differs in one default only: the SMR contribution is 0.5. Your settings are remembered the next time. Csound's analyser has two options that this one has not: the SMR threshold and the minimum segment SMR.
 
-**Analysing.** Click ANALYSE. REAPER waits until the analysis is done, which takes a second or two for a short sound. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
+**Analysing.** Click ANALYSE. The analysis runs in the background while the page shows it at work: the page is dimmed, the big word ANALYZING... blinks, the ANALYSE button blinks, and a bar shows how far the analysis is, with the percentage and the seconds so far. Cancel stops the analysis and leaves no file behind. You can also leave the page with Esc: the analysis goes on, and the result opens in the editor when it is done. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
 
-**Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The editor opens the first channel. The Open buttons on the page open the others, one at a time. Editing channels together is not built yet.
+**Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The channels are analysed at the same time on separate cores of your computer, so a set of channels takes much less time than one channel after the other: in a test, 8 channels of 20 seconds took 11 seconds instead of 30. The result is exactly the same files as when the channels are analysed one after the other. The files only get their real names when every channel is done, so a cancelled analysis leaves nothing behind and does not touch a file that was there before. The editor opens the first channel. The Open buttons on the page open the others, one at a time. Editing channels together is not built yet.
 
 **What it needs.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3.8 or newer and the numpy package on your computer, and nothing else. REAPER users usually have Python already. ReaATS looks for it in the place REAPER is set to use for ReaScript (Options, Preferences, Plug-ins, ReaScript), and then in the usual places. The top right of the Analysis page shows which Python it found and which numpy, and a Check button looks again.
 
@@ -73,6 +76,7 @@ The picture is time from left to right and frequency from bottom to top, on a lo
 - The line at the top gives the file name, the number of partials and frames, the length, the sample rate and the distance between frames. A star after the name means there are changes that have not been saved.
 - Moving the mouse over the picture shows the time, the frequency and the note name. When the mouse is close to a partial, that partial turns white and its number, frequency and level are shown.
 - Selected points are pink.
+- The playhead is a yellow line across the picture, with a marker on the time ruler and its time in a small label. It shows where AUDITION starts, and it moves while the sound plays.
 - A green message on the third line at the top reports what the last action did. The buttons AUDITION, PRINT and EXPORT .ats and the Noise layer checkbox are at the top right.
 
 ## Looking around
@@ -121,7 +125,9 @@ O opens another file. R loads the file you opened again from disk and drops all 
 
 ## Listening: AUDITION
 
-The AUDITION button, or the A key, plays the edited sound. ReaATS builds the sound from the current data, the sines from the partials and the noise from the 25 noise bands, writes it to a temporary WAV file and plays that through REAPER's preview. Your project is not touched. REAPER waits while the sound is made: for two seconds of sound it takes about a tenth of a second for the sines and about a second more for the noise bands, and longer sounds take proportionally longer. Space stops the sound.
+The AUDITION button, or the A key, plays the edited sound. ReaATS builds the sound from the current data, the sines from the partials and the noise from the 25 noise bands, writes it to a temporary WAV file and plays that through REAPER's preview. Your project is not touched. The sound is made first, which takes a moment: for two seconds of sound about a tenth of a second for the sines and about a second more for the noise bands, and longer sounds take proportionally longer. While it is being made, the AUDITION button blinks, a small bar with the percentage shows under the button, and the status line shows how far it is, so you know the sound will start soon. The sound starts by itself when it is ready. Space stops the sound, and cancels the sound that is still being made. If you change the data while the sound is being made, it is cancelled too, because it would not match any more.
+
+**The playhead.** AUDITION starts at the playhead. Click anywhere in the picture, on empty space, to put the playhead there. That click also clears the selection. You can also click on the time ruler, the strip with the seconds under the picture, or drag along the ruler to move the playhead. While the sound plays, the playhead moves along the picture. When the sound ends, or when you stop it with Space, the playhead goes back to where you put it, so you can listen to the same place again. The sound starts at the beginning of the analysis frame that holds the playhead, which is at most one frame, 10 ms in the example file, before it. PRINT also starts at the playhead (see below).
 
 What you hear follows what you see. With P off you hear only the noise, with N off only the sines, and with both off nothing is played. This lets you listen to the two parts of a sound separately.
 
@@ -129,7 +135,9 @@ The sines come out at the level of the original. The noise bands are about 30 dB
 
 ## Putting the result in the project: PRINT
 
-The PRINT button, or Ctrl+P, turns the current sound into a sample on a track. ReaATS first saves unsaved changes as name_edit.ats, then renders a permanent WAV next to the .ats file, called name_print1.wav, and puts it on the selected track at the edit cursor. If no track is selected, a new track called ReaATS is made. Each press makes a new numbered file, and nothing is overwritten.
+The PRINT button, or Ctrl+P, turns the current sound into a sample on a track. The sound is made first, as for AUDITION: the PRINT button blinks and a bar with the percentage shows under it. Esc cancels a print that is still being made, and so does a change to the data. ReaATS first saves unsaved changes as name_edit.ats, then renders a permanent WAV next to the .ats file, called name_print1.wav, and puts it on the selected track at the edit cursor. If no track is selected, a new track called ReaATS is made. Each press makes a new numbered file, and nothing is overwritten.
+
+PRINT starts at the playhead, like AUDITION: the printed sound runs from the playhead to the end of the sound, so with the playhead at 0 you get the whole sound. The status line says where the print started, for example "printed 1.2 s from 1.00 s". As for AUDITION, the sound starts at the beginning of the analysis frame that holds the playhead. ReaATS remembers the start with the item, and when ReaSnap restores a snapshot the playhead comes back to it.
 
 The WAV lives next to the .ats file and not inside the project. Copy it with the project if you move the project to another computer.
 
@@ -159,9 +167,10 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Ctrl+S | Save as name_edit.ats. |
 | EXPORT .ats, Ctrl+Shift+S | Export an .ats file: choose the folder and the name. |
 | ANALYSE, Ctrl+A | Open the Analysis page. |
-| A, AUDITION | Play the edited sound. |
+| A, AUDITION | Play the edited sound, from the playhead. |
+| Click on the picture, or click or drag on the time ruler | Set the playhead. |
 | Space | Stop the sound. |
-| Ctrl+P, PRINT | Put the edited sound on a track. |
+| Ctrl+P, PRINT | Put the edited sound on a track, from the playhead. |
 | P, N | Show or hide the partials, the noise. This also decides what is heard. |
 | F, Home | Fit the view. |
 | O, R | Open a file, reload the file. |

@@ -25,6 +25,9 @@ local FIELDS = {
                           tip = "How much of the sound is analysed." },
   channels            = { kind = "num", label = "Channels to analyse", unit = "", min = 1, max = 64, step = 1, def = 1, int = true, cli = "--channels",
                           tip = "Each channel is analysed on its own into its own .ats file (name_ch1.ats, name_ch2.ats, ...)." },
+  jobs                = { kind = "num", label = "CPU cores (0 = automatic)", unit = "", min = 0, max = 256, step = 1, def = 0, int = true,
+                          cli = "--jobs", omit_zero = true,
+                          tip = "Channels are analysed at the same time, one per core. Automatic uses all cores but two (at least one). A single channel uses one core." },
   mono_mix            = { kind = "bool", label = "Mix all channels to mono first", def = false, flag = "--mono-mix",
                           tip = "Analyse the average of all channels as one sound." },
   lowest_frequency    = { kind = "num", label = "Lowest frequency", unit = "Hz", min = 1, max = 20000, step = 5, def = 20, cli = "--lowest-frequency",
@@ -70,7 +73,7 @@ local FIELDS = {
 }
 
 local LEFT = { "start", "duration", "channels", "mono_mix", "lowest_frequency", "highest_frequency", "window_cycles",
-               "window_type", "window_alpha", "window_beta", "hop_size", "fft_size", "window_length" }
+               "window_type", "window_alpha", "window_beta", "hop_size", "fft_size", "window_length", "jobs" }
 local RIGHT = { "amp_threshold_db", "frequency_deviation", "track_length", "min_segment_length", "min_gap_length",
                 "last_peak_contribution", "smr_continuity", "optimize", "optimize_threshold_db" }
 local OUTPUT = { "store_phase", "store_noise" }
@@ -106,6 +109,14 @@ function M.output_files(path, n)
   return list
 end
 
+-- How many channels are analysed at the same time (the same rule as the engine): the number asked for, or all cores but two,
+-- never more than the number of channels and never fewer than one.
+function M.workers(s, cores, channels)
+  local count = s.mono_mix and 1 or (channels or s.channels)
+  local jobs = (s.jobs and s.jobs > 0) and s.jobs or math.max(1, (cores or 1) - 2)
+  return math.max(1, math.min(jobs, count))
+end
+
 -- What the window will be like, from the sound and the settings (the same arithmetic as the engine).
 function M.derived(s, info)
   if not info then return nil end
@@ -128,7 +139,7 @@ function M.derived(s, info)
 end
 
 -- The engine's command line, one argument per entry (written one per line to an argument file, so nothing needs quoting).
-function M.build_args(s, wav, out)
+function M.build_args(s, wav, out, result_file)
   local a = { wav, out }
   local function add(...) for _, v in ipairs({ ... }) do a[#a + 1] = tostring(v) end end
   for _, key in ipairs(ORDER) do
@@ -143,6 +154,7 @@ function M.build_args(s, wav, out)
     end
   end
   add("--summary-format", "lua")
+  if result_file then add("--result-file", result_file) end
   return a
 end
 
@@ -276,7 +288,7 @@ function Page:find_python(force)
       local status, py, extra = reply:match("CHECK (%a+) ?(%S*) ?(%S*)")
       local version = reply:match("python=(%S+)")
       if status == "ok" then
-        self.python = { exe = exe, version = version, numpy = reply:match("numpy=(%S+)") }
+        self.python = { exe = exe, version = version, numpy = reply:match("numpy=(%S+)"), cores = tonumber(reply:match("cores=(%d+)")) }
         self.python_problem = nil
         reaper.SetExtState(self.env.ext_section, "python_exe", exe, true)
         return true
@@ -450,10 +462,6 @@ function Page:run()
   end
   local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
   local argsfile = dir .. "/reaats_analysis_args.txt"
-  local fh = io.open(argsfile, "w")
-  if not fh then self:say("Cannot write " .. argsfile, true); return end
-  fh:write(table.concat(M.build_args(s, self.wav, out), "\n"), "\n")
-  fh:close()
   local engine = self.env.script_dir .. "/python/reaats_analyse.py"
   if not reaper.file_exists(engine) then self:say("The analysis program is missing: " .. engine, true); return end
   if not self:find_python() then
@@ -461,27 +469,31 @@ function Page:run()
     self:python_popup()
     return
   end
-  self.busy = true
-  self:say("Analysing ... REAPER waits until it is done.")
-  self.env.redraw()
-  local t0 = reaper.time_precise()
-  local reply = reaper.ExecProcess(string.format("%s %s @%s", q(self.python.exe), q(engine), q(argsfile)), 600000)
-  local took = reaper.time_precise() - t0
-  self.busy = false
-  os.remove(argsfile)
+  -- start the engine in the background (ExecProcess with -1 returns at once); the page polls its files each frame
+  local result = dir .. "/reaats_analysis_result.txt"
+  for _, f in ipairs({ result, result .. ".started", result .. ".cancel", result .. ".tmp" }) do os.remove(f) end
+  local fh = io.open(argsfile, "w")
+  if not fh then self:say("Cannot write " .. argsfile, true); return end
+  fh:write(table.concat(M.build_args(s, self.wav, out, result), "\n"), "\n")
+  fh:close()
+  reaper.ExecProcess(string.format("%s %s @%s", q(self.python.exe), q(engine), q(argsfile)), -1)
+  self.job = { result = result, started = result .. ".started", cancel = result .. ".cancel", argsfile = argsfile,
+               t0 = reaper.time_precise(), progress = 0, seen_start = false, cancelling = false }
+  self:say(nil)
+end
+
+-- What the engine answered (the text of the result file): open the result, or say what went wrong.
+function Page:handle_reply(reply, took)
   reply = reply or ""
   local result_text = reply:match("RESULT (%b{})")
   local summary = result_text and self.env.serial.deserialize(result_text)
   if type(summary) ~= "table" or type(summary.files) ~= "table" or #summary.files == 0 then
     local err = reply:match("ERROR ([^\n]*)")
     if not err then
-      if reply == "" then
-        err = "The analysis program did not answer."
-      else
-        err = (reply:gsub("%s+", " "):sub(1, 220))
-      end
+      if reply == "" then err = "The analysis program did not answer."
+      else err = (reply:gsub("%s+", " "):sub(1, 220)) end
     end
-    self:say("Analysis failed: " .. err, true)
+    if err == "cancelled" then self:say("Analysis cancelled.") else self:say("Analysis failed: " .. err, true) end
     return
   end
   summary.seconds_taken = took
@@ -492,6 +504,57 @@ function Page:run()
   self:say(string.format("Analysed in %.1f s: %d file(s). %s", took, #summary.files,
     opened and ("Channel 1 is open in the editor (" .. basename(first.file) .. ").") or "The first file could not be opened."), not opened)
   self.env.set_status(string.format("analysed %s: %d partials, %d frames (%.1f s)", basename(first.file), first.partials, first.frames, took))
+end
+
+local function read_all(path)
+  local fh = io.open(path, "r")
+  if not fh then return nil end
+  local t = fh:read("a")
+  fh:close()
+  return t
+end
+
+-- Called every frame by the editor: looks at what the background analysis has written.
+function Page:poll()
+  local job = self.job
+  if not job then return end
+  local now = reaper.time_precise()
+  if reaper.file_exists(job.result) then
+    local reply = read_all(job.result)
+    for _, f in ipairs({ job.result, job.started, job.cancel, job.argsfile }) do os.remove(f) end
+    self.job = nil
+    self:handle_reply(reply, now - job.t0)
+    return
+  end
+  local p = tonumber(read_all(job.started) or "")
+  if p then job.progress, job.seen_start = p, true end
+  if not job.seen_start and now - job.t0 > 20 then
+    self.job = nil
+    self.python = nil                                           -- look again next time
+    self:say("The analysis program did not start. Is Python installed? (Python was not found to run it.)", true)
+  elseif now - job.t0 > 3600 then
+    self.job = nil
+    self:say("The analysis took more than an hour and was given up.", true)
+  end
+end
+
+function Page:cancel_job()
+  local job = self.job
+  if not job or job.cancelling then return end
+  local fh = io.open(job.cancel, "w")
+  if fh then fh:write("stop"); fh:close() end
+  job.cancelling = true
+end
+
+function Page:import_ats()
+  local ok, path = reaper.GetUserFileNameForRead("", "Import an ATS file (.ats)", "ats")
+  if not ok or not path or path == "" then return end
+  if self.env.on_open(path) then
+    self.env.set_status("imported " .. basename(path))
+    self.env.back()
+  else
+    self:say("Could not read " .. basename(path) .. " as an ATS file.", true)
+  end
 end
 
 -- ------------------------------------------------------------------ drawing
@@ -534,6 +597,9 @@ function Page:field(x, y, key, label_w, box_w)
   gfx.x, gfx.y = bx + 6, y + 3
   gfx.drawstr(shown)
   if f.kind == "num" and f.unit ~= "" then text(bx + box_w + 6, y + 3, f.unit, 0.55, 0.58, 0.63) end
+  if key == "jobs" and self.python and self.python.cores then
+    text(bx + box_w + 6, y + 3, string.format("%d at once, of %d cores", M.workers(self.s, self.python.cores), self.python.cores), 0.55, 0.58, 0.63)
+  end
   self.hits[#self.hits + 1] = {
     x = bx, y = y, w = box_w, h = 20, tip = f.tip,
     click = function() if f.kind == "num" then self:edit_num(key) else self:pick_choice(key) end end,
@@ -577,6 +643,7 @@ function Page:draw(W, H, top)
   local ly = y + 26
   self:button(lx, ly, 160, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
   self:button(lx + 170, ly, 180, 24, "Choose WAV file...", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
+  self:button(lx + 360, ly, 160, 24, "Import .ats file...", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
   ly = ly + 32
   gfx.setfont(1, "Arial", 13)
   if self.wav then
@@ -622,7 +689,8 @@ function Page:draw(W, H, top)
     if warn then text(rx, ry + 16, "The window is longer than the part analysed: raise the lowest frequency.", 1, 0.7, 0.5) end
   end
   ry = ry + 38
-  self:button(rx, ry, 130, 30, self.busy and "ANALYSING..." or "ANALYSE", { 0.18, 0.42, 0.3 }, function() if not self.busy then self:run() end end)
+  self.analyse_box = { x = rx, y = ry, w = 130, h = 30 }
+  self:button(rx, ry, 130, 30, "ANALYSE", { 0.18, 0.42, 0.3 }, function() if not self.job then self:run() end end)
   self:button(rx + 140, ry, 110, 30, "Defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(false) end)
   self:button(rx + 260, ry, 130, 30, "Csound defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(true) end)
   self:button(rx + 400, ry, 80, 30, "BACK", { 0.4, 0.22, 0.2 }, function() self.env.back() end)
@@ -663,6 +731,47 @@ function Page:draw(W, H, top)
   end
   gfx.setfont(1, "Arial", 12)
   text(lx, H - 42, "Click a value to type it; the mouse wheel changes it (Shift: finer). Esc goes back to the editor.", 0.5, 0.53, 0.58)
+  if self.job then self:draw_busy(W, H, top) end
+end
+
+-- While the analysis runs in the background: the page is dimmed, a big word blinks, the ANALYSE button blinks, a bar shows
+-- how far it is, and Cancel stops it. Only Cancel can be clicked.
+function Page:draw_busy(W, H, top)
+  local job = self.job
+  local now = reaper.time_precise()
+  local on = (math.floor(now * 2) % 2) == 0
+  gfx.set(0.04, 0.05, 0.07, 0.72)
+  gfx.rect(0, top, W, H - top, 1)
+  self.hits = {}
+  local b = self.analyse_box
+  if b then                                                      -- the button, blinking, on top of the dimming
+    local c = on and { 0.25, 0.75, 0.45 } or { 0.10, 0.26, 0.17 }
+    gfx.set(c[1], c[2], c[3], 1); gfx.rect(b.x, b.y, b.w, b.h, 1)
+    gfx.set(0.6, 1, 0.75, 1); gfx.rect(b.x, b.y, b.w, b.h, 0)
+    gfx.setfont(1, "Arial", 14)
+    gfx.set(1, 1, 1, 1)
+    local label = "ANALYZING..."
+    gfx.x = b.x + (b.w - gfx.measurestr(label)) / 2; gfx.y = b.y + 8
+    gfx.drawstr(label)
+  end
+  local cx, cy = W / 2, top + (H - top) / 2 - 40
+  gfx.setfont(1, "Arial", 64)
+  local word = job.cancelling and "CANCELLING..." or "ANALYZING..."
+  local ww = gfx.measurestr(word)
+  if on then gfx.set(0.65, 1, 0.78, 1) else gfx.set(0.30, 0.55, 0.38, 1) end
+  gfx.x, gfx.y = cx - ww / 2, cy - 36
+  gfx.drawstr(word)
+  -- the bar
+  local bw, bh = 560, 22
+  local bx, by = cx - bw / 2, cy + 50
+  gfx.set(0.14, 0.16, 0.19, 1); gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.25, 0.75, 0.45, 1); gfx.rect(bx, by, bw * math.min(math.max(job.progress or 0, 0), 1), bh, 1)
+  gfx.set(0.5, 0.53, 0.58, 1); gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 16)
+  text(cx - 150, by + 34, string.format("%d %%   |   %d s", math.floor((job.progress or 0) * 100 + 0.5), math.floor(now - job.t0)), 0.85, 0.9, 0.95)
+  gfx.setfont(1, "Arial", 13)
+  text(cx - 150, by + 62, "You can leave this page (Esc): the analysis goes on and the result opens in the editor.", 0.6, 0.63, 0.68)
+  self:button(cx - 50, by + 90, 100, 28, job.cancelling and "..." or "Cancel", { 0.5, 0.22, 0.2 }, function() self:cancel_job() end)
 end
 
 -- Mouse state from the editor each frame. Returns true when the page used the click.

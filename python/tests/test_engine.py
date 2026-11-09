@@ -283,7 +283,128 @@ class Engine(unittest.TestCase):
     def test_check_says_whether_this_python_can_analyse(self):
         r = run_cli("--check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertRegex(r.stdout.strip(), r"^CHECK ok python=\d+\.\d+\.\d+ numpy=\S+$")
+        self.assertRegex(r.stdout.strip(), r"^CHECK ok python=\d+\.\d+\.\d+ numpy=\S+ cores=\d+$")
+
+    def test_background_mode_reports_progress_and_the_result(self):
+        import time
+        w = self.wav("bg.wav", [tone(440, seconds=6.0), tone(660, seconds=6.0)][0:1])
+        res = os.path.join(self.dir, "bg.result")
+        out = os.path.join(self.dir, "bg.ats")
+        proc = subprocess.Popen([sys.executable, "-I", CLI, w, out, "--lowest-frequency", "100", "--result-file", res,
+                                 "--summary-format", "lua"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        seen = []
+        t0 = time.time()
+        while proc.poll() is None and time.time() - t0 < 60:
+            try:
+                seen.append(float(read_bytes(res + ".started").decode()))
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.01)
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(os.path.exists(res), "the result file must exist when the program is done")
+        self.assertTrue(read_bytes(res).decode().startswith("RESULT {input_channels=1,files={{file="))
+        self.assertEqual(float(read_bytes(res + ".started").decode()), 1.0)
+        self.assertGreater(len(set(seen)), 3, "progress should move: %r" % seen[:10])
+        self.assertEqual(seen, sorted(seen), "progress must not go backwards")
+
+    def test_background_mode_can_be_cancelled(self):
+        import time
+        w = self.wav("cx.wav", [tone(440, seconds=8.0)])
+        res = os.path.join(self.dir, "cx.result")
+        out = os.path.join(self.dir, "cx.ats")
+        proc = subprocess.Popen([sys.executable, "-I", CLI, w, out, "--lowest-frequency", "100", "--result-file", res],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t0 = time.time()
+        while not os.path.exists(res + ".started") and time.time() - t0 < 20:
+            time.sleep(0.01)
+        time.sleep(0.15)
+        write_bytes(res + ".cancel", b"stop")
+        proc.wait(timeout=60)
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(read_bytes(res).decode().strip(), "ERROR cancelled")
+        self.assertFalse(os.path.exists(out), "a cancelled analysis leaves no file")
+
+    def test_background_mode_reports_errors(self):
+        w = self.wav("be.wav", [tone(440, seconds=0.5)])
+        res = os.path.join(self.dir, "be.result")
+        r = run_cli(w, os.path.join(self.dir, "be.ats"), "--channels", 5, "--result-file", res)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR the file has 1 channel(s)", read_bytes(res).decode())
+
+    def voice(self, f0, seconds):
+        sr = 44100
+        tt = np.arange(int(sr * seconds)) / sr
+        phase = 2 * np.pi * (f0 * tt + (3.0 / (2 * np.pi * 5)) * (1 - np.cos(2 * np.pi * 5 * tt)))
+        y = sum((0.3 / h) * np.sin(h * phase) for h in range(1, 12)) * (0.6 + 0.4 * np.sin(2 * np.pi * 0.4 * tt))
+        return y + 1e-3 * np.random.default_rng(int(f0)).standard_normal(len(tt))
+
+    def test_parallel_channels_give_exactly_the_same_files(self):
+        w = self.wav("par.wav", [self.voice(200, 4), self.voice(300, 4), self.voice(450, 4)])
+        files = {}
+        for jobs in (1, 3, 0):
+            out = os.path.join(self.dir, "j%d.ats" % jobs)
+            r = run_cli(w, out, "--channels", 3, "--lowest-frequency", 100, "--jobs", jobs)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            files[jobs] = [read_bytes(os.path.join(self.dir, "j%d_ch%d.ats" % (jobs, c))) for c in (1, 2, 3)]
+        self.assertEqual(files[1], files[3], "--jobs 3 must give exactly the files of --jobs 1")
+        self.assertEqual(files[1], files[0], "automatic must give exactly the same files too")
+        self.assertEqual([f for f in os.listdir(self.dir) if f.endswith(".part")], [], "no .part files may remain")
+
+    def test_parallel_channels_are_faster(self):
+        import time
+        if (os.cpu_count() or 1) < 4:
+            self.skipTest("fewer than 4 cores")
+        w = self.wav("fast.wav", [self.voice(200 + 50 * i, 10) for i in range(4)])
+        took = {}
+        for jobs in (1, 4):
+            t0 = time.time()
+            r = run_cli(w, os.path.join(self.dir, "f%d.ats" % jobs), "--channels", 4, "--lowest-frequency", 100, "--jobs", jobs)
+            took[jobs] = time.time() - t0
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(took[4], 0.75 * took[1], "4 channels on 4 cores took %.1f s against %.1f s on one" % (took[4], took[1]))
+
+    def test_parallel_background_progress_and_cancel(self):
+        import time
+        w = self.wav("pc.wav", [self.voice(200 + 50 * i, 10) for i in range(4)])
+        res = os.path.join(self.dir, "pc.result")
+        out = os.path.join(self.dir, "pc.ats")
+        proc = subprocess.Popen([sys.executable, "-I", CLI, w, out, "--channels", "4", "--jobs", "4", "--lowest-frequency", "100",
+                                 "--result-file", res], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        seen = []
+        t0 = time.time()
+        while not os.path.exists(res + ".started") and time.time() - t0 < 20:
+            time.sleep(0.01)
+        # let it run a bit, watching the progress, then cancel
+        t1 = time.time()
+        while time.time() - t1 < 1.0 and proc.poll() is None:
+            try:
+                seen.append(float(read_bytes(res + ".started").decode()))
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.02)
+        write_bytes(res + ".cancel", b"stop")
+        proc.wait(timeout=60)
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(read_bytes(res).decode().strip(), "ERROR cancelled")
+        self.assertEqual(seen, sorted(seen), "progress must not go backwards")
+        self.assertGreater(max(seen), 0.0, "progress should have moved")
+        left = [f for f in os.listdir(self.dir) if f.startswith("pc") and (f.endswith(".ats") or f.endswith(".part"))]
+        self.assertEqual(left, [], "a cancelled analysis leaves nothing behind: %r" % left)
+
+    def test_old_files_survive_a_cancel(self):
+        import time
+        w = self.wav("keep.wav", [self.voice(200, 10)])
+        res = os.path.join(self.dir, "keep.result")
+        out = os.path.join(self.dir, "keep.ats")
+        write_bytes(out, b"the old file")
+        proc = subprocess.Popen([sys.executable, "-I", CLI, w, out, "--lowest-frequency", "100", "--result-file", res],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t0 = time.time()
+        while not os.path.exists(res + ".started") and time.time() - t0 < 20:
+            time.sleep(0.01)
+        write_bytes(res + ".cancel", b"stop")
+        proc.wait(timeout=60)
+        self.assertEqual(read_bytes(out), b"the old file", "a cancel must not destroy the file that was there")
 
     def test_errors_are_also_printed_on_stdout(self):
         w = self.wav("er.wav", [tone(440, seconds=0.5)])

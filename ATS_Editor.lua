@@ -18,10 +18,11 @@
           Up / Down     transpose the selection (1 semitone; Shift 10 cents; Ctrl octave)
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
+          click on the picture, or click/drag on the time ruler  set the playhead; AUDITION starts there (the line moves while it plays)
           A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
                         (partials / noise follow the P / N switches)
           ANALYSE / Ctrl+A  the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
-          Ctrl+P / PRINT render to a permanent WAV (unsaved edits are saved first) and put it on the selected
+          Ctrl+P / PRINT render, from the playhead to the end, to a permanent WAV (unsaved edits are saved first) and put it on the selected
                         track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
           EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
@@ -76,6 +77,12 @@ local sel_info = nil           -- { points, partials, t0, t1, f0, f1 } of the se
 local clear_selection, update_sel_info   -- defined with the selection functions below
 local undo_stack, redo_stack = {}, {}   -- each entry: { name = ..., changes = { {p, f, oa, na, of, nf}, ... } }
 local modified = false
+local playhead = 0             -- seconds: where AUDITION starts (set by a click on the time ruler)
+local pending = nil            -- a sound being prepared: { kind = "audition" or "print", job = synth.render_job, mode, ... }
+local finish_print             -- defined with print_to_track below
+local play = nil               -- while a sound plays: { start (s in the sound), t0 (time_precise at the start), dur }
+local ruler_drag = false       -- the left button is down on the time ruler
+local stop_audition            -- defined with the audition code below
 local edited_cells = {}         -- edited_cells[p][f] = true for every cell an edit has touched (the phases of those runs are rebuilt on save)
 local saved_depth = 0          -- undo depth at the last save/load: modified = (#undo_stack ~= saved_depth)
 local current_file = nil       -- the .ats file that holds the data as it is now (the opened file, or the last save)
@@ -176,6 +183,8 @@ local function load_file(path)
   data, fname, load_error = d, path, nil
   clear_selection()
   undo_stack, redo_stack, modified, edited_cells = {}, {}, false, {}
+  playhead, play = 0, nil
+  if stop_audition then stop_audition() end
   saved_depth, current_file = 0, path
   amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
@@ -252,6 +261,7 @@ local function set_status(msg)
 end
 
 local function apply_changes(changes, forward)
+  if pending then pending.job.cancel(); pending = nil; set_status("audition cancelled: the data changed") end
   for _, c in ipairs(changes) do
     data.amp[c.p][c.f] = forward and c.na or c.oa
     data.frq[c.p][c.f] = forward and c.nf or c.of
@@ -352,40 +362,68 @@ local preview_until = 0        -- time_precise() at which the running preview en
 local audition_count = 0
 local wav_history = {}
 
-local function stop_audition()
+function stop_audition()
+  if pending and pending.kind == "audition" then pending.job.cancel(); pending = nil end
   if reaper.Xen_StopSourcePreview and reaper.time_precise() < preview_until + 0.3 then
     reaper.Xen_StopSourcePreview(-1)
   end
   preview_until = 0
+  play = nil
 end
 
 -- Renders the current data to `wav` (pure Lua, lib/ats_synth.lua; no other program needed). Returns the
 -- duration and a label ("sines + noise", ...), or nil plus a message.
-local function render_wav(wav)
+local function render_wav(wav, from)
   local use_sines = show_partials
   local use_noise = show_noise and data.has_noise
-  local samples, sr = synth.render(data, { sines = use_sines, noise = use_noise })
+  local samples, sr, t_start = synth.render(data, { sines = use_sines, noise = use_noise, from = from })
   if not samples then return nil, sr end                      -- sr is the message when samples is nil
   local ok, err = synth.write_wav(wav, samples, sr)
   if not ok then return nil, err end
-  return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
+  return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise"), t_start
 end
 
+-- AUDITION prepares the sound in small steps, a few milliseconds per frame, so that the window keeps drawing and the
+-- AUDITION button can blink while it works; advance_pending() (called every frame) finishes the job and starts the sound.
 local function audition()
   if not data then return end
+  if pending and pending.kind == "print" then set_status("wait: the print is being prepared"); return end
   stop_audition()
+  local use_sines = show_partials
+  local use_noise = show_noise and data.has_noise
+  if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
+  local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
+  pending = { kind = "audition", mode = mode,
+              job = synth.render_job(data, { sines = use_sines, noise = use_noise, from = playhead }) }
+  set_status("preparing the sound ... 0 %")
+end
+
+local function advance_pending()
+  local p = pending
+  if not p then return end
+  if not p.job.step(0.03) then
+    set_status(string.format("preparing the %s ... %d %%", p.kind == "print" and "print" or "sound", math.floor(p.job.progress * 100)))
+    return
+  end
+  pending = nil
+  local job = p.job
+  if job.cancelled then return end
+  if p.kind == "print" then finish_print(p, job); return end
+  if not job.samples then set_status("audition failed: " .. tostring(job.error)); return end
   local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
   audition_count = audition_count + 1
   local wav = string.format("%s/reaats_audition_%d.wav", dir, audition_count)
-  local dur, mode = render_wav(wav)
-  if not dur then set_status("audition failed: " .. tostring(mode)); return end
+  local ok, err = synth.write_wav(wav, job.samples, job.sr)
+  if not ok then set_status("audition failed: " .. tostring(err)); return end
+  local dur = #job.samples / job.sr
   local src = reaper.PCM_Source_CreateFromFile(wav)
   if src and reaper.Xen_StartSourcePreview then
     reaper.Xen_StartSourcePreview(src, 1.0, false)
     preview_until = reaper.time_precise() + dur
+    play = { start = job.t_start or 0, t0 = reaper.time_precise(), dur = dur }
     wav_history[#wav_history + 1] = wav
     if #wav_history > 4 then os.remove(table.remove(wav_history, 1)) end
-    set_status(string.format("auditioning %.1f s (%s)  Space stops", dur, mode))
+    set_status(string.format("auditioning from %.2f s, %.1f s long (%s)  Space stops", job.t_start or 0, dur, p.mode))
   else
     set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
   end
@@ -456,8 +494,9 @@ end
 -- .ats file and puts it on the selected track (or a new "ReaATS" track) at the edit cursor. This is the tool's
 -- "generate" moment for the ReaSnap Integration Contract (piece 3): the settings that made the item are written
 -- to the project under the item's GUID, so ReaSnap (or anything else) can bring them back.
-local function build_state(ats_path)
+local function build_state(ats_path, from)
   return {
+    from = from or 0,                                           -- where in the sound this print starts (the playhead)
     file = ats_path,
     name = (ats_path:match("([^/\\]+)$") or ats_path),
     view = { t0 = view.t0, t1 = view.t1, f0 = view.f0, f1 = view.f1 },
@@ -468,16 +507,33 @@ end
 
 local function print_to_track()
   if not data then return end
+  if pending and pending.kind == "print" then return end
   local ats_path = current_file or fname
   if modified then
     ats_path = save_file()
     if not ats_path then return end
   end
+  stop_audition()                                              -- a sound that is still being prepared is dropped
+  if pending then pending.job.cancel(); pending = nil end
   local stem = ats_path:gsub("%.[^./\\]+$", "")
   local n, wav = 1, nil
   repeat wav = string.format("%s_print%d.wav", stem, n); n = n + 1 until not reaper.file_exists(wav)
-  local dur, mode = render_wav(wav)
-  if not dur then set_status("print failed: " .. tostring(mode)); return end
+  local use_sines = show_partials
+  local use_noise = show_noise and data.has_noise
+  if not use_sines and not use_noise then set_status("nothing to print (partials and noise are both off)"); return end
+  local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
+  pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path,
+              job = synth.render_job(data, { sines = use_sines, noise = use_noise, from = playhead }) }   -- from the playhead
+  set_status("preparing the print ... 0 %   (Esc cancels)")
+end
+
+-- The sound is ready (see advance_pending): write the WAV, put it on the track and remember the settings under the item.
+finish_print = function(p, job)
+  if not job.samples then set_status("print failed: " .. tostring(job.error)); return end
+  local wav, ats_path, mode = p.wav, p.ats_path, p.mode
+  local ok_w, err_w = synth.write_wav(wav, job.samples, job.sr)
+  if not ok_w then set_status("print failed: " .. tostring(err_w)); return end
+  local dur = #job.samples / job.sr
 
   reaper.Undo_BeginBlock()
   local track = reaper.GetSelectedTrack(0, 0)
@@ -498,7 +554,7 @@ local function print_to_track()
   if item then
     local ok_g, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
     if ok_g and guid ~= "" then
-      local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path))
+      local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path, job.t_start))
       if ok_enc then reaper.SetProjExtState(0, "ReaATS_ItemSettings", guid, encoded) end
     end
     local take = reaper.GetActiveTake(item)
@@ -506,7 +562,7 @@ local function print_to_track()
   end
   reaper.Undo_EndBlock("ReaATS print", -1)
   reaper.UpdateArrange()
-  set_status(item and string.format("printed %.1f s (%s) to the track", dur, mode)
+  set_status(item and string.format("printed %.1f s from %.2f s (%s) to the track", dur, job.t_start or 0, mode)
                   or "printed, but the new item was not found on the track")
 end
 
@@ -644,6 +700,44 @@ local function draw_axes(px, py, pw, ph)
   if data then draw_note_scale(px, py, pw, ph) end
 end
 
+-- ----------------------------------------------------------------- playhead
+local function end_time() return data.times[data.frames] end
+
+-- Where the playhead is now: moving while a sound plays, otherwise where it was set. It goes back to its set place when
+-- the sound has ended or is stopped.
+local function playhead_now()
+  if play then
+    local now = reaper.time_precise()
+    if now > play.t0 + play.dur + 0.05 then play = nil else return math.min(play.start + (now - play.t0), end_time()) end
+  end
+  return playhead
+end
+
+local function set_playhead(t)
+  if not data then return end
+  if play then stop_audition() end
+  playhead = clamp(t, 0, end_time())
+end
+
+local function draw_playhead(px, py, pw, ph)
+  if not data then return end
+  local t = playhead_now()
+  if t < view.t0 or t > view.t1 then return end
+  local x = px + tx(t, pw)
+  local moving = play ~= nil
+  gfx.set(1, moving and 0.95 or 0.85, moving and 0.4 or 0.25, 1)
+  gfx.rect(x - 1, py, 2, ph, 1)
+  gfx.rect(x - 5, py + ph + 1, 11, 7, 1)                       -- the marker on the time ruler
+  gfx.rect(x - 3, py + ph + 8, 7, 3, 1)
+  gfx.setfont(1, "Arial", 13)
+  local label = string.format("%.3f s", t)
+  local lw = gfx.measurestr(label)
+  local lx = math.min(x + 6, px + pw - lw - 4)
+  gfx.set(0.09, 0.10, 0.12, 0.85)
+  gfx.rect(lx - 3, py + 2, lw + 6, 17, 1)
+  text_at(lx, py + 3, label, 1, 0.9, 0.45)
+end
+
 -- Draws the selected points at an offset (ox, oy) in pixels, in the given colour.
 local function draw_sel_points(px, py, pw, ph, ox, oy, r, g, bl, a)
   local times = data.times
@@ -766,7 +860,11 @@ end
 
 local function draw_print_button()
   local x, y, w, h = print_rect()
-  gfx.set(0.22, 0.30, 0.46, 1)
+  if pending and pending.kind == "print" and (math.floor(reaper.time_precise() * 2.5) % 2 == 0) then
+    gfx.set(0.42, 0.58, 0.90, 1)                                  -- blinking: the print is being prepared
+  else
+    gfx.set(0.22, 0.30, 0.46, 1)
+  end
   gfx.rect(x, y, w, h, 1)
   gfx.set(0.55, 0.68, 0.92, 1)
   gfx.rect(x, y, w, h, 0)
@@ -778,9 +876,29 @@ local function draw_print_button()
   gfx.drawstr(label)
 end
 
+-- A small bar and the percentage under a button while its sound is being prepared.
+local function draw_progress_under(x, w, y, frac, rgb)
+  gfx.set(0.14, 0.16, 0.19, 1)
+  gfx.rect(x, y, w, 5, 1)
+  gfx.set(rgb[1], rgb[2], rgb[3], 1)
+  gfx.rect(x, y, w * math.min(math.max(frac, 0), 1), 5, 1)
+  gfx.set(0.5, 0.53, 0.58, 1)
+  gfx.rect(x, y, w, 5, 0)
+  gfx.setfont(1, "Arial", 11)
+  local label = string.format("%d %%", math.floor(frac * 100 + 0.5))
+  gfx.set(0.85, 0.9, 0.95, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 7
+  gfx.drawstr(label)
+end
+
 local function draw_audition_button()
   local x, y, w, h = audition_rect()
-  gfx.set(0.18, 0.42, 0.30, 1)
+  if pending and (math.floor(reaper.time_precise() * 2.5) % 2 == 0) then
+    gfx.set(0.36, 0.80, 0.56, 1)                                  -- blinking: the sound is being prepared
+  else
+    gfx.set(0.18, 0.42, 0.30, 1)
+  end
   gfx.rect(x, y, w, h, 1)
   gfx.set(0.45, 0.80, 0.60, 1)
   gfx.rect(x, y, w, h, 0)
@@ -848,6 +966,12 @@ local function draw_header(px, py, pw, ph, plain)
     draw_print_button()
     draw_export_button()
     draw_analyse_button()
+    if pending then                                              -- how far the sound is, under the button it belongs to
+      local x, y, w, h, rgb
+      if pending.kind == "print" then x, y, w, h = print_rect(); rgb = { 0.45, 0.62, 0.95 }
+      else x, y, w, h = audition_rect(); rgb = { 0.30, 0.85, 0.55 } end
+      draw_progress_under(x, w, y + h + 2, pending.job.progress, rgb)
+    end
   end
   if status_msg and reaper.time_precise() < status_until then
     text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- third header row: what the last action did
@@ -856,7 +980,7 @@ local function draw_header(px, py, pw, ph, plain)
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
       sel_info.points, sel_info.partials, sel_info.t0, sel_info.t1, fmt_freq(sel_info.f0), fmt_freq(sel_info.f1))
-    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 28, msg, 1, 0.5, 0.82)
+    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 48, msg, 1, 0.5, 0.82)
   end
   -- hover readout
   local mx, my = gfx.mouse_x, gfx.mouse_y
@@ -892,7 +1016,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   Esc clear/close",
+  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -975,6 +1099,9 @@ local function handle_input(px, py, pw, ph)
       save_as()
     elseif (function() local ax2, ay2, aw2, ah2 = analyse_rect(); return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2 end)() then
       showing_analysis = true
+    elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
+      ruler_drag = true                                          -- a click (or drag) on the time ruler sets the playhead
+      set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -982,6 +1109,8 @@ local function handle_input(px, py, pw, ph)
         box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0 }
       end
     end
+  elseif down and ruler_drag then
+    set_playhead(view.t0 + (clamp(mx, px, px + pw) - px) / pw * (view.t1 - view.t0))
   elseif down and mover then
     mover.x, mover.y = mx, my
     if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then
@@ -1005,19 +1134,24 @@ local function handle_input(px, py, pw, ph)
     local b = box
     box = nil
     if math.abs(b.x1 - b.x0) < 4 and math.abs(b.y1 - b.y0) < 4 then
-      if not b.add then clear_selection() end            -- a plain click on empty space clears
+      if not b.add then
+        clear_selection()                                   -- a plain click on empty space clears the selection ...
+        set_playhead(view.t0 + (b.x0 - px) / pw * (view.t1 - view.t0))   -- ... and puts the playhead there
+      end
     else
       local function t_of(x) return view.t0 + (x - px) / pw * (view.t1 - view.t0) end
       local function f_of(y) return view.f0 * (view.f1 / view.f0) ^ ((py + ph - y) / ph) end
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
+  if not down then ruler_drag = false end
   prev_down = down
 
   local ch = gfx.getchar()
   if ch < 0 then stop_audition(); return false end
   if ch == 27 then
-    if sel_info then clear_selection() else stop_audition(); return false end
+    if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
+    elseif sel_info then clear_selection() else stop_audition(); return false end
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
   if ch == 6579564 then delete_selection()                      -- Delete
@@ -1066,6 +1200,8 @@ local function draw_analysis_frame()
 end
 
 local function loop()
+  analysis:poll()                                              -- looks at a background analysis, if one runs
+  advance_pending()                                            -- prepares the AUDITION sound a little each frame
   if showing_analysis then
     local keep = true
     analysis:mouse(gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap, gfx.mouse_wheel)
@@ -1100,6 +1236,7 @@ local function loop()
   gfx.blit(1, 1, 0, 0, 0, pw, ph, px, py, pw, ph)
   draw_selection(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
+  draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)
   gfx.update()
   if keep then reaper.defer(loop) end
@@ -1130,6 +1267,7 @@ do
         end
         show_partials = st.partials ~= false
         show_noise = st.noise ~= false
+        if type(st.from) == "number" then playhead = clamp(st.from, 0, data.times[data.frames]) end   -- where the print started
         dirty = true
         applied = true
       else

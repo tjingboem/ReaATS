@@ -192,16 +192,22 @@ do
     local size = f:seek("end"); f:close(); return size
   end
   gfx.mouse_cap = 0
-  script.keys = { 97 }; strings = {}; frame(); frame()                          -- A
+  local function key_audition()
+    local n = #previews
+    script.keys = { 97 }; strings = {}; frame()
+    for _ = 1, 3000 do if #previews > n then break end; frame() end
+    strings = {}; frame()
+  end
+  key_audition()                                                                -- A
   assert(#previews == 1, "audition did not start a preview; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
   local size = wav_info(previews[1])
   assert(size and size > 300000, "rendered WAV missing or too short: " .. tostring(size))
-  assert(saw("^auditioning [%d%.]+ s %(sines %+ noise%)"), "status should say sines + noise")
+  assert(saw("^auditioning from [%d%.]+ s, [%d%.]+ s long %(sines %+ noise%)"), "status should say sines + noise")
   script.keys = { 112 }; frame()                                                -- P off: noise only
-  script.keys = { 97 }; strings = {}; frame(); frame()
+  key_audition()
   assert(#previews == 2 and saw("%(noise%)"), "noise-only audition expected")
   script.keys = { 112 }; frame(); script.keys = { 110 }; frame()                -- P on, N off: sines only
-  script.keys = { 97 }; strings = {}; frame(); frame()
+  key_audition()
   assert(#previews == 3 and saw("%(sines%)"), "sines-only audition expected")
   script.keys = { 112 }; frame(); script.keys = { 112 }; frame()                -- P off, then on again
   script.keys = { 110 }; frame()                                                -- N on again
@@ -210,6 +216,93 @@ do
   assert(destroyed == 0, "preview sources must never be destroyed from the script")
   assert(previews[1] ~= previews[2] and previews[2] ~= previews[3], "every render needs its own WAV name")
   assert(stops >= 1, "an audition during a running preview should stop it first")
+  -- the playhead: set it on the time ruler, AUDITION plays from there, the line moves, and it goes back
+  local function label_time()                                 -- the number in the playhead label ("1.000 s")
+    for _, str in ipairs(strings) do local v = str:match("^(%d+%.%d%d%d) s$"); if v then return tonumber(v) end end
+  end
+  script.keys = { 102 }; frame()                                -- F: fit the view, so the ruler is 0 .. the end
+  local d1 = dofile("lib/ats_file.lua").load(work)
+  local tmax = d1.times[d1.frames]
+  local ruler_y = 70 + 516 + 10
+  local function ruler_click(t)
+    gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * t / tmax, ruler_y, 1; frame()
+    gfx.mouse_cap = 0; strings = {}; frame()
+  end
+  strings = {}; frame()
+  assert(label_time() == 0, "the playhead starts at 0, saw " .. tostring(label_time()))
+  ruler_click(1.0)
+  assert(math.abs(label_time() - 1.0) < 0.02, "a click on the ruler sets the playhead, saw " .. tostring(label_time()))
+  local before = #previews
+  script.keys = { 110 }; frame()                                -- N off: sines only (a small file, quick)
+  key_audition()
+  assert(#previews == before + 1, "audition should start from the playhead")
+  assert(saw("^auditioning from 1%.0%d s"), "the status should say from 1.0 s: " .. tostring(saw("^auditioning")))
+  local full_size, part_size = wav_info(previews[1]), wav_info(previews[#previews])
+  assert(part_size < 0.7 * full_size, "the sound from 1.0 s is about half as long as the whole: " .. part_size .. " vs " .. full_size)
+  clock_skew = clock_skew + 0.5; strings = {}; frame()
+  assert(label_time() and label_time() > 1.3 and label_time() < 1.7, "the playhead moves while it plays, saw " .. tostring(label_time()))
+  clock_skew = clock_skew + 10; strings = {}; frame(); strings = {}; frame()
+  assert(math.abs(label_time() - 1.0) < 0.02, "when the sound has ended the playhead is back at its place, saw " .. tostring(label_time()))
+  key_audition()
+  clock_skew = clock_skew + 0.3
+  script.keys = { 32 }; strings = {}; frame(); strings = {}; frame()
+  assert(math.abs(label_time() - 1.0) < 0.02, "Space stops and the playhead returns, saw " .. tostring(label_time()))
+  ruler_click(0.4)
+  assert(math.abs(label_time() - 0.4) < 0.02, "a second click moves it")
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * 0.2 / tmax, ruler_y, 1; frame()          -- dragging on the ruler
+  gfx.mouse_x = 62 + 988 * 0.7 / tmax; strings = {}; frame()
+  assert(math.abs(label_time() - 0.7) < 0.02, "dragging on the ruler scrubs the playhead, saw " .. tostring(label_time()))
+  gfx.mouse_cap = 0; frame()
+  -- a plain click in the picture (not on a point, not a drag) also sets the playhead and clears the selection
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * 0.9 / tmax, 300, 1; frame()
+  gfx.mouse_cap = 0; strings = {}; frame()
+  assert(math.abs(label_time() - 0.9) < 0.02, "a click in the picture sets the playhead, saw " .. tostring(label_time()))
+  assert(not saw("^selected:"), "and clears the selection")
+  script.keys = { 110 }; frame()                                -- N on again for the tests that follow
+  print("playhead OK: set on the ruler, audition from it, moves while playing, returns, scrubs")
+  -- while the sound is prepared: the AUDITION button blinks, the status shows the progress, Space or an edit cancels it
+  do
+    ruler_click(0)
+    local real_set, real_rect = gfx.set, gfx.rect
+    local cur, colours = { 0, 0, 0 }, {}
+    gfx.set = function(r, g, b, a) cur = { r, g, b }; return real_set(r, g, b, a) end
+    gfx.rect = function(x, y, w, h, f)
+      if w == 86 and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
+      return real_rect(x, y, w, h, f)
+    end
+    local n_before = #previews
+    script.keys = { 97 }; strings = {}; frame()
+    local saw_progress, frames_pending, saw_indicator = false, 0, false
+    while true do
+      clock_skew = clock_skew + 0.2
+      strings = {}; frame()
+      if saw("^preparing the sound %.%.%. %d+ %%") then saw_progress = true; frames_pending = frames_pending + 1 end
+      if saw("^%d+ %%$") then saw_indicator = true end
+      if #previews > n_before or frames_pending > 3000 then break end
+    end
+    gfx.set, gfx.rect = real_set, real_rect
+    local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
+    assert(saw_progress and frames_pending > 3, "the status should show the preparation, in several frames: " .. frames_pending)
+    assert(n_colours >= 2, "the AUDITION button should blink while the sound is prepared, saw " .. n_colours .. " colour(s)")
+    assert(saw_indicator, "a percentage should show under the AUDITION button while the sound is prepared")
+    assert(#previews == n_before + 1, "the sound starts when it is ready")
+    -- Space while preparing: nothing is played
+    local count = #previews
+    script.keys = { 97 }; frame(); frame()
+    script.keys = { 32 }; strings = {}; frame()
+    for _ = 1, 400 do frame() end
+    assert(#previews == count, "Space while the sound is prepared must cancel it")
+    -- an edit while preparing: nothing is played, and it says so
+    script.keys = { 102 }; frame()
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()
+    gfx.mouse_x, gfx.mouse_y = 600, 560; frame(); gfx.mouse_cap = 0; frame(); frame()
+    script.keys = { 97 }; frame()
+    script.keys = { 30064 }; strings = {}; frame()                             -- Up: transpose the selection
+    for _ = 1, 400 do frame() end
+    assert(#previews == count, "an edit while preparing must cancel the sound")
+    script.keys = { 26 }; gfx.mouse_cap = 4; frame(); gfx.mouse_cap = 0; frame()   -- Ctrl+Z: undo it
+    print("the AUDITION button blinks while the sound is prepared; Space or an edit cancels it")
+  end
   print("audition OK: 3 renders with the Lua synthesis (sines+noise, noise, sines); stops=" .. stops .. ", destroyed=" .. destroyed)
   for _, w in ipairs(previews) do os.remove(w) end
   os.remove("/tmp/reaats_audition.ats"); os.remove("/tmp/reaats_audition.csd")
@@ -224,8 +317,31 @@ do
   gfx.mouse_cap = 0; frame(); frame()
   script.keys = { 6579564 }; frame()                                           -- Delete: now modified
   gfx.mouse_cap = 0; strings = {}
-  script.keys = { 16 }; frame(); frame()                                       -- Ctrl+P
-  assert(saw("^printed [%d%.]+ s %("), "print status missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  -- Ctrl+P: the print is prepared in steps; the PRINT button blinks and a percentage shows under it
+  local real_set, real_rect = gfx.set, gfx.rect
+  local cur, colours = { 0, 0, 0 }, {}
+  gfx.set = function(r, g, b, a) cur = { r, g, b }; return real_set(r, g, b, a) end
+  gfx.rect = function(x, y, w, h, f)
+    if w == 62 and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
+    return real_rect(x, y, w, h, f)
+  end
+  local function key_print()
+    script.keys = { 16 }; strings = {}; frame()
+    local pct_frames = 0
+    for _ = 1, 3000 do
+      clock_skew = clock_skew + 0.2
+      strings = {}; frame()
+      if saw("^%d+ %%$") then pct_frames = pct_frames + 1 end
+      if saw("^printed") then break end
+    end
+    return pct_frames
+  end
+  local pct_frames = key_print()
+  gfx.set, gfx.rect = real_set, real_rect
+  local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
+  assert(pct_frames > 3, "a percentage should show under the PRINT button while it is prepared, in several frames: " .. pct_frames)
+  assert(n_colours >= 2, "the PRINT button should blink while the print is prepared, saw " .. n_colours)
+  assert(saw("^printed [%d%.]+ s from [%d%.]+ s %("), "print status missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
   assert(#project.tracks == 1 and project.tracks[1].name == "ReaATS", "a ReaATS track should be created")
   local item = project.tracks[1].items[1]
   assert(item and item.src:match("_print1%.wav$"), "print item missing: " .. tostring(item and item.src))
@@ -238,8 +354,35 @@ do
   assert(st.view.t1 > st.view.t0 and st.view.f1 > st.view.f0 and st.partials == true and st.noise == true, "stored view/switches wrong")
   print("print OK: item " .. item.src:match("([^/]+)$") .. ", state -> " .. st.name)
   -- second print goes onto the same (selected) track with a new numbered WAV
-  gfx.mouse_cap = 0; script.keys = { 16 }; frame(); frame()
+  gfx.mouse_cap = 0; key_print()
   assert(#project.tracks == 1 and #project.tracks[1].items == 2 and project.tracks[1].items[2].src:match("_print2%.wav$"), "second print")
+  -- printing from the playhead: only the sound from there, and the start is remembered with the item
+  script.keys = { 102 }; frame()                                -- F: fit the view, so the ruler is 0 .. the end
+  local dd = dofile("lib/ats_file.lua").load(work)
+  local tmax2 = dd.times[dd.frames]
+  local function ruler_click(t)
+    gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * t / tmax2, 70 + 516 + 10, 1; frame()
+    gfx.mouse_cap = 0; strings = {}; frame()
+  end
+  ruler_click(1.0)
+  key_print()
+  local third = project.tracks[1].items[3]
+  assert(third and third.src:match("_print3%.wav$"), "third print missing")
+  local sz1, sz3 = (function(p) local f = io.open(p, "rb"); local n = f:seek("end"); f:close(); return n end)(item.src),
+                   (function(p) local f = io.open(p, "rb"); local n = f:seek("end"); f:close(); return n end)(third.src)
+  assert(sz3 < 0.7 * sz1, "a print from 1.0 s is about half as long as the whole: " .. sz3 .. " vs " .. sz1)
+  assert(saw("^printed [%d%.]+ s from 1%.0%d s"), "the status says where the print started: " .. tostring(saw("^printed")))
+  local st3 = ser.deserialize(projext["ReaATS_ItemSettings|" .. third.guid])
+  assert(st3 and math.abs(st3.from - 1.0) < 0.0101, "the item remembers where the print started, saw " .. tostring(st3 and st3.from))
+  print("PRINT starts at the playhead and remembers it")
+  ruler_click(0)
+  -- Esc cancels a print that is being prepared: no item
+  local items_before = #project.tracks[1].items
+  script.keys = { 16 }; strings = {}; frame(); frame()
+  script.keys = { 27 }; strings = {}; frame()
+  for _ = 1, 400 do frame() end
+  assert(#project.tracks[1].items == items_before, "Esc must cancel a print that is being prepared")
+  print("PRINT blinks with a percentage under it; Esc cancels it")
   for _, it in ipairs(project.tracks[1].items) do os.remove(it.src) end
   os.remove(st.file)
 end

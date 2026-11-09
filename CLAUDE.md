@@ -163,6 +163,52 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   "no numpy" and "too old"), 11 new pure tests + 4 mock scenarios. NOT verified in real REAPER: the reaper.ini lookup,
   `reaper.get_ini_file`, the popup text layout in `reaper.MB`, `open_url`.
 
+- WAITING DISPLAY (tjingboem 9 Nov 2026: "a blinking button and a big word ANALYZING..."; also an "Import .ats file" button
+  on the page): the analysis now runs in the BACKGROUND (`ExecProcess(cmd, -1)`), because a blocking call cannot animate.
+  Engine `--result-file R`: writes R.started (progress 0..1: tracking 0-0.8, residual 0.85-0.93, done 1.0, overall across
+  channels), R at the end (`RESULT {...}` or `ERROR ...`, also for any exception), stops when R.cancel appears (no
+  files left behind, exit 4; vendored tracker got a `progress` callback). The page polls R each frame (`Page:poll`, called
+  by the editor loop even when the page is hidden, so Esc does not stop the job): dimmed page, big blinking ANALYZING...
+  (0.5 s), blinking ANALYSE button, bar with % and seconds, Cancel; "did not start" after 20 s without R.started, give up
+  after an hour. The page, not the engine, deletes old R files before starting (an early Cancel must survive). "Import
+  .ats file..." opens a file and returns to the editor. This polling exists only while an analysis the user started runs
+  (no watcher loop). Tests: 28 Python, mock_analysis (blink, progress, Cancel, Esc, Import, engine that never starts).
+- PARALLEL CHANNELS (tjingboem 9 Nov 2026: "optimize the analyzing part by using more cores", chose: channels in parallel):
+  engine `--jobs N` (0 = automatic: cores-2, at least 1, never more than the channels): `multiprocessing.Pool`, one
+  process per channel (`run_parallel`, `analyse_channel`), workers put progress in a shared array, the parent writes
+  R.started and watches R.cancel; one process when jobs==1. Every file is written as name.ats.part and renamed when ALL
+  channels are done (a cancel/failure leaves nothing and old files survive). `--check` now prints `cores=N`; the page has a
+  "CPU cores" field (shows "N at once, of M cores"; `analysis_page.workers`). Result is byte-identical to the serial run
+  (tested). Measured on tjingboem's 8-core machine: 2 channels x 20 s 7.4 s -> 4.2 s (1.8x); 8 channels x 20 s 29.7 s ->
+  10.8 s with 4 jobs (2.75x), 10.5 s with 6 (probably 4 physical cores). NOT done (the bigger change, offered): frames in
+  parallel inside ONE channel (peak detection + SMR, residual synthesis and analysis are parallel; the track matching,
+  ~18 % of the time, is sequential): expected 2-3x for long single sounds, none for short ones. 32 Python tests.
+- PLAYHEAD (tjingboem 9 Nov 2026: "we need a playhead in the editor"; my reading, not confirmed): a yellow line with a ruler
+  marker and a "1.234 s" label. Click / drag on the time ruler (the strip under the plot) sets `playhead`; AUDITION renders
+  FROM there (`synth.render(d, {from=t})` starts at the frame at or before it and returns that start time) and the line
+  moves while it plays (position = start + time since the preview started; SWS's Xen preview has no position query, so it
+  is an estimate); at the end or on Space it returns to where it was set. PRINT still makes the whole sound. Not asked,
+  not built: following REAPER's edit cursor/transport, looping, audition of the selection only.
+- AUDITION BLINK (tjingboem 9 Nov 2026: "it takes a few seconds before Audition actually starts playing. Make the Audition
+  button blink"): the sound is now prepared in STEPS so the window can animate: `synth.render_job(d, opts)` (a coroutine; the
+  render loops call `tick()`; `job.step(0.03)` per frame, `job.progress`, `job.cancel()`; result identical sample for sample to
+  `synth.render`), `advance_pending()` in the editor loop writes the WAV and starts the preview when the job is done; the
+  AUDITION button blinks (0.4 s) while `pending` is set and the status shows "preparing the sound ... N %". Space, a new
+  load or any edit (`apply_changes`) cancels a pending sound. PRINT is still one blocking render. The wait is at most
+  ~1.3x the render time (30 ms of work per frame).
+- PERCENTAGE UNDER THE BUTTONS (tjingboem 9 Nov 2026: "show under the Audition button a small indicator showing the %
+  before Auditioning. Do the same for Printing"): a 5 px bar + "NN %" under the AUDITION or PRINT button while `pending`
+  (second header row, x of the button; the selection summary moved one row down to row 3 so they never overlap). PRINT now
+  also prepares its sound with `synth.render_job` and blinks (`pending.kind == "print"`; `finish_print` writes the WAV and
+  inserts the item); Esc or any edit cancels a print in preparation; AUDITION pressed during a print is refused with a
+  status; Space only cancels an audition. Unsaved edits are still saved first (a short blocking step).
+- PRINT FROM THE PLAYHEAD (tjingboem 9 Nov 2026: "let printing and auditioning be done from the playhead's position";
+  AUDITION already did): `synth.render_job(..., {from = playhead})` for PRINT too; the status says "printed 1.2 s from
+  1.00 s (...)"; the item settings now hold `from` (the frame-aligned start) and a ReaSnap restore puts the playhead back
+  there (`st.from`); the item is still placed at the edit cursor. Tests in mock_run (a print from 1.0 s is about half as long,
+  the state remembers it) and mock_snap (restore).
+- SDIF question (tjingboem asked 9 Nov: SPEAR reads SDIF; is ReaATS .ats only?): YES, .ats only. See docs/file_formats.md.
+
 ## Next (not started, wait for tjingboem)
 1. (There is no Lua analysis: see DECISION above.)
 2. A LICENSE file (tjingboem chooses; recommended MIT or BSD-3).

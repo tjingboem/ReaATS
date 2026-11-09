@@ -40,12 +40,15 @@ def check_environment():
     except ImportError:
         print("CHECK missing numpy python=%s" % py)
         sys.exit(3)
-    print("CHECK ok python=%s numpy=%s" % (py, numpy.__version__))
+    print("CHECK ok python=%s numpy=%s cores=%d" % (py, numpy.__version__, os.cpu_count() or 1))
     sys.exit(0)
 
 
 if "--check" in sys.argv[1:]:
     check_environment()
+
+import multiprocessing                                   # noqa: E402
+import time                                              # noqa: E402
 
 import numpy as np                                        # noqa: E402
 from pyatsyn import wavio                                 # noqa: E402
@@ -93,10 +96,68 @@ def build_parser():
     g.add_argument("--no-phase", action="store_true", help="do not store the phase (file type 3 instead of 4)")
     g.add_argument("--no-noise", action="store_true", help="no residual and no noise bands (faster; file type 2 or 1)")
     g.add_argument("--residual-wav", default=None, help="also write the residual of each channel to this WAV (name_ch1.wav for several channels)")
+    g.add_argument("--jobs", type=int, default=0,
+                   help="CPU cores to use: channels are analysed in parallel, one per core (0 = automatic: all cores but two, at least 1)")
+    g.add_argument("--result-file", default=None,
+                   help="background mode (used by the editor): write progress (0..1) to RESULT.started and, when done, the last "
+                        "line (RESULT ... or ERROR ...) to RESULT; stop when RESULT.cancel appears")
     g.add_argument("--summary-format", choices=("json", "lua"), default="json",
                    help="format of the last line printed: json, or lua (RESULT {a=1,...}, read by the ReaATS editor)")
     g.add_argument("-v", "--verbose", action="store_true")
     return p
+
+
+_SHARED = None          # in a worker: the array the parent reads the progress from
+
+
+def _init_worker(shared):
+    global _SHARED
+    _SHARED = shared
+
+
+def make_progress(result_file, count, index, parallel=False):
+    """The progress function for one channel. In one process it writes the overall progress to RESULT.started itself;
+    in a worker it puts its own progress in the shared array (the parent writes the file). Both stop when the cancel
+    file appears."""
+    started, cancel = (result_file + ".started", result_file + ".cancel") if result_file else (None, None)
+    state = {"last": -1.0}
+
+    def report(p):
+        if cancel and os.path.exists(cancel):
+            raise Cancelled()
+        p = min(max(p, 0.0), 1.0)
+        if parallel:
+            _SHARED[index] = p
+        elif started:
+            overall = (index + p) / count
+            if overall - state["last"] >= 0.004:
+                state["last"] = overall
+                write_text(started, "%.4f" % overall)
+    return report
+
+
+def analyse_channel(task):
+    """Analyses one channel and writes its file (as path.part; the caller renames it when the whole set is done).
+    Runs in the main process or in a worker. Returns the summary of the file."""
+    kw = dict(task["kw"])
+    if task["result_file"]:
+        kw["progress"] = make_progress(task["result_file"], task["count"], task["n"] - 1, task["parallel"])
+    snd = tracker_array(np.ascontiguousarray(task["x"]), task["rate"], **kw)
+    ats_save(snd, task["path"] + ".part", save_phase=task["save_phase"], save_noise=task["save_noise"])
+    return {
+        "file": task["path"], "channel": task["label"], "partials": int(snd.partials), "frames": int(snd.frames),
+        "duration": float(snd.dur), "sample_rate": int(snd.sampling_rate),
+        "frame_size": int(snd.frame_size), "window_size": int(snd.window_size),
+        "noise_bands": int(len(snd.bands)) if task["save_noise"] else 0,
+        "phase": task["save_phase"],
+    }
+
+
+def choose_jobs(requested, count):
+    """How many channels run at the same time."""
+    cores = os.cpu_count() or 1
+    jobs = requested if requested > 0 else max(1, cores - 2)
+    return max(1, min(jobs, count))
 
 
 def channel_path(path, n, count):
@@ -104,6 +165,21 @@ def channel_path(path, n, count):
         return path
     stem, ext = os.path.splitext(path)
     return "%s_ch%d%s" % (stem, n, ext)
+
+
+class Cancelled(Exception):
+    pass
+
+
+RESULT_FILE = None
+
+
+def write_text(path, text):
+    """Writes a small file so that a reader never sees half of it."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def to_lua(v):
@@ -124,11 +200,47 @@ def to_lua(v):
 def fail(msg):
     sys.stderr.write("reaats_analyse: " + msg + "\n")
     print("ERROR " + msg)                  # also on stdout: the editor reads what the program prints
+    if RESULT_FILE:
+        write_text(RESULT_FILE, "ERROR " + msg + "\n")
     sys.exit(2)
 
 
+def run_parallel(tasks, jobs):
+    """Analyses the channels at the same time, `jobs` at once, one process each; returns the summaries in channel order.
+    The parent writes the overall progress and watches for the cancel file."""
+    ctx = multiprocessing.get_context()
+    shared = ctx.Array("d", len(tasks), lock=False)
+    pool = ctx.Pool(processes=jobs, initializer=_init_worker, initargs=(shared,))
+    try:
+        pending = [pool.apply_async(analyse_channel, (t,)) for t in tasks]
+        cancel = (RESULT_FILE + ".cancel") if RESULT_FILE else None
+        last = -1.0
+        while True:
+            if cancel and os.path.exists(cancel):
+                raise Cancelled()
+            for r in pending:                           # the first failure ends everything (r.get() raises it)
+                if r.ready() and not r.successful():
+                    r.get()
+            if RESULT_FILE:
+                overall = sum(shared) / len(tasks)
+                if overall - last >= 0.004:
+                    last = overall
+                    write_text(RESULT_FILE + ".started", "%.4f" % overall)
+            if all(r.ready() for r in pending):
+                return [r.get() for r in pending]
+            time.sleep(0.05)
+    finally:
+        pool.terminate()
+        pool.join()
+
+
 def main(argv=None):
+    global RESULT_FILE
     a = build_parser().parse_args(argv)
+    RESULT_FILE = a.result_file
+    if RESULT_FILE:
+        # (the editor removes old result/cancel files before it starts the program, so a Cancel clicked at once is kept)
+        write_text(RESULT_FILE + ".started", "0.0000")
     try:
         samples, rate = wavio.read_wav(a.wav)
     except (OSError, wavio.WavError) as e:
@@ -150,43 +262,73 @@ def main(argv=None):
         fail("the hop size must be above 0")
 
     count = len(sources)
-    out = []
+    jobs = choose_jobs(a.jobs, count)
+    kw_common = dict(
+        start=a.start, duration=a.duration,
+        lowest_frequency=a.lowest_frequency, highest_frequency=a.highest_frequency,
+        frequency_deviation=a.frequency_deviation, window_cycles=a.window_cycles,
+        window_type=a.window_type, hop_size=a.hop_size, fft_size=a.fft_size,
+        amp_threshold=db_to_amp(a.amp_threshold_db), track_length=a.track_length,
+        min_gap_length=a.min_gap_length, min_segment_length=a.min_segment_length,
+        last_peak_contribution=a.last_peak_contribution, SMR_continuity=a.smr_continuity,
+        optimize=not a.no_optimize, force_M=a.window_length,
+        window_alpha=a.window_alpha, window_beta=a.window_beta, verbose=a.verbose,
+        compute_noise=not a.no_noise,
+    )
+    if a.optimize_amp_threshold_db is not None:
+        kw_common["optimize_amp_threshold"] = db_to_amp(a.optimize_amp_threshold_db)
+    tasks = []
     for n, (label, x) in enumerate(sources, start=1):
-        kw = dict(
-            start=a.start, duration=a.duration,
-            lowest_frequency=a.lowest_frequency, highest_frequency=a.highest_frequency,
-            frequency_deviation=a.frequency_deviation, window_cycles=a.window_cycles,
-            window_type=a.window_type, hop_size=a.hop_size, fft_size=a.fft_size,
-            amp_threshold=db_to_amp(a.amp_threshold_db), track_length=a.track_length,
-            min_gap_length=a.min_gap_length, min_segment_length=a.min_segment_length,
-            last_peak_contribution=a.last_peak_contribution, SMR_continuity=a.smr_continuity,
-            optimize=not a.no_optimize, force_M=a.window_length,
-            window_alpha=a.window_alpha, window_beta=a.window_beta, verbose=a.verbose,
-            compute_noise=not a.no_noise,
-        )
-        if a.optimize_amp_threshold_db is not None:
-            kw["optimize_amp_threshold"] = db_to_amp(a.optimize_amp_threshold_db)
+        kw = dict(kw_common)
         if a.residual_wav and not a.no_noise:
             kw["residual_file"] = channel_path(a.residual_wav, n, count)
-        try:
-            snd = tracker_array(np.ascontiguousarray(x), rate, **kw)
-        except ValueError as e:
-            fail(str(e))
-        path = channel_path(a.ats, n, count)
-        ats_save(snd, path, save_phase=not a.no_phase, save_noise=not a.no_noise)
-        out.append({
-            "file": path, "channel": label, "partials": int(snd.partials), "frames": int(snd.frames),
-            "duration": float(snd.dur), "sample_rate": int(snd.sampling_rate),
-            "frame_size": int(snd.frame_size), "window_size": int(snd.window_size),
-            "noise_bands": 0 if a.no_noise else int(len(snd.bands)),
-            "phase": not a.no_phase,
-        })
+        tasks.append({"n": n, "label": label, "x": x, "rate": rate, "kw": kw, "path": channel_path(a.ats, n, count),
+                      "save_phase": not a.no_phase, "save_noise": not a.no_noise,
+                      "result_file": RESULT_FILE, "count": count, "parallel": jobs > 1})
+    parts = [t["path"] + ".part" for t in tasks]
+
+    def discard_parts():
+        for part in parts:                              # a cancelled or failed analysis leaves no half-made set behind
+            if os.path.exists(part):
+                os.remove(part)
+
+    try:
+        if jobs == 1:
+            out = [analyse_channel(t) for t in tasks]
+        else:
+            out = run_parallel(tasks, jobs)
+    except ValueError as e:
+        discard_parts()
+        fail(str(e))
+    except BaseException:
+        discard_parts()
+        raise
+    for part in parts:                                  # all channels are done: now the files get their real names
+        os.replace(part, part[:-len(".part")])
     summary = {"input_channels": in_channels, "files": out}
     if a.summary_format == "lua":
-        print("RESULT " + to_lua(summary))
+        line = "RESULT " + to_lua(summary)
     else:
-        print(json.dumps(summary))
+        line = json.dumps(summary)
+    print(line)
+    if RESULT_FILE:
+        write_text(RESULT_FILE + ".started", "1.0000")
+        write_text(RESULT_FILE, line + "\n")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Cancelled:
+        print("ERROR cancelled")
+        if RESULT_FILE:
+            write_text(RESULT_FILE, "ERROR cancelled\n")
+        sys.exit(4)
+    except SystemExit:
+        raise
+    except Exception as e:                 # in background mode the editor must always get an answer
+        msg = "%s: %s" % (type(e).__name__, e)
+        print("ERROR " + msg)
+        if RESULT_FILE:
+            write_text(RESULT_FILE, "ERROR " + msg + "\n")
+        sys.exit(5)

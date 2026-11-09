@@ -30,7 +30,7 @@ local function saw(pat) for _, s in ipairs(strings) do if s:find(pat) then retur
 local file = scratch .. "snap_sax.ats"
 do local a = io.open("examples/sax.ats", "rb"); local d = a:read("a"); a:close(); local b = io.open(file, "wb"); b:write(d); b:close() end
 ext[key("ReaSculpt_Registry", "pending_ReaATS_settings")] =
-  Serial.serialize({ file = file, name = "snap_sax.ats", view = { t0 = 0.5, t1 = 1.0, f0 = 200, f1 = 2000 }, partials = true, noise = false })
+  Serial.serialize({ file = file, name = "snap_sax.ats", view = { t0 = 0.5, t1 = 1.0, f0 = 200, f1 = 2000 }, partials = true, noise = false, from = 0.6 })
 ext[key("ReaSculpt_Registry", "pending_ReaATS_instance_number")] = "2"
 ext[key("ReaSculpt_Registry", "pending_ReaATS_project_identity")] = "projA"
 ext[key("tjingboem_ATSViewer", "last_file")] = "/nonexistent/other.ats"          -- must be ignored
@@ -45,6 +45,7 @@ assert(saw("^snap_sax%.ats"), "the snapshot's file should be loaded")
 -- the view was restored: the time axis labels start near 0.5 s, the frequency axis has 200 / 500 / 1k
 assert(saw("^0%.6 s") or saw("^0%.5 s") or saw("^0%.7 s"), "time axis should follow the restored view")
 assert(not saw("^2 s$"), "the restored view should not show the whole 2 s")
+assert(saw("^0%.600 s$") or saw("^0%.59%d s$"), "the playhead should come back to where the print started")
 print("restore OK: title '" .. title .. "', file and view restored")
 
 -- Close All: another project does nothing; a stale signal does nothing; the right one closes
