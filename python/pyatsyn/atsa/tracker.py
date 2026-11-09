@@ -159,7 +159,7 @@ def tracker_array ( in_sound,
     st = int(start * sample_rate)
     nd = in_sound.size
     if duration is not None:
-        nd = st + int(duration * sample_rate)
+        nd = min(st + int(duration * sample_rate), in_sound.size)   # ReaATS: never past the end of the sound (the analysis failed with a broadcast error before)
     
     # calculate windowing parameters
     total_samps = nd - st
@@ -223,6 +223,8 @@ def tracker_array ( in_sound,
 
     fft_mags = None
     tracks = []
+    active = []                                   # ReaATS: the numbers of the tracks that can still match or change
+    keep_asleep = max(min_gap_length, track_length)
 
     if verbose:
         print(f"frames = {frames}")
@@ -297,13 +299,18 @@ def tracker_array ( in_sound,
         #################
 
         if len(tracks) > 0:
-            update_track_averages(tracks, track_length, frame_n, analysis_frames, last_peak_contribution)
-            peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop, frequency_deviation, SMR_continuity, min_gap_length)
+            update_track_averages(tracks, track_length, frame_n, analysis_frames, last_peak_contribution, active)
+            n_before = len(tracks)
+            peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop, frequency_deviation, SMR_continuity, min_gap_length, active)
+            # ReaATS speed-up: a track that has been asleep for longer than both the gap limit and the smoothing length can
+            # neither match a peak nor change any more: it leaves the list of active tracks (the new tracks join it)
+            active = [i for i in active if tracks[i].asleep_for is None or tracks[i].asleep_for <= keep_asleep] + list(range(n_before, len(tracks)))
         else:
             # otherwise instantiate tracks with the current frame's peaks, if any
             for pk_ind, pk in enumerate(peaks):
                 pk.track = pk_ind
             tracks = [pk.clone() for pk in peaks]
+            active = list(range(len(tracks)))
 
         # store peaks for this current frame
         analysis_frames[frame_n] = peaks    

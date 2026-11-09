@@ -20,7 +20,7 @@ Only Linux has been tried. Temporary files go to the temporary folder (TMPDIR, o
 
 Put the ReaATS folder (ATS_Editor.lua and the lib folder next to it) in REAPER's Scripts folder, for example Scripts/tjingboem/ReaATS. In REAPER open Actions, Show action list, choose ReaScript: Load and pick ATS_Editor.lua. Run it from the list, or give it a shortcut or a toolbar button.
 
-The first time, ReaATS asks for an .ats file. After that it reopens the file you used last. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
+ReaATS starts with an empty window: it does not reopen the file you used last. Press O to open an .ats file, or click ANALYSE to make one from a sound. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
 
 ## Making an .ats file: the Analysis page
 
@@ -53,7 +53,7 @@ The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analys
 
 The buttons Defaults and Csound defaults reset the options. Csound's analyser differs in one default only: the SMR contribution is 0.5. Your settings are remembered the next time. Csound's analyser has two options that this one has not: the SMR threshold and the minimum segment SMR.
 
-**Analysing.** Click ANALYSE. The analysis runs in the background while the page shows it at work: the page is dimmed, the big word ANALYZING... blinks, the ANALYSE button blinks, and a bar shows how far the analysis is, with the percentage and the seconds so far. Cancel stops the analysis and leaves no file behind. You can also leave the page with Esc: the analysis goes on, and the result opens in the editor when it is done. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
+**Analysing.** Click ANALYSE. The analysis runs in the background while the page shows it at work: the page is dimmed, the big word ANALYZING... blinks, the ANALYSE button blinks, and a bar shows how far the analysis is, with the percentage and the seconds so far. Cancel stops the analysis and leaves no file behind. If the analysis program has stopped answering, for example because it crashed, the page notices after two minutes without a sign of life and says so, so the page never waits forever. A Cancel that the program does not answer ends after 8 seconds. You can also leave the page with Esc: the analysis goes on, and the result opens in the editor when it is done. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
 
 **Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The channels are analysed at the same time on separate cores of your computer, so a set of channels takes much less time than one channel after the other: in a test, 8 channels of 20 seconds took 11 seconds instead of 30. The result is exactly the same files as when the channels are analysed one after the other. The files only get their real names when every channel is done, so a cancelled analysis leaves nothing behind and does not touch a file that was there before. The editor opens the first channel. The Open buttons on the page open the others, one at a time. Editing channels together is not built yet.
 
@@ -65,7 +65,7 @@ The program also works from a terminal, for scripts:
 
 python3 python/reaats_analyse.py sound.wav sound.ats --lowest-frequency 100
 
-python3 python/reaats_analyse.py --help lists all the options. The analysis is the one of the pyatsyn package. Csound's own analyser, csound -U atsa sound.wav sound.ats -l 100, makes files that ReaATS can open too, and so do ATSA and ATSH. If the analysis sounds wrong, try a different lowest frequency first. For a sound whose lowest note is above 100 Hz, try 100. A noisy sound with a low threshold can break into thousands of tracks and take a long time; raise the amplitude threshold then.
+python3 python/reaats_analyse.py --help lists all the options. The analysis is the one of the pyatsyn package. Csound's own analyser, csound -U atsa sound.wav sound.ats -l 100, makes files that ReaATS can open too, and so do ATSA and ATSH. If the analysis sounds wrong, try a different lowest frequency first. For a sound whose lowest note is above 100 Hz, try 100. The time an analysis takes depends mostly on how many peaks it finds, not on how long the sound is. A long or noisy recording with the default threshold of -60 dB finds thousands of tiny partials, most of them noise, and can take hours. In one test, the first 30 seconds of a 9 minute recording took 52 seconds at -60 dB, 18 seconds at -50 dB, 10 seconds at -40 dB and 5 seconds at -30 dB. So for long sounds, music and field recordings, raise the amplitude threshold to about -40 dB, or analyse a shorter part with Start and Duration. The page shows a warning when a long sound is set to a low threshold. The noise that the many tiny partials would have caught is stored in the noise bands anyway.
 
 ## The window
 
@@ -111,13 +111,23 @@ A piece of a partial that moves keeps its own row in the file if the place it mo
 
 After a move or a transposition the selection stays with the points, so you can go on with the same selection.
 
+## Stereo and multichannel sounds
+
+A stereo or multichannel analysis gives one .ats file per channel: name_ch1.ats, name_ch2.ats and so on (see the Analysis page). When you open one of them in the editor, with O or with the Open buttons on the Analysis page, ReaATS finds the others and opens the whole set at the channel you picked. The files must have the same frame size, the same number of frames and the same length, as they do when they come from one analysis. If they do not fit together, or one is missing, ReaATS opens the file you chose alone and the status line says why.
+
+**Channel buttons.** With two or more channels there is an extra row under the header with a button for each channel. Click a button, or press Tab for the next channel, to see and edit that channel. The view, the playhead and the window stay where they are, so the picture does not jump. A star on a button means that channel has changes that are not saved. Edits, the selection and the undo list belong to one channel each: Ctrl+Z only undoes what was done in the channel you are looking at. Edits apply to the channel you see. Editing several channels together, and showing them on top of each other, is not built yet.
+
+**Listening: AUDITION.** AUDITION plays all channels together, from the playhead. REAPER's preview is stereo, so a set with more than two channels is mixed down to stereo for listening: channel 1 goes to the left, the last channel to the right, and the channels in between are spread evenly between them. The level is set so that the mixdown is not louder than one channel would be. A set of exactly two channels is played as it is, channel 1 left and channel 2 right. The status line says "3 channels mixed down to stereo" when this happens. The partials and noise switches count for all channels.
+
+**Printing: PRINT.** PRINT keeps all the channels. It makes one multichannel WAV file, one channel of sound for each channel file, from the playhead, and puts it on the selected track. A track needs room for the channels, so ReaATS raises the number of channels of that track to the next even number that is large enough, for example 4 for a sound of 3 channels. REAPER itself must be set up for multichannel use: route the track's channels to where you want them, for example to the outputs of your interface. The item remembers all the files of the set, and ReaSnap brings the whole set back.
+
 ## Saving
 
-Ctrl+S saves the changes next to the original as a new file, name_edit.ats. If that file exists, the next one is name_edit2.ats, and so on. The original is never overwritten.
+Ctrl+S saves the changes next to the original as a new file, name_edit.ats. If that file exists, the next one is name_edit2.ats, and so on. The original is never overwritten. For a set of channels, every channel is saved, as name_edit_ch1.ats, name_edit_ch2.ats and so on, so that the saved set opens as a set again.
 
 The saved file keeps the phase information (file type 4 when the file has noise bands). Pieces of partials that you did not touch keep the phase of the original. A piece that you changed gets new phases that follow its new frequencies, so the file stays consistent: programs that use the phase, such as pyatsyn, play the edited partials correctly, and Csound reads the file as well. If the opened file had no phase, phases are made for every partial. The largest amplitude and frequency in the file header are recalculated from the edited data.
 
-The EXPORT .ats button, at the top right, or Ctrl+Shift+S, lets you choose the folder and the name of the .ats file. It uses a file dialog (this needs the JS_ReaScriptAPI extension, which most REAPER installations with ReaPack have) or, without it, a box in which you type the full path. The ending .ats is added if you leave it out, and ReaATS asks before it replaces a file that already exists. Use it to export a file for Csound or another program, and to put the file where you want it. Like Ctrl+S, it keeps the phase.
+The EXPORT .ats button, at the top right, or Ctrl+Shift+S, lets you choose the folder and the name of the .ats file. It uses a file dialog (this needs the JS_ReaScriptAPI extension, which most REAPER installations with ReaPack have) or, without it, a box in which you type the full path. The ending .ats is added if you leave it out, and ReaATS asks before it replaces a file that already exists. Use it to export a file for Csound or another program, and to put the file where you want it. Like Ctrl+S, it keeps the phase. For a set of channels you choose one name, and every channel is written from it: choose mysound.ats and you get mysound_ch1.ats, mysound_ch2.ats and so on. ReaATS asks before it replaces any of them.
 
 The saved files are standard ATS files. Csound reads them with its ATS opcodes, and so do other ATS programs. Opening works the other way round: O opens any ATS file, including the files Csound's own analyser makes.
 
@@ -146,7 +156,7 @@ The WAV lives next to the .ats file and not inside the project. Copy it with the
 ReaATS works the same without ReaSnap. If you use ReaSnap, it can remember and bring back what you were doing, using the contract ReaSnap describes for its tools.
 
 - PRINT writes the settings that made the item into the project, under the item: the .ats file, the view (time and frequency range) and the state of the partials and noise switches.
-- Restoring a snapshot opens the editor on that file with the same view. If the .ats file has been moved or deleted, the editor says so and opens the file you used last instead.
+- Restoring a snapshot opens the editor on that file with the same view. If the .ats file has been moved or deleted, the editor says so and stays empty.
 - The window title carries the number ReaSnap gives it, such as ATS Editor #2, and Close All in ReaSnap closes the editor of that project.
 
 ReaATS is in ReaSnap's list of tools. The command ID in that list depends on where the script was loaded in REAPER, so on another computer ReaSnap needs the ID of that computer's ATS_Editor.lua.
@@ -173,6 +183,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Ctrl+P, PRINT | Put the edited sound on a track, from the playhead. |
 | P, N, the checkboxes Sine layer and Noise layer | Show or hide the partials, the noise. This also decides what is heard. |
 | F, Home | Fit the view. |
+| Tab, the channel buttons | Switch to the next channel, or to the channel of the button (a set of channels). |
 | O, R | Open a file, reload the file. |
 | Esc | Clear the selection, then close the window. |
 

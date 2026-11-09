@@ -46,7 +46,7 @@ from math import tau, remainder
 from numpy import zeros, matmul
 
 
-def update_track_averages(tracks, track_length, frame_n, analysis_frames, beta = 0.0):
+def update_track_averages(tracks, track_length, frame_n, analysis_frames, beta = 0.0, active = None):
     """Function to update running averages of recent peaks
 
     Using the list of current tracks, we use `track_length` frames to look back and update, 
@@ -70,7 +70,7 @@ def update_track_averages(tracks, track_length, frame_n, analysis_frames, beta =
     frames = min(frame_n, track_length)
     first_frame = frame_n - frames
 
-    for tk in tracks:
+    for tk in (tracks if active is None else [tracks[i] for i in active]):    # ReaATS: only the tracks that can still change (`active`)
         # ReaATS speed-up (9 Nov 2026): a track that has been asleep for more than `track_length` frames has no peak in the
         # frames looked at, so nothing can change for it. Skipping it gives exactly the same result and keeps the cost
         # from growing with every track that has ever been born (it was quadratic in the length of the sound).
@@ -136,7 +136,7 @@ def find_track_in_peaks(track, peaks):
     return None
 
 
-def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size, frequency_deviation = 0.45, SMR_continuity = 0.0, min_gap_length = 1):
+def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size, frequency_deviation = 0.45, SMR_continuity = 0.0, min_gap_length = 1, active = None):
     """Core function to coordinate peak tracking
 
     This function coordinates the matching of new peaks with existing tracks using 
@@ -168,11 +168,17 @@ def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size
     min_gap_length : int
         tracked partial gaps longer than this (in frames) will not be interpolated (default: 1)
     """  
+    # ReaATS speed-up (9 Nov 2026): `active` is the (ascending) list of track numbers that can still match or change; tracks that
+    # have been asleep for long are left out, so the cost of a frame no longer grows with every track ever born (the whole
+    # analysis was quadratic in the length of the sound). The order of the work is the same as before, so the result is identical.
+    indices = range(len(tracks)) if active is None else active
+
     # state for costs
     peak_costs = [[] for _ in peaks]
 
     # calculate costs for valid peak/track pairs
-    for tk_ind, tk in enumerate(tracks):
+    for tk_ind in indices:
+        tk = tracks[tk_ind]
         if tk.asleep_for is None or tk.asleep_for < min_gap_length:
             for pk_ind, pk in enumerate(peaks):
                 if are_valid_candidates(tk, pk, frequency_deviation):
@@ -185,7 +191,7 @@ def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size
         peak_queue.put(ind)
     
     unmatched_peaks = []
-    track_matches = [None for _ in tracks]
+    track_matches = {}
 
     while(not peak_queue.empty()):
         pk_ind = peak_queue.get()
@@ -194,7 +200,7 @@ def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size
         while(len(peak_costs[pk_ind]) > 0):
             tk = heappop(peak_costs[pk_ind])
             # if the track is unmatched
-            if track_matches[tk.index] is None:
+            if track_matches.get(tk.index) is None:
                 # update match
                 track_matches[tk.index] = MatchCost(tk.cost, pk_ind)
                 made_match = True
@@ -215,7 +221,8 @@ def peak_tracking(tracks, peaks, frame_n, analysis_frames, sample_rate, hop_size
     unmatched_tracks = []
 
     # process matches, fixing gaps
-    for tk_ind, tk_match in enumerate(track_matches):
+    for tk_ind in indices:
+        tk_match = track_matches.get(tk_ind)
         if tk_match is None:
             unmatched_tracks.append(tk_ind)
         else:

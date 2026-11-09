@@ -48,6 +48,7 @@ if "--check" in sys.argv[1:]:
     check_environment()
 
 import multiprocessing                                   # noqa: E402
+import threading                                         # noqa: E402
 import time                                              # noqa: E402
 
 import numpy as np                                        # noqa: E402
@@ -132,7 +133,7 @@ def make_progress(result_file, count, index, parallel=False):
             overall = (index + p) / count
             if overall - state["last"] >= 0.004:
                 state["last"] = overall
-                write_text(started, "%.4f" % overall)
+                write_progress(started, overall)
     return report
 
 
@@ -174,9 +175,34 @@ class Cancelled(Exception):
 RESULT_FILE = None
 
 
+_BEAT = {"progress": 0.0, "stop": None}
+
+
+def write_progress(path, progress):
+    """RESULT.started holds 'progress seconds-since-1970': the editor reads the time as a sign of life."""
+    _BEAT["progress"] = progress
+    write_text(path, "%.4f %.3f" % (progress, time.time()))
+
+
+def start_heartbeat(path):
+    """A thread that rewrites the progress file every two seconds, so the editor can tell that the program is alive even
+    while a long step reports nothing. Returns a function that stops it."""
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(2.0):
+            try:
+                write_progress(path, _BEAT["progress"])
+            except OSError:
+                pass
+    t = threading.Thread(target=beat, daemon=True)
+    t.start()
+    return stop.set
+
+
 def write_text(path, text):
     """Writes a small file so that a reader never sees half of it."""
-    tmp = path + ".tmp"
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())     # (the heartbeat thread writes the same file)
     with open(tmp, "w") as fh:
         fh.write(text)
     os.replace(tmp, path)
@@ -225,7 +251,7 @@ def run_parallel(tasks, jobs):
                 overall = sum(shared) / len(tasks)
                 if overall - last >= 0.004:
                     last = overall
-                    write_text(RESULT_FILE + ".started", "%.4f" % overall)
+                    write_progress(RESULT_FILE + ".started", overall)
             if all(r.ready() for r in pending):
                 return [r.get() for r in pending]
             time.sleep(0.05)
@@ -240,7 +266,8 @@ def main(argv=None):
     RESULT_FILE = a.result_file
     if RESULT_FILE:
         # (the editor removes old result/cancel files before it starts the program, so a Cancel clicked at once is kept)
-        write_text(RESULT_FILE + ".started", "0.0000")
+        write_progress(RESULT_FILE + ".started", 0.0)
+        stop_beat = start_heartbeat(RESULT_FILE + ".started")
     try:
         samples, rate = wavio.read_wav(a.wav)
     except (OSError, wavio.WavError) as e:
@@ -260,6 +287,13 @@ def main(argv=None):
         fail("the highest frequency must be above the lowest frequency")
     if a.hop_size <= 0:
         fail("the hop size must be above 0")
+    length_s = samples.shape[0] / rate
+    if a.start < 0:
+        fail("the start must not be negative")
+    if a.start >= length_s:
+        fail("the start (%.2f s) is beyond the end of the sound (%.2f s)" % (a.start, length_s))
+    if a.duration is not None and a.duration <= 0:
+        a.duration = None                                  # 0 or less means: to the end
 
     count = len(sources)
     jobs = choose_jobs(a.jobs, count)
@@ -312,7 +346,8 @@ def main(argv=None):
         line = json.dumps(summary)
     print(line)
     if RESULT_FILE:
-        write_text(RESULT_FILE + ".started", "1.0000")
+        stop_beat()
+        write_progress(RESULT_FILE + ".started", 1.0)
         write_text(RESULT_FILE, line + "\n")
 
 
@@ -327,7 +362,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:                 # in background mode the editor must always get an answer
-        msg = "%s: %s" % (type(e).__name__, e)
+        msg = "internal error (%s: %s). The settings or the sound may be unusual; if it happens again with other settings, please report it" % (type(e).__name__, e)
         print("ERROR " + msg)
         if RESULT_FILE:
             write_text(RESULT_FILE, "ERROR " + msg + "\n")

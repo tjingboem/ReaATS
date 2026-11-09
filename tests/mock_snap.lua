@@ -67,7 +67,7 @@ strings = {}; deferred = nil
 dofile("ATS_Editor.lua")
 frame()
 assert(saw("^snapshot file not found: /nonexistent/gone%.ats"), "missing-file message expected")
-assert(saw("^snap_sax%.ats"), "falls back to the last file")
+assert(not saw("^snap_sax%.ats"), "the window stays empty: the last file is not reopened")
 -- garbage in the pending slot: ignored with a console message
 ext = {}
 ext[key("ReaSculpt_Registry", "pending_ReaATS_settings")] = 'os.execute("echo no")'
@@ -75,5 +75,13 @@ ext[key("tjingboem_ATSViewer", "last_file")] = file
 deferred = nil
 dofile("ATS_Editor.lua")
 frame()
+-- no snapshot at all: the window starts empty, with the hint, even though a last file is remembered
+ext = {}
+ext[key("tjingboem_ATSViewer", "last_file")] = file
+strings = {}; deferred = nil
+dofile("ATS_Editor.lua")
+frame()
+assert(not saw("^snap_sax%.ats"), "the last file must not be reopened at the start")
+assert(saw("Press O to open a .ats file, or click ANALYSE"), "the empty window shows the hint")
 os.remove(file)
-print("missing file / garbage OK")
+print("missing file / garbage / empty start OK")

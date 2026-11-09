@@ -59,6 +59,21 @@ check("workers: asked for 4 of 8 channels", page.workers({ jobs = 4, channels = 
 check("workers: never fewer than one", page.workers({ jobs = 0, channels = 4, mono_mix = false }, 2) == 1)
 check("workers: mono mix is one channel", page.workers({ jobs = 0, channels = 4, mono_mix = true }, 8) == 1)
 
+-- the long-sound warning
+do
+  local long = { rate = 48000, channels = 2, seconds = 536.5 }
+  local base = page.default_settings()
+  check("a long sound at -60 dB is warned about", page.long_warning(base, long) ~= nil)
+  local s40 = page.default_settings(); s40.amp_threshold_db = -40
+  check("at -40 dB it is not", page.long_warning(s40, long) == nil)
+  check("a short sound at -60 dB is not", page.long_warning(base, { rate = 48000, channels = 1, seconds = 20 }) == nil)
+  local part = page.default_settings(); part.duration = 30
+  check("a short part of a long sound is not", page.long_warning(part, long) == nil)
+  local from = page.default_settings(); from.start = 500
+  check("a short rest of a long sound is not", page.long_warning(from, long) == nil)
+  check("no sound, no warning", page.long_warning(base, nil) == nil)
+end
+
 -- output names, the same as the engine's
 local f1 = page.output_files("/m/a.ats", 1)
 local f3 = page.output_files("/m/a.ats", 3)

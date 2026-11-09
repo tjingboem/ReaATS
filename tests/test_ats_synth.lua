@@ -160,5 +160,81 @@ do
   check("an impossible job ends with a message", j3.samples == nil and j3.error and j3.error:find("nothing to render"))
 end
 
+-- 11. several channels
+do
+  local function tone_data(freq)
+    local dd = make(1, 101)
+    for f = 1, 101 do dd.amp[1][f], dd.frq[1][f] = 0.5, freq end
+    return dd
+  end
+  local list = { tone_data(440), tone_data(660), tone_data(880) }
+  local job = synth.render_multi_job(list, {})
+  local steps, last, monotone = 0, 0, true
+  while not job.step(0.004) do
+    steps = steps + 1
+    if job.progress < last - 1e-9 then monotone = false end
+    last = job.progress
+    if steps > 100000 then break end
+  end
+  check("multi: three channels", job.channels and #job.channels == 3 and #job.channels[1] == 44100)
+  check("multi: progress only goes up and ends at 1", monotone and job.progress == 1)
+  local heavy = synth.render_multi_job({ sax, sax }, {})
+  local heavy_steps = 0
+  while not heavy.step(0.004) do heavy_steps = heavy_steps + 1; if heavy_steps > 100000 then break end end
+  check("multi: a real sound needs several steps", heavy_steps > 5 and #heavy.channels == 2, heavy_steps)
+  check("multi: pitches follow the channel", math.abs(crossings(job.channels[1]) - 440) <= 3 and math.abs(crossings(job.channels[2]) - 660) <= 3
+    and math.abs(crossings(job.channels[3]) - 880) <= 3, crossings(job.channels[1]) .. "/" .. crossings(job.channels[2]) .. "/" .. crossings(job.channels[3]))
+  check("multi: samples are the first channel's", job.samples == job.channels[1])
+  local direct = synth.render(list[2], {})
+  local same = true
+  for i = 1, #direct do if direct[i] ~= job.channels[2][i] then same = false; break end end
+  check("multi: a channel is exactly a single render", same)
+  local f = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/multi_test.wav"
+  check("multi: write", synth.write_wav_channels(f, job.channels, job.sr))
+  local wavinfo = dofile("lib/wav_info.lua").read(f)
+  check("multi: header says 3 channels", wavinfo and wavinfo.channels == 3 and wavinfo.frames == 44100 and wavinfo.float and wavinfo.rate == 44100, wavinfo and wavinfo.channels)
+  local fh = io.open(f, "rb"); local bytes = fh:read("a"); fh:close()
+  local a1, a2, a3 = string.unpack("<fff", bytes, 45 + 3 * 4 * 1000)       -- sample 1001 of every channel
+  check("multi: interleaved in channel order", math.abs(a1 - job.channels[1][1001]) < 1e-6 and math.abs(a2 - job.channels[2][1001]) < 1e-6 and math.abs(a3 - job.channels[3][1001]) < 1e-6)
+  os.remove(f)
+  local bad = synth.render_multi_job({ tone_data(440), tone_data(440) }, { sines = false, noise = false })
+  while not bad.step(0.01) do end
+  check("multi: a failing channel ends with a message", bad.samples == nil and bad.error ~= nil)
+  local cancelled = synth.render_multi_job(list, {})
+  cancelled.step(0.001); cancelled.cancel()
+  check("multi: a direct render after a cancelled job still works", synth.render(list[1], {}) ~= nil)
+end
+
+-- 12. the stereo mixdown for listening
+do
+  local function sine_ch(freq, n)
+    local c = {}
+    for i = 1, n do c[i] = 0.5 * math.sin(2 * math.pi * freq * i / 44100) end
+    return c
+  end
+  local two = { sine_ch(440, 4410), sine_ch(660, 4410) }
+  check("two channels stay as they are", synth.mix_to_stereo(two) == two)
+  local one = { sine_ch(440, 100) }
+  check("one channel stays as it is", synth.mix_to_stereo(one) == one)
+  local chans = { sine_ch(440, 22050), sine_ch(660, 22050), sine_ch(880, 22050) }
+  local mix = synth.mix_to_stereo(chans)
+  check("three channels become two", #mix == 2 and #mix[1] == 22050 and #mix[2] == 22050)
+  local function pw(s, f) local w = 2 * math.pi * f / 44100; local c, s1, s2 = 2 * math.cos(w), 0, 0
+    for i = 1, #s do local s0 = s[i] + c * s1 - s2; s2 = s1; s1 = s0 end return (s1 * s1 + s2 * s2 - c * s1 * s2) / #s end
+  check("channel 1 is hard left", pw(mix[2], 440) < 1e-6 * pw(mix[1], 440), pw(mix[2], 440) / pw(mix[1], 440))
+  check("the last channel is hard right", pw(mix[1], 880) < 1e-6 * pw(mix[2], 880))
+  local pl, pr = pw(mix[1], 660), pw(mix[2], 660)
+  check("the middle channel is in both, equally", math.abs(pl / pr - 1) < 0.01 and pl > 0, pl / pr)
+  check("the middle channel is 3 dB down on each side", math.abs(10 * math.log(pl / pw(mix[1], 440), 10) + 3.01) < 0.1, 10 * math.log(pl / pw(mix[1], 440), 10))
+  local peak = 0
+  for _, side in ipairs(mix) do for i = 1, #side do peak = math.max(peak, math.abs(side[i])) end end
+  check("the mixdown does not get louder than the loudest channel could be times the sum of gains", peak < 1.0, peak)
+  local four = synth.mix_to_stereo({ sine_ch(300, 2000), sine_ch(400, 2000), sine_ch(500, 2000), sine_ch(600, 2000) })
+  check("four channels become two", #four == 2 and #four[1] == 2000)
+  -- equal-level uncorrelated channels: the loudest side keeps the level of one channel (the level rule)
+  local pl4, pr4 = pw(four[1], 300) + pw(four[1], 400) + pw(four[1], 500) + pw(four[1], 600), pw(four[2], 300) + pw(four[2], 400) + pw(four[2], 500) + pw(four[2], 600)
+  check("the sides are about equally loud", math.abs(10 * math.log(pl4 / pr4, 10)) < 0.5, 10 * math.log(pl4 / pr4, 10))
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

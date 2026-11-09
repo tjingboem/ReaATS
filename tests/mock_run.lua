@@ -61,6 +61,7 @@ reaper = {
   defer = function(fn) deferred = fn end,
 }
 dofile("ATS_Editor.lua")
+script.keys = { 111 }; do local f = deferred; deferred = nil; f() end            -- the window starts empty: O opens the file
 local function frame(setup)
   if setup then setup() end
   local fn = deferred; deferred = nil

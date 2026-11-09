@@ -296,16 +296,36 @@ class Engine(unittest.TestCase):
         t0 = time.time()
         while proc.poll() is None and time.time() - t0 < 60:
             try:
-                seen.append(float(read_bytes(res + ".started").decode()))
+                seen.append(float(read_bytes(res + ".started").decode().split()[0]))
             except (OSError, ValueError):
                 pass
             time.sleep(0.01)
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(os.path.exists(res), "the result file must exist when the program is done")
         self.assertTrue(read_bytes(res).decode().startswith("RESULT {input_channels=1,files={{file="))
-        self.assertEqual(float(read_bytes(res + ".started").decode()), 1.0)
+        self.assertEqual(float(read_bytes(res + ".started").decode().split()[0]), 1.0)
         self.assertGreater(len(set(seen)), 3, "progress should move: %r" % seen[:10])
         self.assertEqual(seen, sorted(seen), "progress must not go backwards")
+
+    def test_the_progress_file_is_a_sign_of_life(self):
+        import time
+        w = self.wav("hb.wav", [self.voice(200, 14)])
+        res = os.path.join(self.dir, "hb.result")
+        proc = subprocess.Popen([sys.executable, "-I", CLI, w, os.path.join(self.dir, "hb.ats"), "--lowest-frequency", "100",
+                                 "--result-file", res], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stamps, t0 = [], time.time()
+        while proc.poll() is None and time.time() - t0 < 90:
+            try:
+                parts = read_bytes(res + ".started").decode().split()
+                if len(parts) == 2:
+                    stamps.append(float(parts[1]))
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.05)
+        self.assertEqual(proc.returncode, 0)
+        self.assertGreater(len(set(stamps)), 2, "the time in the progress file should keep moving")
+        self.assertAlmostEqual(stamps[-1], time.time(), delta=60)
+        self.assertEqual([f for f in os.listdir(self.dir) if f.endswith(".tmp")], [], "no temporary files may remain")
 
     def test_background_mode_can_be_cancelled(self):
         import time
@@ -378,7 +398,7 @@ class Engine(unittest.TestCase):
         t1 = time.time()
         while time.time() - t1 < 1.0 and proc.poll() is None:
             try:
-                seen.append(float(read_bytes(res + ".started").decode()))
+                seen.append(float(read_bytes(res + ".started").decode().split()[0]))
             except (OSError, ValueError):
                 pass
             time.sleep(0.02)
@@ -405,6 +425,24 @@ class Engine(unittest.TestCase):
         write_bytes(res + ".cancel", b"stop")
         proc.wait(timeout=60)
         self.assertEqual(read_bytes(out), b"the old file", "a cancel must not destroy the file that was there")
+
+    def test_a_duration_past_the_end_is_cut_to_the_sound(self):
+        w = self.wav("past.wav", [tone(440, seconds=2.0)])
+        ref = os.path.join(self.dir, "ref.ats")
+        self.assertEqual(run_cli(w, ref, "--lowest-frequency", 100).returncode, 0)
+        for name, args in (("long", ["--duration", "5"]), ("few", ["--duration", "2.0004"]), ("start", ["--start", "0.5", "--duration", "10"])):
+            out = os.path.join(self.dir, name + ".ats")
+            r = run_cli(w, out, "--lowest-frequency", 100, *args)
+            self.assertEqual(r.returncode, 0, name + ": " + r.stdout + r.stderr)
+        self.assertEqual(read_bytes(os.path.join(self.dir, "long.ats")), read_bytes(ref), "a too long duration gives the whole sound")
+        self.assertEqual(read_bytes(os.path.join(self.dir, "few.ats")), read_bytes(ref), "a few samples too long give the whole sound")
+        self.assertAlmostEqual(read_ats(os.path.join(self.dir, "start.ats"))["dur"], 1.5, delta=0.01)
+
+    def test_a_start_past_the_end_says_so(self):
+        w = self.wav("beyond.wav", [tone(440, seconds=1.0)])
+        r = run_cli(w, os.path.join(self.dir, "b.ats"), "--start", "3")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR the start (3.00 s) is beyond the end of the sound (1.00 s)", r.stdout)
 
     def test_errors_are_also_printed_on_stdout(self):
         w = self.wav("er.wav", [tone(440, seconds=0.5)])

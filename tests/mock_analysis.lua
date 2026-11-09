@@ -34,6 +34,7 @@ local ext, strings, deferred = {}, {}, nil
 local chosen_file, input_value = stereo, ""
 local fake_check, mb_log, mb_answer, opened_url = nil, {}, 7, nil
 local skip_background = false
+local last_cmd = nil
 local fake_now = 1000.0                      -- the clock of the fake REAPER; only pump() moves it
 local rects, cur_color = {}, { 0, 0, 0, 1 }    -- what was drawn: filled rectangles with their colour
 local selected_item = nil
@@ -61,6 +62,7 @@ reaper = {
   ExecProcess = function(cmd, timeout)
     if fake_check ~= nil and cmd:find("--check", 1, true) then return "0\n" .. fake_check end
     if timeout == -1 then
+      last_cmd = cmd
       if not skip_background then os.execute(cmd .. " >/dev/null 2>&1 &") end        -- background, as in REAPER
       return ""
     end
@@ -98,6 +100,12 @@ local function start(last_file)
   ext[key("tjingboem_ATSViewer", "last_file")] = last_file          -- the other remembered values stay, as in REAPER
   deferred = nil
   dofile("ATS_Editor.lua")
+  if last_file ~= "" then                                            -- the window starts empty: O opens the file
+    local keep = chosen_file
+    chosen_file = last_file
+    script.keys = { 111 }; frame()
+    chosen_file = keep
+  end
 end
 local function ats_info(path)
   package.path = root .. "/lib/?.lua;" .. package.path
@@ -199,6 +207,16 @@ pump("^Analysed in")
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
 
+-- an item that runs past the end of its file (a few samples, or more) is analysed up to the end of the file
+selected_item = { file = stereo, offs = 0.5, len = 5.0 }
+click(100, 140)
+input_value = "1"; click(260, 285)
+input_value = "100"; click(260, 335)
+click(600, 515)
+pump("^Analysed in")
+assert(saw("1%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. tostring(saw("^channel 1")))
+print("an item that runs past the end of the file is cut to the file")
+
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
 local function start_long_job()
   start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
@@ -235,6 +253,39 @@ strings = {}; frame(); strings = {}; frame()
 assert(saw("^The analysis program did not start"), "an engine that never starts: " .. tostring(saw("analysis") or saw("Analy")))
 skip_background = false
 print("an engine that never starts is reported")
+
+-- 7c. every job has files of its own; a dead program is noticed; a Cancel that nobody answers ends
+local function job_files()                                          -- the result file of the job that was just started
+  local argsfile = last_cmd:match("@(%S+)")
+  local lines = {}
+  for line in io.lines(argsfile) do lines[#lines + 1] = line end
+  for i, l in ipairs(lines) do if l == "--result-file" then return argsfile, lines[i + 1] end end
+end
+skip_background = true
+start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+chosen_file = long_wav; click(250, 140); click(600, 515)
+local args1, result1 = job_files()
+assert(result1:match("reaats_%d+_%d+_result%.txt$") and args1:match("reaats_%d+_%d+_args%.txt$"), "files with an id of their own: " .. result1)
+-- a program that wrote a sign of life long ago and then died
+local fh = io.open(result1 .. ".started", "w"); fh:write(string.format("0.2000 %.3f", os.time() - 1000)); fh:close()
+strings = {}; frame(); strings = {}; frame()
+assert(saw("^Analysis failed") == nil and saw("stopped answering"), "a program that stopped answering is reported: " .. tostring(saw("answer") or saw("Analy")))
+assert(not reaper.file_exists(result1 .. ".started"), "and its files are removed")
+print("a dead program is noticed (no sign of life for 2 minutes)")
+click(600, 515)
+local args2, result2 = job_files()
+assert(result2 ~= result1, "the next job has other files: " .. result2)
+print("every job has its own files")
+fh = io.open(result2 .. ".started", "w"); fh:write(string.format("0.3000 %.3f", os.time())); fh:close()
+strings = {}; frame(); strings = {}; frame()
+assert(saw("^ANALYZING"), "a job with a fresh sign of life is waited for")
+click(550, 470)                                                   -- Cancel, but nobody answers
+strings = {}; frame()
+assert(saw("^CANCELLING"), "cancelling")
+fake_now = fake_now + 9; strings = {}; frame(); strings = {}; frame()
+assert(saw("^Analysis cancelled %(the program did not answer"), "a Cancel that nobody answers ends: " .. tostring(saw("ancel")))
+print("a Cancel that nobody answers ends after 8 s")
+skip_background = false
 
 -- 8. no usable Python: a popup says what to do, nothing is analysed
 local function fresh_page()

@@ -117,6 +117,17 @@ function M.workers(s, cores, channels)
   return math.max(1, math.min(jobs, count))
 end
 
+-- A long sound with a low amplitude threshold finds thousands of tiny partials (mostly noise) and can take hours: measured on
+-- a 9 minute recording, 30 s took 52 s at -60 dB, 18 s at -50 dB, 10 s at -40 dB and 5 s at -30 dB. Returns a warning or nil.
+function M.long_warning(s, info)
+  if not info then return nil end
+  local secs = (s.duration > 0) and math.min(s.duration, info.seconds - s.start) or (info.seconds - s.start)
+  if secs > 90 and s.amp_threshold_db < -45 then
+    return "Long sound, low threshold: this can take very long. Try -40 dB, or a shorter part."
+  end
+  return nil
+end
+
 -- What the window will be like, from the sound and the settings (the same arithmetic as the engine).
 function M.derived(s, info)
   if not info then return nil end
@@ -252,6 +263,7 @@ function M.new(env)
   self.hits = {}
   self.prev_down = false
   self.busy = false
+  math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))      -- (once: the job ids are drawn from this)
   -- remembered settings
   local saved = reaper.GetExtState(env.ext_section, "analysis_settings")
   if saved ~= "" then
@@ -360,6 +372,9 @@ function Page:use_selected_item()
   local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
   self.s.start = offs
   self.s.duration = len * ((rate and rate > 0) and rate or 1)
+  if self.info and offs + self.s.duration > self.info.seconds then            -- an item can end a few samples past the file
+    self.s.duration = math.max(self.info.seconds - offs, 0)
+  end
   self.out_custom = false
   self.out = unique_out(path)
   self:say("Item: the part of the file the item plays is analysed. Item volume, fades, FX and pitch are not applied.")
@@ -461,7 +476,9 @@ function Page:run()
     end
   end
   local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
-  local argsfile = dir .. "/reaats_analysis_args.txt"
+  -- Every job has files of its own (a second editor, a second page or another program must never read or delete them).
+  local id = string.format("%d_%d", os.time(), math.random(100000, 999999))
+  local argsfile = dir .. "/reaats_" .. id .. "_args.txt"
   local engine = self.env.script_dir .. "/python/reaats_analyse.py"
   if not reaper.file_exists(engine) then self:say("The analysis program is missing: " .. engine, true); return end
   if not self:find_python() then
@@ -470,7 +487,7 @@ function Page:run()
     return
   end
   -- start the engine in the background (ExecProcess with -1 returns at once); the page polls its files each frame
-  local result = dir .. "/reaats_analysis_result.txt"
+  local result = dir .. "/reaats_" .. id .. "_result.txt"
   for _, f in ipairs({ result, result .. ".started", result .. ".cancel", result .. ".tmp" }) do os.remove(f) end
   local fh = io.open(argsfile, "w")
   if not fh then self:say("Cannot write " .. argsfile, true); return end
@@ -526,8 +543,24 @@ function Page:poll()
     self:handle_reply(reply, now - job.t0)
     return
   end
-  local p = tonumber(read_all(job.started) or "")
+  local beat_text = read_all(job.started) or ""
+  local p, stamp = beat_text:match("^(%S+)%s+(%S+)")
+  p, stamp = tonumber(p), tonumber(stamp)
   if p then job.progress, job.seen_start = p, true end
+  if stamp then job.beat = stamp end                          -- the program writes the time (seconds since 1970) every 2 s
+  if job.cancelling and job.cancel_t and now - job.cancel_t > 8 then
+    for _, f in ipairs({ job.result, job.started, job.cancel, job.argsfile }) do os.remove(f) end
+    self.job = nil
+    self:say("Analysis cancelled (the program did not answer; it may have stopped already).")
+    return
+  end
+  if job.beat and os.time() - job.beat > 120 then
+    for _, f in ipairs({ job.result, job.started, job.cancel, job.argsfile }) do os.remove(f) end
+    self.job = nil
+    self:say("The analysis program stopped answering (no sign of life for 2 minutes). It may have crashed. If the sound is long or noisy, "
+      .. "try a higher amplitude threshold or a higher lowest frequency, or analyse a shorter part.", true)
+    return
+  end
   if not job.seen_start and now - job.t0 > 20 then
     self.job = nil
     self.python = nil                                           -- look again next time
@@ -544,6 +577,7 @@ function Page:cancel_job()
   local fh = io.open(job.cancel, "w")
   if fh then fh:write("stop"); fh:close() end
   job.cancelling = true
+  job.cancel_t = reaper.time_precise()
 end
 
 function Page:import_ats()
@@ -686,7 +720,12 @@ function Page:draw(W, H, top)
     local warn = d.too_long
     text(rx, ry, string.format("Window %d samples (%.0f ms), FFT %d, hop %d samples (%.0f ms), about %d frames", d.window, d.window_ms, d.fft, d.hop, d.hop_ms, d.frames),
       warn and 1 or 0.7, warn and 0.7 or 0.75, warn and 0.5 or 0.8)
-    if warn then text(rx, ry + 16, "The window is longer than the part analysed: raise the lowest frequency.", 1, 0.7, 0.5) end
+    if warn then
+      text(rx, ry + 16, "The window is longer than the part analysed: raise the lowest frequency.", 1, 0.7, 0.5)
+    else
+      local lw = M.long_warning(self.s, self.info)
+      if lw then text(rx, ry + 16, lw, 1, 0.7, 0.5) end
+    end
   end
   ry = ry + 38
   self.analyse_box = { x = rx, y = ry, w = 130, h = 30 }

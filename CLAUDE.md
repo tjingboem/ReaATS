@@ -211,7 +211,61 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   under the "Noise layer" one (top right, second row); both set `show_partials` / `show_noise`, the same switches as the P / N
   keys, and they still decide what AUDITION and PRINT render. While the sine layer is off nothing can be selected (status
   says why) and the hover readout does not name partials: no editing of hidden data.
-- SDIF question (tjingboem asked 9 Nov: SPEAR reads SDIF; is ReaATS .ats only?): YES, .ats only. See docs/file_formats.md.
+- SDIF: asked about 9 Nov 2026 (SPEAR reads it), then DROPPED by tjingboem ("Drop SDIF"). ReaATS is .ats only. Do not propose it again.
+
+- MULTICHANNEL SOUND (tjingboem 9 Nov 2026: "Multichannel sound for AUDITION and PRINT"; no question about unsaved edits
+  wanted: "no"): the editor now holds a CHANNEL SET. Opening name_chK.ats opens all consecutive files name_ch1.ats ... (same
+  frame size, frames, sample rate and duration, else the file opens alone and the status says why); `chs` holds one bundle
+  per channel (data, undo/redo, modified, selection ... swapped by `capture_channel`/`restore_channel`/`switch_channel`),
+  `cur` is the shown/edited channel. Channel buttons (an extra header row, only with 2+ channels; plot top 90 instead of 70)
+  and Tab switch; a star on a button = unsaved changes in that channel. AUDITION and PRINT render ALL channels
+  (`synth.render_multi_job`, interleaved float WAV via `synth.write_wav_channels`); 9 Nov, same day, tjingboem: REAPER's
+  preview is stereo, so AUDITION MIXES DOWN to stereo when a set has more than 2 channels (`synth.mix_to_stereo`: channel 1
+  hard left, the last hard right, the rest spread, constant power, level so no side is louder than one channel; exactly 2
+  channels play as they are) while PRINT stays multichannel ("I do think Printing can be multichannel though"; REAPER must
+  be set up for multichannel use); PRINT raises the track to an even number
+  of channels >= N (`I_NCHAN`) and the item state lists every file (`files`, `channel`). Ctrl+S saves the whole set as
+  name_edit[N]_ch1.ats ... ; EXPORT writes name_ch1.ats ... from the chosen name (asks before replacing any). Edits still
+  apply to ONE channel at a time. NOT built (the rest of the design in docs/multichannel_design.md): several channels switched
+  on and edited together, the overlay in channel colours, the visibility sliders. Tests: tests/mock_channels.lua (real engine
+  makes a 3-channel set), test_ats_synth.lua (12 new for multi-channel rendering and the WAV).
+
+- INCIDENT 9 Nov 2026 (tjingboem: the Analysis page showed "800 seconds" and never finished; they cancelled the import):
+  the page and my own test runs used the SAME fixed temp names (/tmp/reaats_analysis_args.txt, _result.txt, .started, .cancel,
+  /tmp/reaats_audition_N.wav), so a test run of mine removed/consumed the live job's result file while tjingboem's analysis
+  ran in REAPER (the engine process was a defunct child of REAPER, no result file, no .ats). FIXED: every job has a unique id
+  in its file names (`reaats_<time>_<random>_args/result.txt`), audition WAVs carry a per-editor-session id; the engine
+  writes a sign of life (`progress epoch-seconds`, plus a heartbeat thread every 2 s) into R.started and the page declares
+  the program lost after 120 s without one (message with advice), and a Cancel nobody answers ends after 8 s. RULE for me:
+  run the Lua tests with `TMPDIR=<scratchpad>/tmp` and never reuse fixed temp names between the live plugin and tests.
+  A 217 s stereo song at the default settings needs about 3.5 minutes (2 parallel workers; progress 0.45 after 100 s): long
+  full-range music at lowest frequency 20 Hz is slow; raise the lowest frequency / amplitude threshold or analyse a part.
+  REAPER leaves a defunct (zombie) child per background ExecProcess until REAPER exits; harmless.
+
+- LONG SOUNDS (tjingboem 9 Nov 2026: a 103 MB stereo wav, 536 s, channel 1 at lowest 100 Hz and the default -60 dB, ran for
+  ~1000 s at 37 %; asked "how long should it take"): the time is dominated by the NUMBER OF PEAKS, not the length: first 30 s
+  of that recording: 52 s at -60 dB (7705 partials), 18 s at -50 (2384), 10 s at -40 (716), 5.3 s at -30 (121). The old engine
+  needed >110 s for the first 60 s, so the whole file at -60 dB would take hours (progress is also non-linear: cost grows with
+  the number of tracks alive). RECOMMENDATION given: cancel; use -40 dB (about 5 minutes for the whole file) or analyse parts.
+  Added: the Analysis page warns "Long sound, low threshold: this can take very long. Try -40 dB, or a shorter part" (> 90 s
+  analysed and threshold below -45 dB; `analysis_page.long_warning`). Engine: another speed-up in the vendored tracker (only
+  `active` tracks are visited each frame; byte-identical output on sax, synthetic voices and 25 s of music), about 10 % faster
+  on that file, the remaining cost is the peaks themselves. NOT done: a time estimate, a smarter default threshold.
+
+- START CLEARED (tjingboem 9 Nov 2026: "i think it must start cleared"; chose "Editor: no file"): the editor window starts EMPTY.
+  No last file is reopened and no file dialog opens (O opens one, ANALYSE makes one). A ReaSnap snapshot still restores its file;
+  a snapshot whose file is gone says so and the window stays empty (it used to fall back to the last file). The remembered
+  last folder is still the dialog's starting point; the Analysis settings are still remembered (not asked to clear).
+  Mocks now press O after starting.
+
+- CRYPTIC ERROR (tjingboem 9 Nov 2026, screenshot: "Analysis failed: operands could not be broadcast together with shapes
+  (355663,) (355680,)"): the analysis failed whenever Start + Duration ran past the end of the file (typically "Use selected
+  item" with an item a few samples longer than its file); numpy raised a shape error. FIXED: the vendored tracker cuts the
+  end to the sound (`nd = min(..., in_sound.size)`), the page clamps an item's duration to the file, the engine says
+  "the start (3.00 s) is beyond the end of the sound (1.00 s)" for a start past the end, and any unexpected exception now
+  reads "internal error (Type: message). The settings or the sound may be unusual; if it happens again with other settings,
+  please report it". Tests: 2 engine tests (duration past the end gives the same file as the whole sound; start past the
+  end), 1 page test (item 5 s on a 2 s file).
 
 ## Next (not started, wait for tjingboem)
 1. (There is no Lua analysis: see DECISION above.)

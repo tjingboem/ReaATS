@@ -7,7 +7,7 @@
   transpose them. Edits are saved to a NEW file next to the original.
 
   Run it from the action list (Actions > Show action list > ReaScript: Load...).
-  The first run asks for a .ats file; later runs reopen the last one.
+  The window starts empty: press O to open a .ats file, or click ANALYSE to make one from a sound.
 
   Mouse:  left drag = select box (Shift adds, click on empty space clears)
           left drag ON a selected point = move the selection (Shift locks to one axis)
@@ -24,6 +24,7 @@
           ANALYSE / Ctrl+A  the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
           Ctrl+P / PRINT render, from the playhead to the end, to a permanent WAV (unsaved edits are saved first) and put it on the selected
                         track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
+          Tab / the channel buttons  switch the channel of a set (name_ch1.ats, name_ch2.ats ...; AUDITION and PRINT play all channels)
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
           EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
@@ -66,6 +67,8 @@ local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
 -- --------------------------------------------------------------------- state
 local data, fname, load_error
+local chs = {}                 -- the channels of the loaded set, one bundle each (see capture_channel); one entry for a single file
+local cur = 1                  -- the channel that is shown and edited
 local view = { t0 = 0, t1 = 1, f0 = 40, f1 = 16000 }
 local show_partials, show_noise = true, true
 local dirty = true
@@ -100,7 +103,8 @@ local function clamp(x, a, b) if x < a then return a elseif x > b then return b 
 -- ------------------------------------------------------------------ geometry
 local function plot_rect()
   local w, h = math.floor(gfx.w), math.floor(gfx.h)
-  return MARGIN_L, MARGIN_T, math.max(w - MARGIN_L - MARGIN_R, 10), math.max(h - MARGIN_T - MARGIN_B, 10)
+  local top = MARGIN_T + ((#chs > 1) and 20 or 0)            -- an extra row for the channel buttons
+  return MARGIN_L, top, math.max(w - MARGIN_L - MARGIN_R, 10), math.max(h - top - MARGIN_B, 10)
 end
 
 -- Local (plot-relative) coordinates.
@@ -175,21 +179,90 @@ local function fit_view()
   dirty = true
 end
 
-local function load_file(path)
-  local d, err = ats.load(path)
-  if not d then
-    load_error = path .. "\n" .. tostring(err)
-    return false
+-- ----------------------------------------------------------------- channel sets
+-- A stereo or multichannel analysis is a set of files name_ch1.ats, name_ch2.ats, ... (one per channel, see the Analysis
+-- page). Opening any one of them opens the whole set; the channel buttons switch the channel that is shown and edited.
+-- Everything that belongs to one channel is kept in a bundle so that switching only swaps the bundles.
+local function capture_channel()
+  local c = chs[cur]
+  if not c then return end
+  c.data, c.fname, c.current_file = data, fname, current_file
+  c.undo_stack, c.redo_stack, c.modified, c.saved_depth = undo_stack, redo_stack, modified, saved_depth
+  c.edited_cells, c.sel, c.sel_info, c.amp_thresh = edited_cells, sel, sel_info, amp_thresh
+end
+
+local function restore_channel(i)
+  cur = i
+  local c = chs[i]
+  data, fname, current_file = c.data, c.fname, c.current_file
+  undo_stack, redo_stack, modified, saved_depth = c.undo_stack, c.redo_stack, c.modified, c.saved_depth
+  edited_cells, sel, sel_info, amp_thresh = c.edited_cells, c.sel, c.sel_info, c.amp_thresh
+  box, mover = nil, nil
+  dirty = true
+end
+
+local function switch_channel(i)
+  if i == cur or not chs[i] then return end
+  capture_channel()
+  restore_channel(i)
+end
+
+-- The files of the set that `path` belongs to, and which of them it is. A file that is not name_chK.ats, or whose
+-- channels do not start at 1 or are not all there, is a set of one.
+local function find_set(path)
+  local stem, k, ext = path:match("^(.*)_ch(%d+)(%.[^./\\]+)$")
+  if not stem then return { path }, 1 end
+  local files, i = {}, 1
+  while true do
+    local f = string.format("%s_ch%d%s", stem, i, ext)
+    if reaper.file_exists(f) then files[#files + 1] = f; i = i + 1 else break end
   end
-  data, fname, load_error = d, path, nil
-  clear_selection()
-  undo_stack, redo_stack, modified, edited_cells = {}, {}, false, {}
+  local which = tonumber(k)
+  if files[which] ~= path then return { path }, 1 end
+  return files, which
+end
+
+local function load_file(path)
+  local files, which = find_set(path)
+  local loaded, note = {}, nil
+  for i, f in ipairs(files) do
+    local d, err = ats.load(f)
+    if not d then
+      if #files == 1 then load_error = f .. "\n" .. tostring(err); return false end
+      note = "the channel files do not all open (" .. (f:match("([^/\\]+)$") or f) .. "): opened this file alone"
+      files, which, loaded = { path }, 1, {}
+      break
+    end
+    loaded[i] = d
+  end
+  if #loaded == 0 then
+    local d, err = ats.load(path)
+    if not d then load_error = path .. "\n" .. tostring(err); return false end
+    loaded[1] = d
+  end
+  if #loaded > 1 then                                           -- all channels must have the same frame grid
+    local a = loaded[1]
+    for i = 2, #loaded do
+      local b = loaded[i]
+      if b.frames ~= a.frames or b.frame_size ~= a.frame_size or b.sr ~= a.sr or math.abs(b.dur - a.dur) > 1e-6 then
+        note = "the channel files do not have the same frame grid: opened this file alone"
+        files, which, loaded = { path }, 1, { loaded[which] }
+        break
+      end
+    end
+  end
+  chs = {}
+  for i, d in ipairs(loaded) do
+    chs[i] = { data = d, fname = files[i], current_file = files[i], undo_stack = {}, redo_stack = {}, modified = false,
+               saved_depth = 0, edited_cells = {}, sel = {}, sel_info = nil, amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20) }
+  end
+  restore_channel(which)
+  load_error = nil
   playhead, play = 0, nil
   if stop_audition then stop_audition() end
-  saved_depth, current_file = 0, path
-  amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
   fit_view()
+  if note and set_status then set_status(note) end
   return true
 end
 
@@ -362,6 +435,8 @@ end
 -- preview can still be playing.
 local preview_until = 0        -- time_precise() at which the running preview ends
 local audition_count = 0
+math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))
+local session_id = string.format("%d_%d", os.time(), math.random(100000, 999999))   -- makes the temporary file names this editor's own
 local wav_history = {}
 
 function stop_audition()
@@ -395,8 +470,11 @@ local function audition()
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  pending = { kind = "audition", mode = mode,
-              job = synth.render_job(data, { sines = use_sines, noise = use_noise, from = playhead }) }
+  capture_channel()
+  local list = {}
+  for i, c in ipairs(chs) do list[i] = c.data end
+  pending = { kind = "audition", mode = mode, channels = #list,
+              job = synth.render_multi_job(list, { sines = use_sines, noise = use_noise, from = playhead }) }
   set_status("preparing the sound ... 0 %")
 end
 
@@ -414,8 +492,11 @@ local function advance_pending()
   if not job.samples then set_status("audition failed: " .. tostring(job.error)); return end
   local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
   audition_count = audition_count + 1
-  local wav = string.format("%s/reaats_audition_%d.wav", dir, audition_count)
-  local ok, err = synth.write_wav(wav, job.samples, job.sr)
+  local wav = string.format("%s/reaats_audition_%s_%d.wav", dir, session_id, audition_count)
+  local ok, err
+  local chans = job.channels
+  if #chans > 2 then chans = synth.mix_to_stereo(chans) end      -- REAPER's preview is stereo: more channels are mixed down
+  if #chans > 1 then ok, err = synth.write_wav_channels(wav, chans, job.sr) else ok, err = synth.write_wav(wav, job.samples, job.sr) end
   if not ok then set_status("audition failed: " .. tostring(err)); return end
   local dur = #job.samples / job.sr
   local src = reaper.PCM_Source_CreateFromFile(wav)
@@ -425,7 +506,10 @@ local function advance_pending()
     play = { start = job.t_start or 0, t0 = reaper.time_precise(), dur = dur }
     wav_history[#wav_history + 1] = wav
     if #wav_history > 4 then os.remove(table.remove(wav_history, 1)) end
-    set_status(string.format("auditioning from %.2f s, %.1f s long (%s)  Space stops", job.t_start or 0, dur, p.mode))
+    local chan_note = ""
+    if (p.channels or 1) > 2 then chan_note = ", " .. p.channels .. " channels mixed down to stereo"
+    elseif (p.channels or 1) == 2 then chan_note = ", stereo" end
+    set_status(string.format("auditioning from %.2f s, %.1f s long (%s%s)  Space stops", job.t_start or 0, dur, p.mode, chan_note))
   else
     set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
   end
@@ -446,9 +530,48 @@ local function write_ats(path, verb)
   set_status("save failed: " .. tostring(err))
 end
 
--- Ctrl+S: saves next to the original as <name>_edit.ats (never overwrites; numbers further copies).
+-- Writes every channel of a set to the given names, one file per channel (each with its phases rebuilt first).
+local function write_set(names, verb)
+  capture_channel()
+  local keep = cur
+  for k = 1, #chs do
+    switch_channel(k)
+    if not write_ats(names[k], verb) then switch_channel(keep); return false end
+  end
+  switch_channel(keep)
+  set_status(string.format("%s %d channels: %s ... %s", verb, #chs, names[1]:match("([^/\\]+)$") or names[1], names[#names]:match("([^/\\]+)$") or names[#names]))
+  return true
+end
+
+-- The names name_ch1.ats ... for a set, from any name (a trailing _chK and the extension are dropped first).
+local function set_names(path, count)
+  local stem, ext = path:match("^(.*)(%.[^./\\]+)$")
+  stem, ext = stem or path, ext or ".ats"
+  stem = stem:gsub("_ch%d+$", "")
+  local names = {}
+  for k = 1, count do names[k] = string.format("%s_ch%d%s", stem, k, ext) end
+  return names
+end
+
+-- Ctrl+S: saves next to the original as <name>_edit.ats (never overwrites; numbers further copies). A set is saved as a
+-- whole, every channel, as <name>_edit_ch1.ats, <name>_edit_ch2.ats ... (so it opens as a set again).
 local function save_file()
   if not data or not fname then return end
+  if #chs > 1 then
+    local first = chs[1].fname
+    local base = set_names(first, 1)[1]:gsub("_ch1%.[^./\\]+$", ""):gsub("_edit%d*$", "")
+    local ext = first:match("(%.[^./\\]+)$") or ".ats"
+    local n, names = 1, nil
+    repeat
+      names = {}
+      for k = 1, #chs do names[k] = string.format("%s_edit%s_ch%d%s", base, n > 1 and tostring(n) or "", k, ext) end
+      local exists = false
+      for _, f in ipairs(names) do if reaper.file_exists(f) then exists = true end end
+      n = n + 1
+    until not exists
+    if write_set(names, "saved") then return names[cur] end
+    return nil
+  end
   local base, ext = fname:match("^(.*)(%.[^./\\]+)$")
   base = (base or fname):gsub("_edit%d*$", "")
   ext = ext or ".ats"
@@ -468,8 +591,8 @@ local function save_as()
   local here = current_file or fname
   local dir = reaper.GetExtState(EXT_SECTION, "save_dir")
   if dir == "" then dir = here:match("^(.*)[/\\]") or "" end
-  local stem = (here:match("([^/\\]+)$") or "sound.ats"):gsub("%.[^.]*$", ""):gsub("_edit%d*$", "")
-  local suggested = stem .. "_edit.ats"
+  local stem = (here:match("([^/\\]+)$") or "sound.ats"):gsub("%.[^.]*$", ""):gsub("_ch%d+$", ""):gsub("_edit%d*$", "")
+  local suggested = stem .. "_edit" .. ((#chs > 1) and "_ch1" or "") .. ".ats"
   local path
   if reaper.JS_Dialog_BrowseForSaveFile then
     local rv, chosen = reaper.JS_Dialog_BrowseForSaveFile("Export .ats file (Csound compatible)", dir, suggested,
@@ -482,11 +605,16 @@ local function save_as()
     path = text
   end
   if not path:lower():match("%.ats$") then path = path .. ".ats" end
-  if reaper.file_exists(path) and reaper.MB("Replace this file?\n\n" .. path, "ReaATS: export .ats file", 4) ~= 6 then
-    set_status("not exported (the file was kept)")
-    return
+  local names = (#chs > 1) and set_names(path, #chs) or { path }
+  for _, f in ipairs(names) do
+    if reaper.file_exists(f) and reaper.MB("Replace this file?\n\n" .. f, "ReaATS: export .ats file", 4) ~= 6 then
+      set_status("not exported (the file was kept)")
+      return
+    end
   end
-  if write_ats(path, "exported") then
+  local ok
+  if #chs > 1 then ok = write_set(names, "exported") else ok = write_ats(path, "exported") end
+  if ok then
     reaper.SetExtState(EXT_SECTION, "save_dir", path:match("^(.*)[/\\]") or "", true)
   end
 end
@@ -496,10 +624,12 @@ end
 -- .ats file and puts it on the selected track (or a new "ReaATS" track) at the edit cursor. This is the tool's
 -- "generate" moment for the ReaSnap Integration Contract (piece 3): the settings that made the item are written
 -- to the project under the item's GUID, so ReaSnap (or anything else) can bring them back.
-local function build_state(ats_path, from)
+local function build_state(ats_path, from, files)
   return {
     from = from or 0,                                           -- where in the sound this print starts (the playhead)
-    file = ats_path,
+    file = ats_path,                                            -- the channel that was shown; opening it opens the whole set
+    files = files,                                              -- every channel file of the set, in channel order
+    channel = cur,
     name = (ats_path:match("([^/\\]+)$") or ats_path),
     view = { t0 = view.t0, t1 = view.t1, f0 = view.f0, f1 = view.f1 },
     partials = show_partials,
@@ -510,22 +640,31 @@ end
 local function print_to_track()
   if not data then return end
   if pending and pending.kind == "print" then return end
+  capture_channel()
+  local unsaved = false
+  for _, c in ipairs(chs) do if c.modified then unsaved = true end end
   local ats_path = current_file or fname
-  if modified then
-    ats_path = save_file()
+  if unsaved then
+    ats_path = save_file()                                      -- (a set is saved as a whole)
     if not ats_path then return end
+    capture_channel()
   end
+  local files = {}
+  for i, c in ipairs(chs) do files[i] = (i == cur) and current_file or c.current_file end
   stop_audition()                                              -- a sound that is still being prepared is dropped
   if pending then pending.job.cancel(); pending = nil end
   local stem = ats_path:gsub("%.[^./\\]+$", "")
+  if #chs > 1 then stem = stem:gsub("_ch%d+$", "") end
   local n, wav = 1, nil
   repeat wav = string.format("%s_print%d.wav", stem, n); n = n + 1 until not reaper.file_exists(wav)
   local use_sines = show_partials
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to print (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path,
-              job = synth.render_job(data, { sines = use_sines, noise = use_noise, from = playhead }) }   -- from the playhead
+  local list = {}
+  for i, c in ipairs(chs) do list[i] = c.data end
+  pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path, files = files, channels = #list,
+              job = synth.render_multi_job(list, { sines = use_sines, noise = use_noise, from = playhead }) }   -- from the playhead
   set_status("preparing the print ... 0 %   (Esc cancels)")
 end
 
@@ -533,7 +672,8 @@ end
 finish_print = function(p, job)
   if not job.samples then set_status("print failed: " .. tostring(job.error)); return end
   local wav, ats_path, mode = p.wav, p.ats_path, p.mode
-  local ok_w, err_w = synth.write_wav(wav, job.samples, job.sr)
+  local ok_w, err_w
+  if #job.channels > 1 then ok_w, err_w = synth.write_wav_channels(wav, job.channels, job.sr) else ok_w, err_w = synth.write_wav(wav, job.samples, job.sr) end
   if not ok_w then set_status("print failed: " .. tostring(err_w)); return end
   local dur = #job.samples / job.sr
 
@@ -545,6 +685,10 @@ finish_print = function(p, job)
     reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS", true)
   end
   reaper.SetOnlyTrackSelected(track)
+  if #job.channels > 1 then                                    -- the track needs room for every channel (an even number)
+    local need = #job.channels + (#job.channels % 2)
+    if (reaper.GetMediaTrackInfo_Value(track, "I_NCHAN") or 2) < need then reaper.SetMediaTrackInfo_Value(track, "I_NCHAN", need) end
+  end
   reaper.InsertMedia(wav, 0)
   local item
   for i = 0, reaper.CountTrackMediaItems(track) - 1 do
@@ -556,7 +700,7 @@ finish_print = function(p, job)
   if item then
     local ok_g, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
     if ok_g and guid ~= "" then
-      local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path, job.t_start))
+      local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path, job.t_start, p.files))
       if ok_enc then reaper.SetProjExtState(0, "ReaATS_ItemSettings", guid, encoded) end
     end
     local take = reaper.GetActiveTake(item)
@@ -564,7 +708,8 @@ finish_print = function(p, job)
   end
   reaper.Undo_EndBlock("ReaATS print", -1)
   reaper.UpdateArrange()
-  set_status(item and string.format("printed %.1f s from %.2f s (%s) to the track", dur, job.t_start or 0, mode)
+  set_status(item and string.format("printed %.1f s from %.2f s (%s%s) to the track", dur, job.t_start or 0, mode,
+                                    #job.channels > 1 and (", " .. #job.channels .. " channels") or "")
                   or "printed, but the new item was not found on the track")
 end
 
@@ -894,6 +1039,30 @@ local function draw_progress_under(x, w, y, frac, rgb)
   gfx.drawstr(label)
 end
 
+-- The channel buttons (an extra header row, only when there are several channels); a star marks unsaved changes.
+local function channel_button_rect(i)
+  return MARGIN_L + (i - 1) * 40, MARGIN_T - 2, 36, 18
+end
+
+local function draw_channel_buttons()
+  if #chs < 2 then return end
+  gfx.setfont(1, "Arial", 13)
+  for i = 1, #chs do
+    local x, y, w, h = channel_button_rect(i)
+    local on = (i == cur)
+    if on then gfx.set(0.20, 0.45, 0.42, 1) else gfx.set(0.16, 0.18, 0.22, 1) end
+    gfx.rect(x, y, w, h, 1)
+    gfx.set(on and 0.55 or 0.35, on and 0.90 or 0.38, on and 0.82 or 0.43, 1)
+    gfx.rect(x, y, w, h, 0)
+    local label = tostring(i) .. (((i == cur and modified) or (i ~= cur and chs[i].modified)) and "*" or "")
+    gfx.set(1, 1, 1, on and 1 or 0.7)
+    gfx.x = x + (w - gfx.measurestr(label)) / 2
+    gfx.y = y + 2
+    gfx.drawstr(label)
+  end
+  text_at(MARGIN_L + #chs * 40 + 6, MARGIN_T, "channel " .. cur .. " of " .. #chs .. "   (Tab switches)", 0.6, 0.65, 0.7)
+end
+
 local function draw_audition_button()
   local x, y, w, h = audition_rect()
   if pending and (math.floor(reaper.time_precise() * 2.5) % 2 == 0) then
@@ -987,6 +1156,7 @@ local function draw_header(px, py, pw, ph, plain)
     draw_print_button()
     draw_export_button()
     draw_analyse_button()
+    draw_channel_buttons()
     if pending then                                              -- how far the sound is, under the button it belongs to
       local x, y, w, h, rgb
       if pending.kind == "print" then x, y, w, h = print_rect(); rgb = { 0.45, 0.62, 0.95 }
@@ -1127,6 +1297,9 @@ local function handle_input(px, py, pw, ph)
     elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
       ruler_drag = true                                          -- a click (or drag) on the time ruler sets the playhead
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
+    elseif (function() for i = 1, #chs do local bx, by, bw, bh = channel_button_rect(i)
+                                          if #chs > 1 and mx >= bx and mx < bx + bw and my >= by and my < by + bh then switch_channel(i); return true end end end)() then
+      -- (a channel button: handled above)
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -1189,6 +1362,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
+  elseif ch == 9 then if #chs > 1 then switch_channel(cur % #chs + 1) end        -- Tab: the next channel
   elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
@@ -1221,7 +1395,7 @@ local function draw_analysis_frame()
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   draw_header(px, py, pw, ph, true)
-  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T)
+  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T + ((#chs > 1) and 20 or 0))
 end
 
 local function loop()
@@ -1301,12 +1475,6 @@ do
     end
   end
 end
-if not applied then
-  local last = reaper.GetExtState(EXT_SECTION, EXT_LAST)
-  if last ~= "" and reaper.file_exists(last) then
-    load_file(last)
-  else
-    open_dialog()
-  end
-end
+-- Without a snapshot the window starts EMPTY (tjingboem, 9 Nov 2026: "it must start cleared"): no file is reopened and no
+-- dialog asks for one. Press O to open a file, or use ANALYSE. (The last folder is still the dialog's starting point.)
 loop()

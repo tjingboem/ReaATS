@@ -4,7 +4,11 @@ tjingboem: "we should, for analysis, be able to set the number of channels. Thes
 Editor. Using Shift while editing changes all channels, but the user can switch between them and make individual
 edits. Common factor is the edit window and the stereo or multichannel sound is of the same duration."
 
-NOT built yet. An .ats file stays mono (one set of partials, standard Csound format); a stereo or multichannel
+STATUS 9 Nov 2026: BUILT so far: opening a set, channel buttons + Tab (one channel shown and edited at a time), per-channel undo,
+multichannel AUDITION and PRINT, saving/exporting a set. NOT built: switching several channels on to edit together, the overlay,
+the visibility sliders (the design below is still the plan).
+
+Original note: NOT built yet. An .ats file stays mono (one set of partials, standard Csound format); a stereo or multichannel
 sound is a SET of .ats files, one per channel.
 
 ## Analysis

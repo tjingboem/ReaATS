@@ -204,6 +204,94 @@ function M.render_job(d, opts)
   return job
 end
 
+-- Mixes any number of channels down to stereo for listening: the channels are spread from left to right (channel 1 hard
+-- left, the last hard right, the others in between, constant power) and the level is set so that neither side gets louder
+-- than one channel would. Returns { left, right }. Two channels are returned as they are (channel 1 left, 2 right).
+function M.mix_to_stereo(chans)
+  local n = #chans
+  if n <= 2 then return chans end
+  local gl, gr, sl, sr_ = {}, {}, 0, 0
+  for k = 1, n do
+    local pan = (k - 1) / (n - 1)                                 -- 0 = left, 1 = right
+    gl[k], gr[k] = math.cos(pan * pi / 2), math.sin(pan * pi / 2)
+    sl, sr_ = sl + gl[k] * gl[k], sr_ + gr[k] * gr[k]
+  end
+  local norm = 1 / math.sqrt(math.max(sl, sr_))
+  local len = 0
+  for _, c in ipairs(chans) do if #c > len then len = #c end end
+  local left, right = {}, {}
+  for i = 1, len do
+    local l, r = 0, 0
+    for k = 1, n do
+      local v = chans[k][i] or 0
+      l, r = l + gl[k] * v, r + gr[k] * v
+    end
+    left[i], right[i] = l * norm, r * norm
+  end
+  return { left, right }
+end
+
+-- Several channels, each rendered like M.render_job, one after the other; the progress covers all of them. `list` is an
+-- array of data tables (all with the same frame grid). When done: job.channels (an array of sample arrays), job.samples (the
+-- first one), job.sr, job.t_start; job.error and no samples if any channel failed.
+function M.render_multi_job(list, opts)
+  local job = { progress = 0, done = false }
+  local index, sub = 1, nil
+  job.channels = {}
+  local function start_sub() sub = M.render_job(list[index], opts) end
+  start_sub()
+  function job.step(budget)
+    if job.done then return true end
+    local t_end = os.clock() + (budget or 0.03)
+    while not job.done do
+      local left = t_end - os.clock()
+      if sub.step(math.max(left, 0.001)) then
+        if not sub.samples then job.error, job.done = sub.error or "a channel failed", true; break end
+        job.channels[index] = sub.samples
+        if index == 1 then job.sr, job.t_start = sub.sr, sub.t_start end
+        index = index + 1
+        if index > #list then
+          job.samples, job.progress, job.done = job.channels[1], 1, true
+          break
+        end
+        start_sub()
+      end
+      job.progress = (index - 1 + sub.progress) / #list
+      if os.clock() >= t_end then break end
+    end
+    return job.done
+  end
+  function job.cancel()
+    if sub then sub.cancel() end
+    job.done, job.cancelled = true, true
+  end
+  return job
+end
+
+-- Writes a 32-bit float WAV with one channel per array in `chans` (interleaved). Shorter channels are padded with silence.
+function M.write_wav_channels(path, chans, sr)
+  local nch = #chans
+  local n = 0
+  for _, c in ipairs(chans) do if #c > n then n = #c end end
+  local fh, err = io.open(path, "wb")
+  if not fh then return nil, "cannot write " .. tostring(path) .. ": " .. tostring(err) end
+  local data_bytes = n * nch * 4
+  fh:write("RIFF", string.pack("<I4", 36 + data_bytes), "WAVE")
+  fh:write("fmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, nch, sr, sr * 4 * nch, 4 * nch, 32))
+  fh:write("data", string.pack("<I4", data_bytes))
+  local fmt = "<" .. string.rep("f", nch)
+  local buf = {}
+  for i = 1, n do
+    local row = {}
+    for c = 1, nch do row[c] = chans[c][i] or 0 end
+    buf[#buf + 1] = string.pack(fmt, table.unpack(row, 1, nch))
+    if #buf >= 2048 then fh:write(table.concat(buf)); buf = {} end
+  end
+  if #buf > 0 then fh:write(table.concat(buf)) end
+  fh:close()
+  return true
+end
+
 -- Writes a mono 32-bit float WAV file.
 function M.write_wav(path, samples, sr)
   local n = #samples
