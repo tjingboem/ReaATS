@@ -24,6 +24,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pyatsyn import wavio                                       # noqa: E402
+import reaats_audio                                             # noqa: E402
 
 N = 8192
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -78,7 +79,7 @@ def average_spectrum(seg, rate):
 
 
 def prescan(path, start=0.0, duration=None):
-    x, rate = wavio.read_wav(path)
+    x, rate = reaats_audio.read_audio(path)
     mono = x.mean(axis=1) if x.ndim > 1 else x
     n0 = int(start * rate)
     n1 = len(mono) if not duration or duration <= 0 else min(len(mono), n0 + int(duration * rate))

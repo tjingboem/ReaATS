@@ -26,6 +26,17 @@ t = np.arange(44100 * 14) / 44100
 wavio.write_wav("%s", (0.4*np.sin(2*np.pi*330*t) + 0.2*np.sin(2*np.pi*660*t))[:, None], 44100)
 ]], root, long_wav))
 make2:close()
+local flac_file, aiff_file = scratch .. "an_tone.flac", scratch .. "an_tone2.aif"
+local make3 = io.popen("python3 -I - 2>&1", "w")                    -- a short tone as FLAC and as AIFF (written by the encoders of the audio tests)
+make3:write(string.format([[
+import sys; sys.path.insert(0, "%s/python"); sys.path.insert(0, "%s/python/tests")
+import numpy as np
+import test_audio as ta
+ints = ta.smooth_ints(44100, 1, 16)
+ta.write_flac("%s", ints, 44100, 16, kind="lpc2", block=4096)
+ta.write_aiff("%s", ints, 44100, 16)
+]], root, root, flac_file, aiff_file))
+make3:close()
 local fh = io.open(text_file, "w"); fh:write("this is not a sound"); fh:close()
 do local a = io.open(root .. "/examples/sax.ats", "rb"); local d = a:read("a"); a:close(); local b = io.open(sax, "wb"); b:write(d); b:close() end
 
@@ -78,7 +89,14 @@ reaper = {
 local function frame() local f = deferred; deferred = nil; assert(f, "the window stopped"); f() end
 local function saw(pat) for _, s in ipairs(strings) do if s:find(pat) then return s end end end
 -- Runs frames (0.05 s of fake time each, a short real sleep so the engine can work) until `pattern` is drawn.
-local function pump(pattern, max_seconds)
+local pump
+local function expire_status() fake_now = fake_now + 100; strings = {}; frame() end        -- an older status message goes by
+local function pump_done()                                           -- waits until the analysis is done (the editor shows it), then opens the page again
+  pump("^analysed ", 60)
+  script.keys = { 1 }; frame()
+  strings = {}; frame()
+end
+function pump(pattern, max_seconds)
   local waited = 0
   while waited < (max_seconds or 60) do
     strings = {}; rects = {}
@@ -152,7 +170,7 @@ assert(saw("^Window 1765 samples"), "the derived window should follow the lowest
 -- looking at the sound first: the view with the spectrum, suggestions in red next to the fields, click one to use it, "Use all suggestions"
 do
   strings = {}; frame()
-  assert(saw("^Look at the sound$"), "the button to look at the sound is there")
+  assert(saw("^Inspect Sound File$"), "the button to inspect the sound is there")
   click(460, 174)                                                 -- it runs the pre-scan program (a second or so)
   strings = {}; frame()
   assert(saw("^THE SOUND: an_stereo%.wav"), "the view of the sound opens: " .. table.concat(strings, " / ", 1, math.min(#strings, 12)))
@@ -211,13 +229,15 @@ for i = 1, 400 do
     saw_percent = saw_percent or saw("^%d+ %%   |   %d+ s$") ~= nil
     saw_cancel = saw_cancel or saw("^Cancel$") ~= nil
   end
-  if saw("^Analysed in") then break end
+  if saw("^analysed an_") then break end                         -- the editor is shown as soon as the analysis is done
   os.execute("sleep 0.05")
 end
 assert(saw_big and saw_percent and saw_cancel, "while it runs the page should show ANALYZING..., a progress line and Cancel: " .. tostring(saw_big) .. tostring(saw_percent) .. tostring(saw_cancel) .. " | " .. table.concat(strings, " / ", 1, math.min(#strings, 12)))
 local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
 assert(n_colours >= 2, "the ANALYSE button should blink between two colours, saw " .. n_colours)
 print("while it runs: big word, blinking button, progress line, Cancel")
+strings = {}; frame()
+script.keys = { 1 }; frame()                                      -- Ctrl+A: the page again, with its result
 strings = {}; frame()
 assert(saw("^Analysed in") or true)
 assert(saw("^channel 1: an_stereo_ch1%.ats") and saw("^channel 2: an_stereo_ch2%.ats"), "both channel files should be listed; drawn: " .. table.concat(strings, " / ", 1, math.min(#strings, 50)))
@@ -240,7 +260,33 @@ print("settings remembered")
 
 -- 5. a file that is not a WAV, and too many channels
 chosen_file = text_file; click(250, 140); strings = {}; frame()
-assert(saw("^Cannot use this file: not a WAV file"), "text file message: " .. tostring(saw("Cannot")))
+assert(saw("^Cannot use this file: not a sound file"), "text file message: " .. tostring(saw("Cannot")))
+chosen_file = stereo; click(250, 140)
+-- FLAC and AIFF files are chosen and analysed like WAV files
+chosen_file = flac_file; click(250, 140); strings = {}; frame()
+assert(saw("44100 Hz, 1 channel%(s%), 16 bit, 1%.00 s"), "the FLAC file's info should show: " .. tostring(saw("Hz")))
+chosen_file = aiff_file; click(250, 140); strings = {}; frame()
+assert(saw("44100 Hz, 1 channel%(s%), 16 bit, 1%.00 s"), "the AIFF file's info should show: " .. tostring(saw("Hz")))
+chosen_file = flac_file; click(250, 140)
+enter(260, 335, "100")
+expire_status()
+click(600, 540)
+pump_done()
+assert(saw("^channel 1: an_tone%.ats"), "the FLAC file was analysed: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+assert(reaper.file_exists(scratch .. "an_tone.ats"), "and its .ats file is there")
+os.remove(scratch .. "an_tone.ats")
+print("FLAC and AIFF files are chosen and analysed")
+-- with JS_ReaScriptAPI the file dialog lists only the sound files the analysis reads
+do
+  local seen
+  reaper.JS_Dialog_BrowseForOpenFiles = function(title, folder, file, filter, multi) seen = filter; return 1, aiff_file end
+  click(250, 140); strings = {}; frame()
+  reaper.JS_Dialog_BrowseForOpenFiles = nil
+  assert(seen and seen:find("%*%.wav") and seen:find("%*%.flac") and seen:find("%*%.aif;") and seen:find("%*%.aiff"), "the dialog filter names wav, flac, aif and aiff: " .. tostring(seen))
+  assert(not seen:find("%*%.%*"), "and no 'all files' entry")
+  assert(saw("File: an_tone2%.aif"), "the chosen file is used: " .. tostring(saw("File:")))
+  print("the file dialog shows only wav, flac, aif and aiff files")
+end
 chosen_file = stereo; click(250, 140)
 enter(260, 285, "3")
 click(600, 540); strings = {}; frame()
@@ -263,8 +309,9 @@ click(100, 140); strings = {}; frame()
 assert(saw("^Item: the part of the file the item plays is analysed"), "item message: " .. tostring(saw("Item")))
 enter(260, 285, "1")
 enter(260, 335, "100")
+expire_status()
 click(600, 540)
-pump("^Analysed in")
+pump_done()
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
 
@@ -273,9 +320,10 @@ selected_item = { file = stereo, offs = 0.5, len = 20.0 }
 click(100, 140)
 enter(260, 285, "1")
 enter(260, 335, "100")
+expire_status()
 click(600, 540)
-pump("^Analysed in")
-assert(saw("11%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. tostring(saw("^channel 1")))
+pump_done()
+assert(saw("11%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. table.concat(strings, " / ", 1, math.min(#strings, 60)))
 print("an item that runs past the end of the file is cut to the file")
 
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
@@ -300,12 +348,12 @@ assert(not saw("^ANALYSIS: make"), "Esc should leave the page")
 pump("^an_long%.ats", 90)
 assert(reaper.file_exists(scratch .. "an_long.ats"))
 print("leaving the page does not stop the analysis; the result opens in the editor")
-chosen_file = sax                                                   -- the Import .ats file button
+chosen_file = sax                                                   -- the Import .ats File button
 start(""); script.keys = { 1 }; strings = {}; frame(); frame()
 click(450, 140); strings = {}; frame(); strings = {}; frame()
 assert(saw("^an_sax%.ats"), "Import should open the file in the editor")
 assert(not saw("^ANALYSIS: make"), "and return to the editor")
-print("Import .ats file opens a file and returns to the editor")
+print("Import .ats File opens a file and returns to the editor")
 skip_background = true                                              -- an engine that never starts
 start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
 chosen_file = long_wav; click(250, 140); click(600, 540)

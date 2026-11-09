@@ -53,6 +53,7 @@ import time                                              # noqa: E402
 
 import numpy as np                                        # noqa: E402
 from pyatsyn import wavio                                 # noqa: E402
+import reaats_audio                                       # noqa: E402  (WAV, AIFF and FLAC)
 from pyatsyn.ats_io import ats_save                       # noqa: E402
 from pyatsyn.atsa.tracker import tracker_array            # noqa: E402
 from pyatsyn.atsa.utils import db_to_amp                  # noqa: E402
@@ -67,7 +68,7 @@ def build_parser():
         epilog="Not available here, but in Csound's atsa: -T (SMR threshold) and -S (minimum segment SMR). "
                "Arguments can also be read from a file: @args.txt (one argument per line).",
         fromfile_prefix_chars="@")
-    p.add_argument("wav", help="the sound to analyse (WAV: PCM 8/16/24/32 bit or float; any number of channels)")
+    p.add_argument("wav", help="the sound to analyse (WAV: PCM 8/16/24/32 bit or float; AIFF/AIFC; FLAC; any number of channels)")
     p.add_argument("ats", help="the .ats file to write (with --channels above 1: name_ch1.ats, name_ch2.ats, ...)")
     g = p.add_argument_group("channels")
     g.add_argument("--channels", type=int, default=1, help="how many channels to analyse, each into its own file (default 1)")
@@ -327,7 +328,10 @@ def main(argv=None):
         write_progress(RESULT_FILE + ".started", 0.0)
         stop_beat = start_heartbeat(RESULT_FILE + ".started")
     try:
-        samples, rate = wavio.read_wav(a.wav)
+        kind = reaats_audio.sniff(a.wav) if os.path.exists(a.wav) else None
+        if RESULT_FILE and kind == "flac":
+            write_progress(RESULT_FILE + ".started", 0.0, "reading the sound: a FLAC file is decoded first, which takes a while for a long sound")
+        samples, rate = reaats_audio.read_audio(a.wav)
     except (OSError, wavio.WavError) as e:
         fail(str(e))
     in_channels = samples.shape[1]

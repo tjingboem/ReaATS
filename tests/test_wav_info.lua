@@ -32,7 +32,7 @@ make(1, 1, 44100, 16, 100, { data_size = 0xFFFFFFFF }); i = assert(wav.read(tmp)
 check("streamed data size", i.frames == 100, i.frames)
 local f = io.open(tmp, "wb"); f:write("this is not a wav file at all"); f:close()
 local bad, err = wav.read(tmp)
-check("rejects other files", bad == nil and err:find("not a WAV"), err)
+check("rejects other files", bad == nil and err:find("not a sound file"), err)
 check("missing file", wav.read("/nonexistent/x.wav") == nil)
 os.remove(tmp)
 -- slice: a piece cut out of a 2-channel float WAV
@@ -53,6 +53,47 @@ do
   check("slice: a piece beyond the end is refused", wav.slice(src, dst, 900, 300) == nil)
   check("slice: a file that is not ReaATS's WAV is refused", wav.slice(tmp, dst, 0, 1) == nil)
   os.remove(src); os.remove(dst)
+end
+-- AIFF and FLAC: the header only
+do
+  local function ext(rate)                                       -- an 80-bit extended number
+    local e = math.floor(math.log(rate, 2))
+    local mant = math.tointeger(rate) << (63 - e)                     -- (the top bit set: the same bits as an unsigned number)
+    return string.pack(">I2", e + 16383) .. string.pack(">I8", mant)
+  end
+  local function aiff(rate, ch, frames, bits, comp)
+    local comm = string.pack(">i2I4i2", ch, frames, bits) .. ext(rate) .. (comp and (comp .. "\7not cmp") or "")
+    local ssnd = string.pack(">I4I4", 0, 0) .. string.rep("\0", frames * ch * (bits // 8))
+    local body = (comp and "AIFC" or "AIFF") .. "COMM" .. string.pack(">I4", #comm) .. comm .. "SSND" .. string.pack(">I4", #ssnd) .. ssnd
+    return "FORM" .. string.pack(">I4", #body) .. body
+  end
+  local function put(path, bytes) local fh = io.open(path, "wb"); fh:write(bytes); fh:close() end
+  local a = tmp .. ".aif"
+  put(a, aiff(44100, 2, 1000, 16))
+  local i = wav.read(a)
+  check("aiff: rate, channels, bits, frames", i and i.rate == 44100 and i.channels == 2 and i.bits == 16 and i.frames == 1000 and i.format == "aiff", i and i.rate)
+  check("aiff: seconds", i and math.abs(i.seconds - 1000 / 44100) < 1e-9)
+  put(a, aiff(48000, 1, 480, 24))
+  i = wav.read(a)
+  check("aiff: 48000 Hz, 24 bit, mono", i and i.rate == 48000 and i.channels == 1 and i.bits == 24 and i.frames == 480)
+  put(a, aiff(22050, 2, 100, 32, "fl32"))
+  i = wav.read(a)
+  check("aifc: float and 22050 Hz", i and i.rate == 22050 and i.float == true and i.bits == 32, i and i.rate)
+  put(a, aiff(44100, 2, 100, 16, "sowt"))
+  check("aifc: little endian is fine", wav.read(a) ~= nil)
+  put(a, aiff(44100, 2, 100, 8, "ulaw"))
+  local bad, msg = wav.read(a)
+  check("aifc: compressed is refused", bad == nil and msg:find("compressed"), msg)
+  os.remove(a)
+  local f = tmp .. ".flac"
+  local v = (44100 << 44) | (1 << 41) | (15 << 36) | 441000
+  put(f, "fLaC" .. string.char(0x80, 0, 0, 34) .. string.pack(">I2I2", 4096, 4096) .. string.rep("\0", 6) .. string.pack(">I8", v) .. string.rep("\0", 16))
+  i = wav.read(f)
+  check("flac: rate, channels, bits, samples", i and i.rate == 44100 and i.channels == 2 and i.bits == 16 and i.frames == 441000 and i.format == "flac", i and i.rate)
+  check("flac: seconds", i and math.abs(i.seconds - 10) < 1e-9)
+  put(f, "fLaC" .. string.char(0x80, 0, 0, 34) .. "short")
+  check("flac: a header that ends early is refused", wav.read(f) == nil)
+  os.remove(f)
 end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

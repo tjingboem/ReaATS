@@ -1,5 +1,5 @@
 -- analysis_page.lua -- the Analysis page of the ReaATS editor: every analysis option in one place, a source (the
--- selected item or a WAV file), and an ANALYSE button that runs python/reaats_analyse.py and opens the result.
+-- selected item or a sound file: WAV, AIFF or FLAC), and an ANALYSE button that runs python/reaats_analyse.py and opens the result.
 --
 -- The page is immediate-mode: draw() paints it and records the clickable areas, mouse() acts on them.
 -- env (given to M.new): serial (lib/reaats_serial.lua), wav_info (lib/wav_info.lua), script_dir, ext_section,
@@ -430,8 +430,9 @@ function Page:use_selected_item()
   if not take or reaper.TakeIsMIDI(take) then self:say("The selected item has no audio take.", true); return end
   local src = reaper.GetMediaItemTake_Source(take)
   local path = reaper.GetMediaSourceFileName(src, "")
-  if not path:lower():match("%.wav$") then
-    self:say("The item's file is not a WAV (" .. basename(path) .. "). Render it to WAV first (Glue, or File > Render) and select the new item.", true)
+  local low = path:lower()
+  if not (low:match("%.wav$") or low:match("%.aiff?$") or low:match("%.aifc$") or low:match("%.flac$")) then
+    self:say("The item's file is not a WAV, AIFF or FLAC file (" .. basename(path) .. "). Render it to WAV first (Glue, or File > Render) and select the new item.", true)
     return
   end
   if not self:set_source(path) then return end
@@ -448,8 +449,18 @@ function Page:use_selected_item()
   self:say("Item: the part of the file the item plays is analysed. Item volume, fades, FX and pitch are not applied.")
 end
 
+-- The extension list of the file dialog: only the sound files the analysis reads (nothing else is shown).
+M.SOUND_FILTER = "Sound files (*.wav;*.flac;*.aif;*.aiff)\0*.wav;*.flac;*.aif;*.aiff\0\0"
+
 function Page:choose_file()
-  local ok, path = reaper.GetUserFileNameForRead(self.wav or "", "Choose a WAV file to analyse", "wav")
+  local ok, path
+  if reaper.JS_Dialog_BrowseForOpenFiles then            -- (JS_ReaScriptAPI: a file type list; the REAPER dialog only offers one extension and "all files")
+    local rv, chosen = reaper.JS_Dialog_BrowseForOpenFiles("Import Sound File (WAV, AIFF or FLAC)", self.wav and dirname(self.wav) or "",
+      self.wav and basename(self.wav) or "", M.SOUND_FILTER, false)
+    ok, path = (rv == 1), chosen
+  else
+    ok, path = reaper.GetUserFileNameForRead(self.wav or "", "Import Sound File (WAV, AIFF or FLAC)", "wav")
+  end
   if ok and path and path ~= "" then
     self.s.start, self.s.duration = 0, 0
     self:set_source(path)
@@ -567,7 +578,7 @@ end
 
 -- ------------------------------------------------------------------ running the engine
 function Page:validate()
-  if not self.wav or not self.info then return "Choose the sound first: use the selected item or choose a WAV file." end
+  if not self.wav or not self.info then return "Choose the sound first: use the selected item or choose a sound file." end
   local s = self.s
   if s.highest_frequency <= s.lowest_frequency then return "The highest frequency must be above the lowest frequency." end
   if s.channels > self.info.channels and not s.mono_mix then
@@ -641,7 +652,9 @@ function Page:handle_reply(reply, took)
   self:say(string.format("Analysed in %.1f s: %d file(s). %s%s", took, #summary.files,
     opened and ("Channel 1 is open in the editor (" .. basename(first.file) .. ").") or "The first file could not be opened.",
     #parts > 0 and ("  Steps: " .. table.concat(parts, ", ") .. ".") or ""), not opened)
-  self.env.set_status(string.format("analysed %s: %d partials, %d frames (%.1f s)", basename(first.file), first.partials, first.frames, took))
+  self.env.set_status(string.format("analysed %s: %d partials, %d frames in %.1f s%s", basename(first.file), first.partials, first.frames, took,
+    #parts > 0 and ("  (" .. table.concat(parts, ", ") .. ")") or ""))
+  if opened and self.env.back then self.env.back() end                 -- the editor is shown at once (the ANALYSE button / Ctrl+A shows the page and its result again)
 end
 
 local function read_all(path)
@@ -913,12 +926,12 @@ function Page:draw(W, H, top)
   self:heading(lx, y, "SOURCE")
   local ly = y + 26
   self:button(lx, ly, 160, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
-  self:button(lx + 170, ly, 180, 24, "Choose WAV file...", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
-  self:button(lx + 360, ly, 160, 24, "Import .ats file...", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
+  self:button(lx + 170, ly, 180, 24, "Import Sound File", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
+  self:button(lx + 360, ly, 160, 24, "Import .ats File", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
   ly = ly + 32
   gfx.setfont(1, "Arial", 13)
   if self.wav then
-    self:button(lx + 360, ly, 160, 24, "Look at the sound", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
+    self:button(lx + 360, ly, 160, 24, "Inspect Sound File", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
     text(lx, ly, "File: " .. (basename(self.wav)), 0.9, 0.9, 0.9)
     local i = self.info
     text(lx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,

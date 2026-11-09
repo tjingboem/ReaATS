@@ -394,6 +394,13 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   reasons, "Use all suggestions", Esc = back); the suggestions also stand in RED (`-> 210`) right of each field (`self.suggest[key]`, click = `apply_suggestion`, tooltip = the reason). A new sound clears them.
   Verified on tjingboem's Piano (fundamental 254 Hz -> suggests 210 Hz / hop 0.125 / -60 dB, which is what the experiments found best: residual in the first 100 ms 6 dB lower than at 50 Hz). LESSON: "within 40 dB" took a
   -30 dB rumble (97 Hz) for the lowest note; 25 dB fixed it; a floor-based threshold was wrong for a decaying note (removed).
+  FLAC / AIFF + EDITOR AT ONCE (tjingboem 10 Nov 2026: "Reading flac and aif and aiff directly in the Analysis page" and "after Analyzing, the Editor can be shown right away"): `python/reaats_audio.py`
+  (numpy only): `read_audio` sniffs WAV / AIFF(+AIFC NONE, sowt, fl32, fl64, 8-32 bit, 80-bit extended rate) / FLAC and decodes AIFF and FLAC itself. FLAC = a pure Python decoder (STREAMINFO, constant/verbatim/fixed/LPC
+  subframes, Rice 4/5-bit with escape, wasted bits, all channel modes, any block size code, CRCs not checked): exact (bit-identical to Piano.aif for tjingboem's Piano.flac), ~0.5 M samples/s
+  => ~10 s per minute of stereo 44.1 kHz; `reaats_analyse.py` writes the label "reading the sound ... FLAC" to the progress file first; `reaats_prescan.py` uses it too. Tests: python/tests/test_audio.py (13; it contains a small FLAC
+  ENCODER and AIFF writer used also by tests/mock_analysis.lua). Lua `wav_info.read` reads WAV/AIFF/FLAC headers (rate, channels, bits, frames, `format`). The page: "Choose sound file...", Use selected item accepts
+  .wav/.aif/.aiff/.aifc/.flac. After a successful analysis `handle_reply` calls `env.back()` so the EDITOR IS SHOWN AT ONCE (status line: "analysed X: N partials, M frames in T s (steps)"); ANALYSE / Ctrl+A shows the page and its
+  result again. Failures stay on the page. mock_analysis.lua uses `pump_done()` (waits for the editor status, then Ctrl+A) and `expire_status()` before ANALYSE (a stale status would end the wait at once).
   REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
   + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
   by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.
@@ -415,3 +422,6 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   fingerprint) would need the new parameters in their keys. Interim advice given: a ReaEQ high-pass (about 250-400 Hz, 12 dB/oct) on the printed noise track. A plain high-pass only removes low
   rumble; a TILT is probably what balances low against high. Later idea: select a region of the noise layer like partials and scale/delete the noise there (editing the noise bands themselves; any
   such edit must clear `d.noise_cache`). tjingboem wants to experiment first to pin down the problem: do not build until they say so.
+- BUTTON NAMES (tjingboem 10 Nov 2026): "Import Sound File" (was Choose sound file...), "Import .ats File" (was Import .ats file...), "Inspect Sound File" (was Look at the sound). The Import Sound File dialog shows ONLY
+  .wav .flac .aif .aiff: it uses JS_Dialog_BrowseForOpenFiles with `M.SOUND_FILTER` when JS_ReaScriptAPI is installed (the plain GetUserFileNameForRead can only offer one extension plus "all files", so without
+  JS it stays as it was). Capitalisation of the page buttons follows these three: Title Case.
