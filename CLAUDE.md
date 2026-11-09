@@ -88,7 +88,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   `lua5.4 tests/test_ats_synth.lua` (20). Method follows pyatsyn's phase-less sine path (BSD-3): see
   THIRD-PARTY-NOTICES.md (the pyatsyn licence text is kept there). No Csound source was copied; reading
   Csound's ugnorman.c only gave the unit of the noise energy (amplitude = sqrt(E/(winsz*0.04)), a property of the
-  format). ReaATS has NO LICENSE file yet: tjingboem decides (recommended MIT or BSD-3, compatible with pyatsyn).
+  format). LICENSE: BSD 3-clause, "Copyright (c) 2026, tjingboem Productions" (chosen by tjingboem 9 Nov 2026, compatible with pyatsyn's BSD-3; third-party notices in THIRD-PARTY-NOTICES.md).
   Licences checked 9 Nov 2026: Csound's ATS opcodes (ugnorman.c) and atsa.c are LGPL 2.1+ (copying them would
   make the ported files LGPL); pyatsyn is BSD-3 (translation allowed with its notice kept).
 
