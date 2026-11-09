@@ -420,6 +420,34 @@ do
   os.remove(target .. ".ats"); os.remove(target .. "_typed.ats"); os.remove(target .. "_button.ats")
   print("save as OK: dialog, .ats added, overwrite confirmed, cancel, typed-path fallback")
 end
+-- the Sine layer checkbox (under the Noise layer checkbox) switches the partial lines
+do
+  script.keys = { 114 }; frame()                                  -- R: the original file again (the earlier tests deleted points)
+  script.keys = { 102 }; frame()
+  strings = {}; frame()
+  assert(saw("^Sine layer$") and saw("^Noise layer$"), "both layer checkboxes should be drawn")
+  local function click_at(x, y) gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = x, y, 1; frame(); gfx.mouse_cap = 0; frame() end
+  local function lines_of_a_redraw()
+    local start = calls.line or 0
+    script.keys = { 102 }; frame()                                -- F forces the picture to be drawn again
+    return (calls.line or 0) - start
+  end
+  local on_lines = lines_of_a_redraw()
+  click_at(gfx.w - 120, 37)                                       -- Sine layer off
+  local off_lines = lines_of_a_redraw()
+  click_at(gfx.w - 120, 37)                                       -- and on again
+  local back_lines = lines_of_a_redraw()
+  assert(on_lines > off_lines + 500, "with the sine layer off the partial lines must not be drawn: " .. on_lines .. " vs " .. off_lines)
+  assert(back_lines > off_lines + 500, "and they come back when it is switched on again")
+  -- with the layer off nothing can be selected (an edit must never be made on something that is hidden)
+  click_at(gfx.w - 120, 37)                                       -- off
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()
+  gfx.mouse_x, gfx.mouse_y = 600, 560; frame(); gfx.mouse_cap = 0; strings = {}; frame()
+  assert(not saw("^selected:"), "no selection while the sine layer is off")
+  assert(saw("^the sine layer is off: switch it on to select partials"), "and it says why")
+  click_at(gfx.w - 120, 37)                                       -- on again
+  print("Sine layer checkbox: " .. on_lines .. " line calls with the layer, " .. off_lines .. " without")
+end
 -- a plain click on empty space clears the selection
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 400; frame()
 gfx.mouse_cap = 0; strings = {}; frame(); frame()

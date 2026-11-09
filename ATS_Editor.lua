@@ -80,6 +80,7 @@ local modified = false
 local playhead = 0             -- seconds: where AUDITION starts (set by a click on the time ruler)
 local pending = nil            -- a sound being prepared: { kind = "audition" or "print", job = synth.render_job, mode, ... }
 local finish_print             -- defined with print_to_track below
+local set_status               -- defined with the editing code below
 local play = nil               -- while a sound plays: { start (s in the sound), t0 (time_precise at the start), dur }
 local ruler_drag = false       -- the left button is down on the time ruler
 local stop_audition            -- defined with the audition code below
@@ -219,6 +220,7 @@ end
 -- add = true keeps the existing selection and adds to it.
 local function select_box(ta, tb, fa, fb, add)
   if not data then return end
+  if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
   if ta > tb then ta, tb = tb, ta end
   if fa > fb then fa, fb = fb, fa end
   if not add then sel = {} end
@@ -256,7 +258,7 @@ function update_sel_info()
 end
 
 -- ------------------------------------------------------------------ editing
-local function set_status(msg)
+function set_status(msg)
   status_msg, status_until = msg, reaper.time_precise() + 4
 end
 
@@ -910,6 +912,24 @@ local function draw_audition_button()
   gfx.drawstr(label)
 end
 
+-- The sine layer checkbox sits under the noise layer checkbox.
+local function sine_checkbox_rect()
+  local x, y, w, h = checkbox_rect()
+  return x, y + 21, w, h
+end
+
+local function draw_sine_checkbox()
+  local x, y = sine_checkbox_rect()
+  gfx.setfont(1, "Arial", 14)
+  gfx.set(0.4, 0.43, 0.48, 1)
+  gfx.rect(x, y + 1, 14, 14, 0)
+  if show_partials then
+    gfx.set(0.35, 0.80, 0.90, 1)
+    gfx.rect(x + 3, y + 4, 8, 8, 1)
+  end
+  text_at(x + 22, y, "Sine layer", 0.85, 0.87, 0.9)
+end
+
 local function draw_checkbox()
   local x, y, w, h = checkbox_rect()
   gfx.setfont(1, "Arial", 14)
@@ -962,6 +982,7 @@ local function draw_header(px, py, pw, ph, plain)
   text_at(px, 8, info)
   if not plain then
     draw_checkbox()
+    draw_sine_checkbox()
     draw_audition_button()
     draw_print_button()
     draw_export_button()
@@ -990,7 +1011,7 @@ local function draw_header(px, py, pw, ph, plain)
     local line = string.format("t = %.3f s    f = %s  (%s)", t, fmt_freq(f), ats.note_name(f))
     local fi = frame_at(t)
     local best, bestd = nil, 9
-    for p = 1, data.partials do
+    for p = 1, show_partials and data.partials or 0 do
       if data.amp[p][fi] > amp_thresh and data.frq[p][fi] > 0 then
         local d = math.abs(py + fy(data.frq[p][fi], ph) - my)
         if d < bestd then best, bestd = p, d end
@@ -1088,8 +1109,12 @@ local function handle_input(px, py, pw, ph)
   if down and not prev_down then
     local cx, cy, cw, chh = checkbox_rect()
     local ax, ay, aw, ah = audition_rect()
+    local sx, sy, sw, sh = sine_checkbox_rect()
     if mx >= cx and mx < cx + cw and my >= cy and my < cy + chh then
       show_noise = not show_noise
+      dirty = true
+    elseif mx >= sx and mx < sx + sw and my >= sy and my < sy + sh then
+      show_partials = not show_partials
       dirty = true
     elseif mx >= ax and mx < ax + aw and my >= ay and my < ay + ah then
       audition()

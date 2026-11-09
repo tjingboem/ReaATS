@@ -72,7 +72,7 @@ python3 python/reaats_analyse.py --help lists all the options. The analysis is t
 The picture is time from left to right and frequency from bottom to top, on a logarithmic scale, so every octave has the same height. The Hz labels are on the left and the note names on the right. At first the labels show only the C's, and zooming in shows more notes.
 
 - Every sine partial is a line. The brighter the line, the louder the partial at that moment. Partials more than 80 dB below the loudest are not drawn, but they stay in the file.
-- The faint orange layer behind the lines is the noise, shown in its 25 bands. The checkbox Noise layer, at the top right, switches it on and off.
+- The faint orange layer behind the lines is the noise, shown in its 25 bands. The checkbox Noise layer, at the top right, switches it on and off. The checkbox Sine layer, just under it, does the same for the partial lines. The two layers can be shown alone or together. The same switches decide what you hear in AUDITION and what PRINT makes: with Sine layer off you hear only the noise, and with Noise layer off only the sines. While the sine layer is off you cannot select partials, so that no edit is made on something that is hidden.
 - The line at the top gives the file name, the number of partials and frames, the length, the sample rate and the distance between frames. A star after the name means there are changes that have not been saved.
 - Moving the mouse over the picture shows the time, the frequency and the note name. When the mouse is close to a partial, that partial turns white and its number, frequency and level are shown.
 - Selected points are pink.
@@ -171,7 +171,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Click on the picture, or click or drag on the time ruler | Set the playhead. |
 | Space | Stop the sound. |
 | Ctrl+P, PRINT | Put the edited sound on a track, from the playhead. |
-| P, N | Show or hide the partials, the noise. This also decides what is heard. |
+| P, N, the checkboxes Sine layer and Noise layer | Show or hide the partials, the noise. This also decides what is heard. |
 | F, Home | Fit the view. |
 | O, R | Open a file, reload the file. |
 | Esc | Clear the selection, then close the window. |

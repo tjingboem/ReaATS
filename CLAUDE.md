@@ -207,6 +207,10 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   1.00 s (...)"; the item settings now hold `from` (the frame-aligned start) and a ReaSnap restore puts the playhead back
   there (`st.from`); the item is still placed at the edit cursor. Tests in mock_run (a print from 1.0 s is about half as long,
   the state remembers it) and mock_snap (restore).
+- SINE LAYER CHECKBOX (tjingboem 9 Nov 2026: "noise layer needs the switchable sine layer option"): a "Sine layer" checkbox
+  under the "Noise layer" one (top right, second row); both set `show_partials` / `show_noise`, the same switches as the P / N
+  keys, and they still decide what AUDITION and PRINT render. While the sine layer is off nothing can be selected (status
+  says why) and the hover readout does not name partials: no editing of hidden data.
 - SDIF question (tjingboem asked 9 Nov: SPEAR reads SDIF; is ReaATS .ats only?): YES, .ats only. See docs/file_formats.md.
 
 ## Next (not started, wait for tjingboem)
