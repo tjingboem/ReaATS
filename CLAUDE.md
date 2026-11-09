@@ -413,6 +413,13 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   The engine/synth `to` option (`--to`, `opts.to`) stays (tested) but has no UI. HOME/END "did nothing" for tjingboem because the editor window was still the OLD script: a running Lua script keeps its
   old code, so every change needs the editor to be CLOSED AND STARTED AGAIN. A `build DD Mon HH:MM` stamp is now drawn bottom right (update it at every install) to see which version runs.
 
+- NOISE FOLLOWS THE SINES (tjingboem 10 Nov 2026: "when noise is active, it should follow the movements of the sines"): when `show_noise` and the file has noise (`W.noise_on(d)`), the 25 noise-band energies follow
+  TIME movements of the sines: move, bend/stretch (`W.commit`), copy/paste, cut (Ctrl+X; plain Delete leaves noise; transpose never moves noise). Planners in lib/ats_edit.lua: `noise_bands` (band included
+  when >50% of its width is inside the region's frequencies), `plan_noise_move/clear/warp`, `noise_piece`, `plan_noise_paste`; a noise change is `{b,f,old,new}`; landing energies are ADDED, source silenced.
+  `do_edit(..., noise_changes)` stores them in the undo entry (`W.apply_noise`), `data.noise_touched[b][f]` remembers edited cells (shifted by `W.shift_touched` when frames go in front); the edits file for the
+  Python synthesis carries them as records with partial = -band (`apply_edits` writes them into `a.noise`). Region = the bend box, or the bounding box of the selection (`W.noise_region`). The main chunk is at
+  Lua's 200-local limit: new helpers go into the `W` table. Tests: test_ats_edit section 11, test_py_synth (noise edits), mock_channels (stretch status "and the noise").
+
 - IDEA, NOT BUILT (tjingboem 10 Nov 2026, "do not build the controls but add the idea to Claude.md. This needs more experimenting to better pinpoint the issue"): NOISE SHAPING CONTROLS.
   Context: tjingboem analyses a cello; the bow/breath noise lands in the noise bands. Their workflow: print the sines, then the noise (Sine layer / Noise layer checkboxes), mix in REAPER, and the
   lower noise bands feel too present (this was before / partly after the noise-shape correction below; re-test with the corrected noise before drawing conclusions). They suggested a high-pass on

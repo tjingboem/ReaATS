@@ -155,7 +155,7 @@ def apply_edits(a, e):
     a.edits = e
     if e is None or not len(e):
         return
-    a.rows = max(a.partials, int(e[:, 0].max()))
+    a.rows = max(a.partials, int(e[:, 0].max()), 0)
     rec = e[e[:, 0] == 0]
     if len(rec):
         frames_new, dur_new, front = int(rec[-1, 1]), float(rec[-1, 2]), int(rec[-1, 3])
@@ -168,6 +168,12 @@ def apply_edits(a, e):
                 noise[:, front:front + a.file_frames] = a.noise[:, :a.file_frames]
                 a.noise = noise
             a.frames, a.dur = frames_new, dur_new
+    nz = e[e[:, 0] < 0]                                                      # records of the noise: partial = -band (1..25), frame, energy
+    if len(nz) and a.noise is not None:
+        b = (-nz[:, 0]).astype(np.int64) - 1
+        fr = nz[:, 1].astype(np.int64) - 1
+        ok = (b >= 0) & (b < a.noise.shape[0]) & (fr >= 0) & (fr < a.noise.shape[1])
+        a.noise[b[ok], fr[ok]] = nz[ok, 2]
 
 
 def chunk(a, p0, p1):

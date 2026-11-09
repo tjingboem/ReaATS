@@ -561,27 +561,72 @@ local function lengthen(front, frames_after)
   if front and front > 0 then
     edit.prepend_frames(data, front)
     shift_edited(front)
+    W.shift_touched(front)
   end
   if frames_after and frames_after > data.frames then edit.add_frames(data, frames_after - data.frames) end
   return before_frames, before_dur
 end
 
 -- ext (optional): { front = k, frames_after = n }: the file becomes longer first (k frames in front, n frames in all); the way back is in the undo entry.
-local function do_edit(name, changes, rows_before, rows_after, ext)
-  if #changes == 0 then return end
+-- The noise bands follow the movements of the sines when the Noise layer is on (see edit.plan_noise_*): changes of the noise are
+-- { b = band, f = frame, old, new }; the cells that were touched are remembered in data.noise_touched (for the synthesis of an unsaved edit).
+function W.apply_noise(changes, forward)
+  if not changes or #changes == 0 then return end
+  data.noise_touched = data.noise_touched or {}
+  for _, c in ipairs(changes) do
+    local v = forward and c.new or c.old
+    data.noise[c.b][c.f] = v
+    local row = data.noise_touched[c.b]
+    if not row then row = {}; data.noise_touched[c.b] = row end
+    row[c.f] = true
+    if v > data.noise_max then data.noise_max = v end
+  end
+  data.noise_cache = nil                                     -- (the noise that was kept for AUDITION is not the noise any more)
+  dirty = true
+end
+
+-- The box of a channel's selection for the noise: the box it was made with (W.region), else the box round the selected points.
+-- `c` is a channel bundle (data, sel_info).
+function W.noise_region(d, si)
+  if W.region then return W.region end
+  if not si then return nil end
+  local dt = (d.times[d.frames] - d.times[1]) / math.max(d.frames - 1, 1)
+  local t0, t1, f0, f1 = si.t0, si.t1, si.f0, si.f1
+  if t1 - t0 < dt then local m = (t0 + t1) / 2; t0, t1 = m - dt / 2, m + dt / 2 end
+  return { t0 = t0, t1 = t1, f0 = f0, f1 = f1 }
+end
+
+-- Does the noise follow? When the Noise layer is shown and the file has noise bands.
+function W.noise_on(d) return show_noise and d.has_noise end
+
+-- Frames put in front move the numbers of the touched noise cells too (k later, or negative: k earlier).
+function W.shift_touched(k)
+  if not data.noise_touched then return end
+  local moved = {}
+  for b, frames in pairs(data.noise_touched) do
+    local row = {}
+    for f in pairs(frames) do if f + k >= 1 then row[f + k] = true end end
+    moved[b] = row
+  end
+  data.noise_touched = moved
+end
+
+local function do_edit(name, changes, rows_before, rows_after, ext, noise_changes)
+  if #changes == 0 and not (noise_changes and #noise_changes > 0) then return end
   if rows_after and rows_after > data.partials then edit.add_rows(data, rows_after - data.partials) end
   local frames_before, dur_before
   if ext and (((ext.front or 0) > 0) or (ext.frames_after or 0) > data.frames) then
     frames_before, dur_before = lengthen(ext.front, ext.frames_after)
   end
   apply_changes(changes, true)
+  W.apply_noise(noise_changes, true)
   if not edit_group then group_counter = group_counter + 1 end
-  undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after,
+  undo_stack[#undo_stack + 1] = { name = name, changes = changes, noise_changes = noise_changes, rows_before = rows_before, rows_after = rows_after,
                                   frames_before = frames_before, frames_after = frames_before and ext.frames_after, front = frames_before and ext.front,
                                   dur_before = dur_before, group = edit_group or group_counter }      -- (one group = one Ctrl+Z, even across channels)
   redo_stack = {}
   modified = (#undo_stack ~= saved_depth)
-  set_status(string.format("%s: %d points", name, #changes))
+  set_status(string.format("%s: %d points%s", name, #changes, (noise_changes and #noise_changes > 0) and " and the noise" or ""))
 end
 
 -- A channel that has no points in an edit that makes the file longer still gets longer (all channels share one frame grid): an entry
@@ -602,6 +647,7 @@ local function undo_single()
   local e = table.remove(undo_stack)
   if not e then set_status("nothing to undo"); return end
   apply_changes(e.changes, false)
+  W.apply_noise(e.noise_changes, false)
   if e.rows_before and data.partials > e.rows_before then
     edit.truncate_rows(data, e.rows_before)
     for p in pairs(edited_cells) do if p > data.partials then edited_cells[p] = nil end end     -- (rows that are gone have no cells to remember)
@@ -611,6 +657,7 @@ local function undo_single()
     if data.frames > e.frames_before + k then edit.truncate_frames(data, e.frames_before + k) end        -- (the end)
     if k > 0 then                                                      -- (the start: everything moves k frames earlier)
       edit.drop_front(data, k, e.dur_before)
+      W.shift_touched(-k)
       local moved = {}
       for p, frames in pairs(edited_cells) do
         local row = {}
@@ -640,9 +687,11 @@ local function redo_single()
   if e.frames_before and data.frames == e.frames_before and (e.front or 0) > 0 then
     edit.prepend_frames(data, e.front)
     shift_edited(e.front)
+    W.shift_touched(e.front)
   end
   if e.frames_after and e.frames_after > data.frames then edit.add_frames(data, e.frames_after - data.frames) end
   apply_changes(e.changes, true)
+  W.apply_noise(e.noise_changes, true)
   undo_stack[#undo_stack + 1] = e
   clear_selection()
   modified = (#undo_stack ~= saved_depth)
@@ -710,7 +759,7 @@ local function edit_on_channels(fn_single, label)
 end
 
 -- Delete: the selected points become silent (amplitude 0 = partial not sounding, as in ATS).
-local function delete_single()
+local function delete_single(with_noise)
   if not sel_info then return end
   local changes = {}
   for p, frames in pairs(sel) do
@@ -720,7 +769,8 @@ local function delete_single()
       end
     end
   end
-  do_edit("delete", changes)
+  local nplan = with_noise and W.noise_on(data) and edit.plan_noise_clear(data, W.noise_region(data, sel_info)) or nil        -- (a cut takes the noise too; a delete leaves it)
+  do_edit(with_noise and "cut" or "delete", changes, nil, nil, nil, nplan and nplan.changes)
   sel, sel_info = {}, nil
 end
 
@@ -748,7 +798,8 @@ local function move_single(df, ratio)
   local plan = edit.plan_move(data, sel, df, ratio)
   if not plan then set_status("nothing to move"); return end
   local label = string.format("move %+d frames, %+.2f st", plan.df, 12 * math.log(ratio, 2))
-  do_edit(label, plan.changes, plan.rows_before, plan.rows_after)
+  local nplan = W.noise_on(data) and edit.plan_noise_move(data, W.noise_region(data, sel_info), plan.df) or nil       -- (the noise bands go along in time)
+  do_edit(label, plan.changes, plan.rows_before, plan.rows_after, nil, nplan and nplan.changes)
   sel = plan.sel
   update_sel_info()
   if plan.rows_after > plan.rows_before then
@@ -756,7 +807,7 @@ local function move_single(df, ratio)
   end
 end
 
-local function delete_selection() edit_on_channels(delete_single, "delete") end
+local function delete_selection() edit_on_channels(function() delete_single(false) end, "delete") end
 local function transpose_selection(semitones) edit_on_channels(function() transpose_single(semitones) end, "transpose") end
 local function move_selection(df, ratio) edit_on_channels(function() move_single(df, ratio) end, "move") end
 
@@ -790,7 +841,12 @@ local function copy_selection()
     pieces[i] = list
     channels = channels + 1
   end
-  clipboard = { pieces = pieces, count = count }
+  local noise = {}                                           -- the noise under the selection, to be pasted with it (when the Noise layer is on then)
+  for i in pairs(pieces) do
+    local c = chs[i]
+    if c.data.has_noise then noise[i] = edit.noise_piece(c.data, W.noise_region(c.data, c.sel_info), fmin) end
+  end
+  clipboard = { pieces = pieces, count = count, noise = noise }
   set_status(string.format("copied %d points%s: Ctrl+V pastes them at the playhead", count,
                            channels > 1 and (" from " .. channels .. " channels") or ""))
   return true
@@ -814,11 +870,14 @@ local function paste_clipboard()
       local f0 = frame_at(playhead)
       at = data.times[f0]
       local plan = edit.plan_paste(data, clipboard.pieces[i], f0)
-      if plan then
-        do_edit("paste", plan.changes, plan.rows_before, plan.rows_after)
-        sel = plan.sel
-        update_sel_info()
-        total, dropped = total + plan.count, dropped + plan.dropped
+      local np = W.noise_on(data) and clipboard.noise and clipboard.noise[i] and edit.plan_noise_paste(data, clipboard.noise[i], f0) or nil
+      if plan or np then
+        do_edit("paste", plan and plan.changes or {}, plan and plan.rows_before, plan and plan.rows_after, nil, np and np.changes)
+        if plan then
+          sel = plan.sel
+          update_sel_info()
+          total, dropped = total + plan.count, dropped + plan.dropped
+        end
       end
     end)
   end
@@ -909,6 +968,16 @@ local function start_synth(wav, o)
           buf[#buf + 1] = string.pack("<dddd", p, f, d.amp[p][f], d.frq[p][f])
           n = n + 1
           if #buf >= 4096 then fh:write(table.concat(buf)); buf = {} end
+        end
+      end
+      for b, frames in pairs(d.noise_touched or {}) do                  -- the noise cells that were changed: partial = -band
+        for f in pairs(frames) do
+          local v = d.noise and d.noise[b] and d.noise[b][f]
+          if v then
+            buf[#buf + 1] = string.pack("<dddd", -b, f, v, 0)
+            n = n + 1
+            if #buf >= 4096 then fh:write(table.concat(buf)); buf = {} end
+          end
         end
       end
       fh:write(table.concat(buf))
@@ -1091,6 +1160,7 @@ local function write_ats(path, verb)
   if ok then
     modified = false
     data.front_frames = 0                                    -- (the file on disk has all the frames now)
+    data.noise_touched = nil
     saved_depth, current_file = #undo_stack, path
     set_status((verb or "saved") .. " " .. (path:match("([^/\\]+)$") or path) .. " (with phase)")
     return path
@@ -1685,7 +1755,7 @@ function W.commit()
   if peak_h > 0.0005 then parts[#parts + 1] = string.format("in time up to %.0f ms", peak_h * 1000) end
   local label = "bend " .. table.concat(parts, ", ")
   -- 1. the plan of every channel that is edited together (nothing is changed yet): how far the file has to grow, at the end and in front
-  local targets, plans, need_end, need_front, rows_max = on_channels(), {}, 0, 0, 1
+  local targets, plans, nplans, need_end, need_front, rows_max = on_channels(), {}, {}, 0, 0, 1
   local list = {}
   for _, i in ipairs(targets) do if chs[i].sel_info then list[#list + 1] = i end end
   if #list == 0 then return end
@@ -1700,6 +1770,13 @@ function W.commit()
         need_end = math.max(need_end, plans[i].frames_after)
         need_front = math.max(need_front, plans[i].frames_front)
       end
+      if W.noise_on(data) then                                          -- the noise bands in the box follow in time (they have no pitch to bend)
+        nplans[i] = edit.plan_noise_warp(data, { t0 = w.t0, t1 = w.t1, f0 = w.f0, f1 = w.f1 }, map, { max_extra = room, max_front = room })
+        if nplans[i] then
+          need_end = math.max(need_end, nplans[i].frames_after)
+          need_front = math.max(need_front, nplans[i].frames_front)
+        end
+      end
     end)
   end
   need_end = math.max(need_end, chs[1].data.frames)
@@ -1711,24 +1788,30 @@ function W.commit()
   local hop = chs[1].data.frame_size / chs[1].data.sr
   for i = 1, #chs do
     with_channel(i, function()
-      local plan = plans[i]
+      local plan, np = plans[i], nplans[i]
+      local has_plan, has_noise = plan and #plan.changes > 0, np and #np.changes > 0
       local total = need_end + need_front
       local ext = (need_front > 0 or total > data.frames) and { front = need_front, frames_after = total } or nil
-      if plan and #plan.changes > 0 then
-        if need_front > 0 then                                          -- the cells of the plan are numbered from the old first frame: later by the frames in front
-          for _, c in ipairs(plan.changes) do c.f = c.f + need_front end
-          local moved = {}
-          for p, frames in pairs(plan.sel) do
-            local row = {}
-            for f in pairs(frames) do row[f + need_front] = true end
-            moved[p] = row
+      if has_plan or has_noise then
+        if need_front > 0 then                                          -- the cells of the plans are numbered from the old first frame: later by the frames in front
+          if has_plan then
+            for _, c in ipairs(plan.changes) do c.f = c.f + need_front end
+            local moved = {}
+            for p, frames in pairs(plan.sel) do
+              local row = {}
+              for f in pairs(frames) do row[f + need_front] = true end
+              moved[p] = row
+            end
+            plan.sel = moved
           end
-          plan.sel = moved
+          if has_noise then for _, c in ipairs(np.changes) do c.f = c.f + need_front end end
         end
-        do_edit(label, plan.changes, plan.rows_before, plan.rows_after, ext)
-        sel = plan.sel
-        update_sel_info()
-        dropped = dropped + plan.dropped
+        do_edit(label, has_plan and plan.changes or {}, has_plan and plan.rows_before or nil, has_plan and plan.rows_after or nil, ext, has_noise and np.changes or nil)
+        if has_plan then
+          sel = plan.sel
+          update_sel_info()
+          dropped = dropped + plan.dropped
+        end
       elseif ext then
         do_extend_only(label, total, need_front)
       end
@@ -2426,7 +2509,7 @@ local function draw_header(px, py, pw, ph, plain)
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 22:07"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 22:25"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
@@ -2631,7 +2714,7 @@ local function handle_input(px, py, pw, ph)
     if W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
   elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
-  elseif ch == 24 then if copy_selection() then delete_selection() end   -- Ctrl+X
+  elseif ch == 24 then if copy_selection() then edit_on_channels(function() delete_single(true) end, "cut") end   -- Ctrl+X (the noise goes with the sines)
   elseif ch == 22 then paste_clipboard()                        -- Ctrl+V: at the playhead
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y

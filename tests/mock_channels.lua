@@ -459,6 +459,13 @@ do
   assert(saw("%(3 channels%)"), "the stretched points stay selected")
   press(26, 4); strings = {}; frame()
   assert(not saw("^%d%*$"), "ONE Ctrl+Z takes the stretch back")
+  -- with the Noise layer on, the noise bands in the box follow the stretch (the status says so); one undo step
+  sweep(65, y_top, 600, y_bot)
+  hold_and_drag(600, y_top, 50, 0); let_go()
+  press(13); strings = {}; frame()
+  assert(saw("and the noise"), "the noise follows the stretch: " .. tostring(saw("bend") or saw("points") or "(no status)"))
+  press(26, 4); strings = {}; frame()
+  assert(not saw("^%d%*$"), "ONE Ctrl+Z takes sines and noise back")
   -- a stretch past the end of the file makes the file longer, in every channel, as one undo step
   strings = {}; frame()
   assert(saw("   2%.00 s   "), "the file is 2.00 s: " .. tostring(saw("partials")))
@@ -466,12 +473,12 @@ do
   hold_and_drag(1040, y_top, 200, 0); let_go()
   press(13); strings = {}; frame()
   assert(saw("the file is 0%.%d%d s longer now"), "the status says how much longer: " .. tostring(saw("bend") or "(no status)"))
-  assert(saw("   2%.[1-4]%d s   "), "the duration in the header is longer now: " .. tostring(saw("partials")))
+  assert(saw("   2%.[1-6]%d s   "), "the duration in the header is longer now: " .. tostring(saw("partials")))
   assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "every channel changed")
   press(26, 4); strings = {}; frame()
   assert(saw("   2%.00 s   ") and not saw("^%d%*$"), "ONE Ctrl+Z makes the file 2.00 s again, in every channel: " .. tostring(saw("partials")))
   press(25, 4); strings = {}; frame()
-  assert(saw("   2%.[1-4]%d s   "), "Ctrl+Y makes it longer again: " .. tostring(saw("partials")))
+  assert(saw("   2%.[1-6]%d s   "), "Ctrl+Y makes it longer again: " .. tostring(saw("partials")))
   press(26, 4); strings = {}; frame()
   -- the handle in the middle of the right edge: dragged sideways it STRETCHES the box (the left edge stays), it does not move the selection
   sweep(65, y_top, 600, y_bot)

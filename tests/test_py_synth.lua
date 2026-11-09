@@ -135,6 +135,24 @@ do
   check("edits: and differs from the original", dc ~= db)
   local m2 = run("--out " .. a .. " --edits " .. ep .. " --edits - " .. sax_path)
   check("edits: --edits must be given for every file", m2:find("ERROR"), m2)
+  -- edits of the NOISE (partial = -band): the noise cells changed in the editor are sounded like the data written out
+  if ed.has_noise then
+    local ncells = {}
+    for b = 5, 12 do for f = 10, 60 do ed.noise[b][f] = ed.noise[b][f] * 3 + 1; ncells[#ncells + 1] = { b, f } end end
+    local nfull = scratch .. "/ps_nfull_" .. math.random(100000, 999999) .. ".ats"
+    assert(ats.save(nfull, ed, { phase = false }))
+    local nep = scratch .. "/ps_nedits_" .. math.random(100000, 999999) .. ".bin"
+    local nh = io.open(nep, "wb")
+    for _, c in ipairs(cells) do nh:write(string.pack("<dddd", c[1], c[2], ed.amp[c[1]][c[2]], ed.frq[c[1]][c[2]])) end   -- (the sine edits above are in ed too)
+    for _, c in ipairs(ncells) do nh:write(string.pack("<dddd", -c[1], c[2], ed.noise[c[1]][c[2]], 0)) end
+    nh:close()
+    local na, nb = scratch .. "/ps_ned_a.wav", scratch .. "/ps_ned_b.wav"
+    run("--out " .. na .. " " .. nfull)
+    run("--out " .. nb .. " --edits " .. nep .. " " .. sax_path)
+    local f1 = io.open(na, "rb"); local d1 = f1:read("a"); f1:close()
+    local f2 = io.open(nb, "rb"); local d2 = f2:read("a"); f2:close()
+    check("noise edits: the file plus the noise records sounds exactly like the edited data written out", d1 == d2 and #d1 > 1000)
+  end
   -- edits that ADD ROWS (a paste or a move into rows the file does not have): the program makes them too
   local grown = assert(ats.load("examples/sax.ats"))
   local extra, cells2 = grown.partials + 1, {}

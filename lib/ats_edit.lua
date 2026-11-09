@@ -429,4 +429,161 @@ function M.plan_warp(d, sel, map, opts)
            frames_front = 1 - first_frame, count = count, dropped = dropped }
 end
 
+-- ------------------------------------------------------------------------------------------------ the noise bands follow the sines
+-- The noise of an ATS file is 25 energies per frame, one for every critical band (see ats_file.lua). They have no tracks and no
+-- frequency to move; what a movement of sines can do to them is move or stretch them in TIME. The noise "region" of an edit is the box
+-- of the selection (t0, t1, f0, f1): the frames in it, and the bands that are mostly inside its frequency range (more than half of
+-- the band). A change of the noise is { b = band, f = frame, old, new }. Where noise lands on other noise the energies are added
+-- (nothing is written over); the place it left is silent.
+local NOISE_EDGES = { 0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700,
+                      9500, 12000, 15500, 20000 }
+
+-- The bands with more than half of their width inside f0..f1 (nyq: the Nyquist frequency, the top of the last band that is there).
+function M.noise_bands(f0, f1, nyq)
+  local list = {}
+  for b = 1, 25 do
+    local lo, hi = NOISE_EDGES[b], math.min(NOISE_EDGES[b + 1], nyq or NOISE_EDGES[26])
+    if hi > lo and math.min(hi, f1) - math.max(lo, f0) > 0.5 * (hi - lo) then list[#list + 1] = b end
+  end
+  return list
+end
+
+function M.noise_center(b, nyq) return math.sqrt(math.max(NOISE_EDGES[b], 1) * math.min(NOISE_EDGES[b + 1], nyq or NOISE_EDGES[26])) end
+
+-- The first and last frame whose time lies in t0..t1 (nil when none).
+local function frame_span(d, t0, t1)
+  local hop = (d.times[d.frames] - d.times[1]) / math.max(d.frames - 1, 1)
+  local fa = math.ceil((t0 - d.times[1]) / hop - 1e-6) + 1
+  local fb = math.floor((t1 - d.times[1]) / hop + 1e-6) + 1
+  fa, fb = math.max(fa, 1), math.min(fb, d.frames)
+  if fa > fb then return nil end
+  return fa, fb, hop
+end
+M.frame_span = frame_span
+
+local function noise_cells(d)
+  local by, order = {}, {}
+  local stride = d.frames + 4000000                                       -- (room for frames before the start and after the end)
+  local function cell(b, f)
+    local key = b * stride * 2 + f + stride
+    local c = by[key]
+    if not c then
+      local old = (f >= 1 and f <= d.frames) and d.noise[b][f] or 0
+      c = { b = b, f = f, old = old, new = old }
+      by[key] = c
+      order[#order + 1] = c
+    end
+    return c
+  end
+  local function result()
+    local out = {}
+    for _, c in ipairs(order) do if c.new ~= c.old then out[#out + 1] = c end end
+    return out
+  end
+  return cell, result
+end
+
+-- The noise of the region moved by df frames in time.
+function M.plan_noise_move(d, region, df)
+  if not d.has_noise or df == 0 then return nil end
+  local bands = M.noise_bands(region.f0, region.f1, d.sr / 2)
+  local fa, fb = frame_span(d, region.t0, region.t1)
+  if #bands == 0 or not fa then return nil end
+  local cell, result = noise_cells(d)
+  for _, b in ipairs(bands) do for f = fa, fb do cell(b, f).new = 0 end end            -- the old place is silent ...
+  for _, b in ipairs(bands) do
+    for f = fa, fb do
+      local f2 = f + df
+      if f2 >= 1 and f2 <= d.frames then cell(b, f2).new = cell(b, f2).new + d.noise[b][f] end    -- ... and the noise lands (added) on the new one
+    end
+  end
+  return { changes = result(), bands = bands }
+end
+
+-- The noise of the region silenced (cut).
+function M.plan_noise_clear(d, region)
+  if not d.has_noise then return nil end
+  local bands = M.noise_bands(region.f0, region.f1, d.sr / 2)
+  local fa, fb = frame_span(d, region.t0, region.t1)
+  if #bands == 0 or not fa then return nil end
+  local cell, result = noise_cells(d)
+  for _, b in ipairs(bands) do for f = fa, fb do cell(b, f).new = 0 end end
+  return { changes = result(), bands = bands }
+end
+
+-- The noise of the region made again by a map (t, f -> t'): like plan_warp for sines, a band is one run that is resampled on the frames
+-- between its new first and last time (straight lines between the energies); the frequency of the map is the centre of the band, and
+-- only the time of the result is used. opts: max_extra / max_front as for plan_warp. Returns { changes, frames_after, frames_front }.
+function M.plan_noise_warp(d, region, map, opts)
+  if not d.has_noise then return nil end
+  local bands = M.noise_bands(region.f0, region.f1, d.sr / 2)
+  local fa, fb, hop = frame_span(d, region.t0, region.t1)
+  if #bands == 0 or not fa then return nil end
+  local NF, times = d.frames, d.times
+  local limit = NF + ((opts and opts.max_extra) or 0)
+  local first_ok = 1 - ((opts and opts.max_front) or 0)
+  local cell, result = noise_cells(d)
+  for _, b in ipairs(bands) do for f = fa, fb do cell(b, f).new = 0 end end
+  local frames_after, first_frame = NF, 1
+  local n = fb - fa + 1
+  for _, b in ipairs(bands) do
+    local center = M.noise_center(b, d.sr / 2)
+    local tp, vals = {}, {}
+    for k = 1, n do
+      local f = fa + k - 1
+      local t2 = map(times[f], center)
+      if k > 1 and t2 <= tp[k - 1] + 1e-9 then t2 = tp[k - 1] + 1e-9 end
+      tp[k], vals[k] = t2, d.noise[b][f]
+    end
+    local lo = math.ceil((tp[1] - times[1]) / hop - 1e-9) + 1
+    local hi = math.floor((tp[n] - times[1]) / hop + 1e-9) + 1
+    if hi < lo then lo = math.floor(((tp[1] + tp[n]) / 2 - times[1]) / hop + 0.5) + 1; hi = lo end
+    local k = 1
+    for f = math.max(lo, first_ok), math.min(hi, limit) do
+      local tau = (f >= 1 and f <= NF) and times[f] or (f > NF and (times[NF] + (f - NF) * hop) or (times[1] + (f - 1) * hop))
+      while k < n and tp[k + 1] < tau do k = k + 1 end
+      local v
+      if n == 1 then v = vals[1]
+      else
+        local k2 = math.min(k + 1, n)
+        local w = (tp[k2] > tp[k]) and math.max(0, math.min(1, (tau - tp[k]) / (tp[k2] - tp[k]))) or 0
+        v = vals[k] + (vals[k2] - vals[k]) * w
+      end
+      local c = cell(b, f)
+      c.new = c.new + v
+      if f > frames_after then frames_after = f end
+      if f < first_frame then first_frame = f end
+    end
+  end
+  return { changes = result(), bands = bands, frames_after = frames_after, frames_front = 1 - first_frame }
+end
+
+-- A copy of the noise of the region: { rel = first frame relative to `ref_frame`, n = frames, bands = { [b] = { energies } } }.
+function M.noise_piece(d, region, ref_frame)
+  if not d.has_noise then return nil end
+  local bands = M.noise_bands(region.f0, region.f1, d.sr / 2)
+  local fa, fb = frame_span(d, region.t0, region.t1)
+  if #bands == 0 or not fa then return nil end
+  local piece = { rel = fa - ref_frame, n = fb - fa + 1, bands = {} }
+  for _, b in ipairs(bands) do
+    local v = {}
+    for f = fa, fb do v[#v + 1] = d.noise[b][f] end
+    piece.bands[b] = v
+  end
+  return piece
+end
+
+-- The noise of a piece pasted so that its reference frame is at frame f0 (added to the noise that is there).
+function M.plan_noise_paste(d, piece, f0)
+  if not d.has_noise or not piece then return nil end
+  local cell, result = noise_cells(d)
+  for b, vals in pairs(piece.bands) do
+    for k, v in ipairs(vals) do
+      local f = f0 + piece.rel + k - 1
+      if f >= 1 and f <= d.frames then cell(b, f).new = cell(b, f).new + v end
+    end
+  end
+  return { changes = result() }
+end
+
 return M

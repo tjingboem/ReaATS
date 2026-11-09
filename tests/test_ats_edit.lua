@@ -240,5 +240,56 @@ do
   check("front: wholly before the room: dropped", edit.plan_warp(dw, { [1] = { [3] = true } }, function(t, fr) return t - 500 * 0.01, fr end, { max_front = 5 }).dropped == 1)
 end
 
+-- 11. the noise bands follow the sines
+do
+  local function noisy(frames)
+    local d = make(2, frames); d.frame_size = 441; d.dur = frames * 0.01
+    d.has_noise = true; d.noise = {}
+    for b = 1, 25 do d.noise[b] = {}; for f = 1, frames do d.noise[b][f] = 0 end end
+    return d
+  end
+  -- which bands: more than half of the band inside the range
+  local list = edit.noise_bands(300, 1000, 22050)                   -- bands 4 (300-400) .. 8 (770-920), band 9 (920-1080) has 80/160 inside: not more than half
+  check("noise_bands: 300-1000 Hz", #list == 5 and list[1] == 4 and list[5] == 8, #list)
+  check("noise_bands: a single partial has no bands", #edit.noise_bands(440, 440, 22050) == 0)
+  check("noise_bands: a range that holds only a quarter of a band", #edit.noise_bands(100, 125, 22050) == 0)
+  check("noise_bands: the whole range", #edit.noise_bands(0, 30000, 22050) == 25 - 1 or #edit.noise_bands(0, 30000, 22050) == 25)
+  local d = noisy(40)
+  for b = 4, 8 do for f = 10, 14 do d.noise[b][f] = 1 + b + 0.1 * f end end
+  d.noise[6][20] = 5                                                -- other noise, outside the region, where the moved noise will land
+  local region = { t0 = d.times[10], t1 = d.times[14], f0 = 300, f1 = 1000 }
+  local mv = edit.plan_noise_move(d, region, 10)
+  check("noise move: the bands in the region, the frames 10-14", mv and #mv.bands == 5)
+  local got = {}
+  for _, c in ipairs(mv.changes) do got[c.b .. "/" .. c.f] = c end
+  check("noise move: the old place is silent", got["4/10"] and got["4/10"].new == 0 and got["8/14"].new == 0)
+  check("noise move: the new place has the energy", math.abs(got["4/20"].new - (1 + 4 + 1.0)) < 1e-9 and math.abs(got["8/24"].new - (1 + 8 + 1.4)) < 1e-9)
+  check("noise move: added to the noise that was there (nothing is written over)", math.abs(got["6/20"].new - (5 + 1 + 6 + 1.0)) < 1e-9, got["6/20"] and got["6/20"].new)
+  check("noise move: other bands are not touched", got["3/10"] == nil and got["9/20"] == nil)
+  check("noise move: past the end the cells are left out", #(edit.plan_noise_move(d, region, 28).changes) > 0 and edit.plan_noise_move(d, region, 100) ~= nil)
+  -- clear (cut)
+  local cl = edit.plan_noise_clear(d, region)
+  check("noise clear: every cell of the region", #cl.changes == 25 and cl.changes[1].new == 0)
+  -- copy and paste
+  local piece = edit.noise_piece(d, region, 8)                       -- the reference frame 8: the piece starts 2 frames after it
+  check("noise piece: relative start and length", piece.rel == 2 and piece.n == 5 and #piece.bands[4] == 5 and math.abs(piece.bands[4][1] - 6.0) < 1e-9)
+  local pp = edit.plan_noise_paste(d, piece, 20)                     -- reference at frame 20: the noise at frames 22-26
+  local pg = {}
+  for _, c in ipairs(pp.changes) do pg[c.b .. "/" .. c.f] = c end
+  check("noise paste: added at the new place, the source untouched", math.abs(pg["4/22"].new - 6.0) < 1e-9 and pg["4/10"] == nil and math.abs(pg["8/26"].new - 10.4) < 1e-9)
+  -- warp: stretched to twice the length around the first frame: 5 frames become 9
+  local t10 = d.times[10]
+  local wp = edit.plan_noise_warp(d, region, function(t, fr) return t10 + 2 * (t - t10), fr end)
+  local wg = {}
+  for _, c in ipairs(wp.changes) do wg[c.b .. "/" .. c.f] = c end
+  check("noise warp: stretched x2: frames 11-18 changed (frame 10 keeps its value), nothing after 18", wg["4/11"] and wg["4/18"] and wg["4/19"] == nil)
+  check("noise warp: the new frames are interpolated", math.abs(wg["4/11"].new - (6.0 + 6.1) / 2) < 1e-9 and math.abs(wg["4/18"].new - 6.4) < 1e-9)
+  local wp2 = edit.plan_noise_warp(d, region, function(t, fr) return t + 100, fr end)
+  check("noise warp: far past the end with no room: nothing lands, the old place is silent", #wp2.changes == 25)
+  local wp3 = edit.plan_noise_warp(d, region, function(t, fr) return t + 0.45, fr end, { max_extra = 20 })
+  check("noise warp: with room the file may grow", wp3.frames_after == 59 and wp3.frames_front == 0, wp3.frames_after)
+  check("no noise: nothing", edit.plan_noise_move(make(2, 10), region, 3) == nil and edit.plan_noise_clear(make(2, 10), region) == nil)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)
