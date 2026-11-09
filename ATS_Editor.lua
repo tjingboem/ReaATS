@@ -68,7 +68,10 @@ local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 -- --------------------------------------------------------------------- state
 local data, fname, load_error
 local chs = {}                 -- the channels of the loaded set, one bundle each (see capture_channel); one entry for a single file
-local cur = 1                  -- the channel that is shown and edited
+local cur = 1                  -- the reference channel: its bundle is held in the globals data, sel, undo_stack ... (see capture_channel)
+local view_mode = "stack"       -- with several channels on: "stack" (one lane per channel) or "overlay" (one lane, channel colours)
+local edit_group = nil         -- while one edit touches several channels: the id that groups their undo entries
+local group_counter = 0
 local view = { t0 = 0, t1 = 1, f0 = 40, f1 = 16000 }
 local show_partials, show_noise = true, true
 local dirty = true
@@ -99,6 +102,58 @@ local amp_thresh = 0
 
 local LOG = math.log
 local function clamp(x, a, b) if x < a then return a elseif x > b then return b else return x end end
+
+-- ------------------------------------------------------------ channels on screen
+-- Every channel has a colour (used in the overlay and on its button) and can be switched ON/OFF; ON channels are drawn
+-- and edited together. STACK view: one lane per ON channel under each other (shared time axis). OVERLAY view: all ON
+-- channels in one lane, each in its colour with the strength its slider (20-100 %) gives.
+local TINTS = { { 0.35, 0.85, 1.00 }, { 1.00, 0.62, 0.25 }, { 0.45, 0.95, 0.45 }, { 0.95, 0.40, 0.90 },
+                { 1.00, 0.93, 0.35 }, { 1.00, 0.40, 0.40 }, { 0.30, 0.90, 0.75 }, { 1.00, 0.60, 0.75 } }
+local function tint_of(i) return TINTS[(i - 1) % #TINTS + 1] end
+local VIS_MIN = 0.20
+local LANE_GAP = 4
+
+-- Runs fn with channel i's data / selection in the globals the drawing and hit-test code reads (no bundle swap:
+-- nothing else changes, the undo stacks stay where they are).
+local function as_channel(i, fn)
+  local c = chs[i]
+  if not c or i == cur then return fn() end
+  local d0, a0, s0, si0 = data, amp_thresh, sel, sel_info
+  data, amp_thresh, sel, sel_info = c.data, c.amp_thresh, c.sel, c.sel_info
+  local r = fn()
+  data, amp_thresh, sel, sel_info = d0, a0, s0, si0
+  return r
+end
+
+local function on_list()
+  local l = {}
+  for i, c in ipairs(chs) do if c.on then l[#l + 1] = i end end
+  return l
+end
+
+local function any_sel()
+  if sel_info then return true end
+  for i, c in ipairs(chs) do if i ~= cur and c.on and c.sel_info then return true end end
+  return false
+end
+
+-- The lanes of a plot of height ph: { off = pixels from the plot top, h = height, chans = channels drawn in it }.
+local function lane_layout(ph)
+  local on = on_list()
+  if #on < 2 or view_mode == "overlay" then return { { off = 0, h = ph, chans = on } } end
+  local n = #on
+  local lh = math.max(math.floor((ph - (n - 1) * LANE_GAP) / n), 8)
+  local lanes = {}
+  for j, ci in ipairs(on) do lanes[j] = { off = (j - 1) * (lh + LANE_GAP), h = lh, chans = { ci } } end
+  return lanes
+end
+
+local function lane_at(py, ph, y)
+  for _, lane in ipairs(lane_layout(ph)) do
+    if y >= py + lane.off and y < py + lane.off + lane.h then return lane end
+  end
+  return nil
+end
 
 -- ------------------------------------------------------------------ geometry
 local function plot_rect()
@@ -164,12 +219,15 @@ local function fit_view()
   if not tmax or tmax <= 0 then tmax = data.dur end
   view.t0, view.t1 = 0, math.max(tmax, 0.01)
   local fmin, fmax = math.huge, 0
-  for p = 1, data.partials do
-    local a, fr = data.amp[p], data.frq[p]
-    for f = 1, data.frames do
-      if a[f] > amp_thresh and fr[f] > 0 then
-        if fr[f] < fmin then fmin = fr[f] end
-        if fr[f] > fmax then fmax = fr[f] end
+  for _, c in ipairs(chs) do
+    local d, th = c.data, c.amp_thresh
+    for p = 1, d.partials do
+      local a, fr = d.amp[p], d.frq[p]
+      for f = 1, d.frames do
+        if a[f] > th and fr[f] > 0 then
+          if fr[f] < fmin then fmin = fr[f] end
+          if fr[f] > fmax then fmax = fr[f] end
+        end
       end
     end
   end
@@ -205,6 +263,23 @@ local function switch_channel(i)
   if i == cur or not chs[i] then return end
   capture_channel()
   restore_channel(i)
+end
+
+-- The channels that are switched on, in order. (capture_channel first, so that the bundles are current.)
+local function on_channels()
+  capture_channel()
+  local list = {}
+  for i, c in ipairs(chs) do if c.on then list[#list + 1] = i end end
+  return list
+end
+
+-- Runs fn with channel i as the reference channel (its bundle in the globals), then puts the previous one back.
+local function with_channel(i, fn)
+  local keep = cur
+  if i ~= cur then switch_channel(i) end
+  local r1, r2 = fn()
+  if cur ~= keep then switch_channel(keep) end
+  return r1, r2
 end
 
 -- The files of the set that `path` belongs to, and which of them it is. A file that is not name_chK.ats, or whose
@@ -254,7 +329,9 @@ local function load_file(path)
   chs = {}
   for i, d in ipairs(loaded) do
     chs[i] = { data = d, fname = files[i], current_file = files[i], undo_stack = {}, redo_stack = {}, modified = false,
-               saved_depth = 0, edited_cells = {}, sel = {}, sel_info = nil, amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20) }
+               saved_depth = 0, edited_cells = {}, sel = {}, sel_info = nil, amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20),
+               on = true,                     -- shown and edited (switched off = not drawn, not edited)
+               vis = 1.0 }                    -- how strongly it is drawn in the overlay: 0.2 .. 1
   end
   restore_channel(which)
   load_error = nil
@@ -287,13 +364,13 @@ end
 -- ---------------------------------------------------------------- selection
 function clear_selection()
   sel, sel_info = {}, nil
+  for i, c in ipairs(chs) do if i ~= cur then c.sel, c.sel_info = {}, nil end end
 end
 
 -- Selects every point (partial p at frame f) whose time and frequency lie inside the box.
 -- add = true keeps the existing selection and adds to it.
-local function select_box(ta, tb, fa, fb, add)
+local function select_box_single(ta, tb, fa, fb, add)
   if not data then return end
-  if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
   if ta > tb then ta, tb = tb, ta end
   if fa > fb then fa, fb = fb, fa end
   if not add then sel = {} end
@@ -308,6 +385,15 @@ local function select_box(ta, tb, fa, fb, add)
     end
   end
   update_sel_info()
+end
+
+-- The same time-frequency region on every channel that is switched on (each channel selects its own points).
+local function select_box(ta, tb, fa, fb, add)
+  if not data then return end
+  if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
+  for _, i in ipairs(on_channels()) do
+    with_channel(i, function() select_box_single(ta, tb, fa, fb, add) end)
+  end
 end
 
 -- Recomputes the selection summary (point count, time and frequency range) from sel.
@@ -350,13 +436,15 @@ local function do_edit(name, changes, rows_before, rows_after)
   if #changes == 0 then return end
   if rows_after and rows_after > data.partials then edit.add_rows(data, rows_after - data.partials) end
   apply_changes(changes, true)
-  undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after }
+  if not edit_group then group_counter = group_counter + 1 end
+  undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after,
+                                  group = edit_group or group_counter }      -- (one group = one Ctrl+Z, even across channels)
   redo_stack = {}
   modified = (#undo_stack ~= saved_depth)
   set_status(string.format("%s: %d points", name, #changes))
 end
 
-local function undo()
+local function undo_single()
   local e = table.remove(undo_stack)
   if not e then set_status("nothing to undo"); return end
   apply_changes(e.changes, false)
@@ -367,7 +455,7 @@ local function undo()
   set_status("undo " .. e.name)
 end
 
-local function redo()
+local function redo_single()
   local e = table.remove(redo_stack)
   if not e then set_status("nothing to redo"); return end
   if e.rows_after and e.rows_after > data.partials then edit.add_rows(data, e.rows_after - data.partials) end
@@ -378,8 +466,52 @@ local function redo()
   set_status("redo " .. e.name)
 end
 
+-- Ctrl+Z / Ctrl+Y act on the most recent group of edits, in every channel it touched.
+local function undo()
+  capture_channel()
+  local best, who = -1, {}
+  for i, c in ipairs(chs) do
+    local e = c.undo_stack[#c.undo_stack]
+    if e then
+      local g = e.group or 0
+      if g > best then best, who = g, { i } elseif g == best then who[#who + 1] = i end
+    end
+  end
+  if best < 0 then set_status("nothing to undo"); return end
+  for _, i in ipairs(who) do with_channel(i, undo_single) end
+  if #who > 1 then set_status("undo in " .. #who .. " channels") end
+end
+
+local function redo()
+  capture_channel()
+  local best, who = math.huge, {}
+  for i, c in ipairs(chs) do
+    local e = c.redo_stack[#c.redo_stack]
+    if e then
+      local g = e.group or 0
+      if g < best then best, who = g, { i } elseif g == best then who[#who + 1] = i end
+    end
+  end
+  if #who == 0 then set_status("nothing to redo"); return end
+  for _, i in ipairs(who) do with_channel(i, redo_single) end
+  if #who > 1 then set_status("redo in " .. #who .. " channels") end
+end
+
+-- An edit function that works on the reference channel's selection, run on every channel that is on and has a selection,
+-- as one undo group.
+local function edit_on_channels(fn_single, label)
+  local targets = {}
+  for _, i in ipairs(on_channels()) do if chs[i].sel_info then targets[#targets + 1] = i end end
+  if #targets == 0 then return end
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  for _, i in ipairs(targets) do with_channel(i, fn_single) end
+  edit_group = nil
+  if #targets > 1 and label then set_status(label .. " in " .. #targets .. " channels") end
+end
+
 -- Delete: the selected points become silent (amplitude 0 = partial not sounding, as in ATS).
-local function delete_selection()
+local function delete_single()
   if not sel_info then return end
   local changes = {}
   for p, frames in pairs(sel) do
@@ -390,11 +522,11 @@ local function delete_selection()
     end
   end
   do_edit("delete", changes)
-  clear_selection()
+  sel, sel_info = {}, nil
 end
 
 -- Transpose the selected points by `semitones` (frequencies only; phases are not touched).
-local function transpose_selection(semitones)
+local function transpose_single(semitones)
   if not sel_info then return end
   local ratio = 2 ^ (semitones / 12)
   local ny = data.sr / 2 - 1
@@ -412,7 +544,7 @@ end
 
 -- Move the selected points by df frames in time and by `ratio` in frequency (see lib/ats_edit.lua
 -- for how colliding pieces get other rows). The selection follows the moved points.
-local function move_selection(df, ratio)
+local function move_single(df, ratio)
   if not sel_info then return end
   local plan = edit.plan_move(data, sel, df, ratio)
   if not plan then set_status("nothing to move"); return end
@@ -424,6 +556,10 @@ local function move_selection(df, ratio)
     set_status(string.format("%s (+%d new partial rows)", label, plan.rows_after - plan.rows_before))
   end
 end
+
+local function delete_selection() edit_on_channels(delete_single, "delete") end
+local function transpose_selection(semitones) edit_on_channels(function() transpose_single(semitones) end, "transpose") end
+local function move_selection(df, ratio) edit_on_channels(function() move_single(df, ratio) end, "move") end
 
 -- ----------------------------------------------------------------- audition
 -- Renders the current (edited) data (sines and noise bands, in Lua) to a temporary WAV and plays it through
@@ -732,7 +868,7 @@ local function draw_grid(pw, ph)
   end
 end
 
-local function draw_noise(pw, ph)
+local function draw_noise(pw, ph, tint, alpha)
   if not (data.has_noise and data.noise_max > 0) then return end
   local edges, times = ats.CRITICAL_BAND_EDGES, data.times
   for b = 1, ats.NUM_NOISE_BANDS do
@@ -750,7 +886,7 @@ local function draw_noise(pw, ph)
           local db = 10 * math.log(nb[f] / data.noise_max, 10)
           local a = clamp((db + NOISE_RANGE_DB) / NOISE_RANGE_DB, 0, 1) * 0.40
           if a > 0.01 then
-            gfx.set(0.85, 0.50, 0.15, a)
+            if tint then gfx.set(tint[1], tint[2], tint[3], a * alpha) else gfx.set(0.85, 0.50, 0.15, a * alpha) end
             gfx.rect(x0, y0, x1 - x0, y1 - y0, 1)
           end
         end
@@ -759,7 +895,7 @@ local function draw_noise(pw, ph)
   end
 end
 
-local function draw_partials(pw, ph)
+local function draw_partials(pw, ph, tint, alpha)
   local times, nf = data.times, data.frames
   local xs = {}
   for f = 1, nf do xs[f] = tx(times[f], pw) end
@@ -775,8 +911,13 @@ local function draw_partials(pw, ph)
             local cx1, cy1, cx2, cy2 = clip_segment(x1, fy(f1, ph), x2, fy(f2, ph), pw, ph)
             if cx1 then
               local db = 20 * math.log(math.min(a1, a2) / data.ampmax, 10)
-              gfx.set(colormap(db))
-              gfx.a = 1
+              if tint then
+                local k = 0.30 + 0.70 * clamp((db - DB_FLOOR) / (-DB_FLOOR), 0, 1)     -- loud = bright, in the channel's colour
+                gfx.set(tint[1] * k, tint[2] * k, tint[3] * k, alpha)
+              else
+                gfx.set(colormap(db))
+                gfx.a = alpha
+              end
               gfx.line(cx1, cy1, cx2, cy2, 1)
               if db > -30 then gfx.line(cx1, cy1 + 1, cx2, cy2 + 1, 1) end
             end
@@ -788,14 +929,25 @@ local function draw_partials(pw, ph)
 end
 
 local function render_cache(pw, ph)
-  gfx.setimgdim(1, pw, ph)
-  gfx.dest = 1
-  gfx.set(0.055, 0.065, 0.085, 1)
-  gfx.rect(0, 0, pw, ph, 1)
-  if data then
-    draw_grid(pw, ph)
-    if show_noise then draw_noise(pw, ph) end
-    if show_partials then draw_partials(pw, ph) end
+  local tinted = view_mode == "overlay" and #on_list() >= 2
+  for k, lane in ipairs(lane_layout(ph)) do
+    gfx.setimgdim(k, pw, lane.h)
+    gfx.dest = k
+    gfx.set(0.055, 0.065, 0.085, 1)
+    gfx.rect(0, 0, pw, lane.h, 1)
+    if #lane.chans > 0 then
+      draw_grid(pw, lane.h)
+      if show_noise then
+        for _, ci in ipairs(lane.chans) do
+          as_channel(ci, function() draw_noise(pw, lane.h, tinted and tint_of(ci) or nil, chs[ci].vis) end)
+        end
+      end
+      if show_partials then
+        for _, ci in ipairs(lane.chans) do
+          as_channel(ci, function() draw_partials(pw, lane.h, tinted and tint_of(ci) or nil, chs[ci].vis) end)
+        end
+      end
+    end
   end
   gfx.dest = -1
   dirty = false
@@ -823,13 +975,18 @@ local function draw_axes(px, py, pw, ph)
   gfx.rect(px + pw, py, gfx.w - px - pw, ph, 1)
 
   gfx.setfont(1, "Arial", 13)
-  for _, f in ipairs({ 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 }) do
-    if f > view.f0 and f < view.f1 then
-      local y = py + fy(f, ph)
-      local label = (f >= 1000) and (tostring(f // 1000) .. "k") or tostring(f)
-      text_at(px - 8 - gfx.measurestr(label), y - 7, label, 0.65, 0.68, 0.72)
-      gfx.set(0.65, 0.68, 0.72, 0.8)
-      gfx.line(px - 4, y, px, y)
+  local lanes = lane_layout(ph)
+  for _, lane in ipairs(lanes) do
+    for _, f in ipairs({ 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 }) do
+      if f > view.f0 and f < view.f1 then
+        local y = py + lane.off + fy(f, lane.h)
+        local label = (f >= 1000) and (tostring(f // 1000) .. "k") or tostring(f)
+        if lane.h > 40 or f == 100 or f == 1000 or f == 10000 then
+          text_at(px - 8 - gfx.measurestr(label), y - 7, label, 0.65, 0.68, 0.72)
+        end
+        gfx.set(0.65, 0.68, 0.72, 0.8)
+        gfx.line(px - 4, y, px, y)
+      end
     end
   end
   local step = nice_step((view.t1 - view.t0) / 8)
@@ -843,8 +1000,18 @@ local function draw_axes(px, py, pw, ph)
     t = t + step
   end
   gfx.set(0.4, 0.43, 0.48, 1)
-  gfx.rect(px, py, pw, ph, 0)
-  if data then draw_note_scale(px, py, pw, ph) end
+  for _, lane in ipairs(lanes) do gfx.rect(px, py + lane.off, pw, lane.h, 0) end
+  if data then
+    for _, lane in ipairs(lanes) do draw_note_scale(px, py + lane.off, pw, lane.h) end
+    if #lanes > 1 then                                           -- stack: which channel each lane is
+      gfx.setfont(1, "Arial", 13)
+      for _, lane in ipairs(lanes) do
+        local ci = lane.chans[1]
+        local tc = tint_of(ci)
+        text_at(px + 6, py + lane.off + 4, "ch " .. ci, tc[1], tc[2], tc[3])
+      end
+    end
+  end
 end
 
 -- ----------------------------------------------------------------- playhead
@@ -920,11 +1087,16 @@ end
 -- Selected points (bright pink), the move ghost and the rubber-band box, drawn on the screen each frame.
 local function draw_selection(px, py, pw, ph)
   if not data then return end
-  if sel_info then
-    draw_sel_points(px, py, pw, ph, 0, 0, 1, 0.35, 0.75, mover and 0.35 or 1)
-    if mover and mover.active then
-      local _, _, ox, oy = mover_delta(pw, ph)
-      draw_sel_points(px, py, pw, ph, ox, oy, 1, 0.9, 0.95, 0.95)
+  for _, lane in ipairs(lane_layout(ph)) do
+    for _, ci in ipairs(lane.chans) do
+      as_channel(ci, function()
+        if not sel_info then return end
+        draw_sel_points(px, py + lane.off, pw, lane.h, 0, 0, 1, 0.35, 0.75, mover and 0.35 or 1)
+        if mover and mover.active then
+          local _, _, ox, oy = mover_delta(pw, mover.h or ph)
+          draw_sel_points(px, py + lane.off, pw, lane.h, ox, oy, 1, 0.9, 0.95, 0.95)
+        end
+      end)
     end
   end
   if box then
@@ -937,17 +1109,26 @@ local function draw_selection(px, py, pw, ph)
   end
 end
 
--- True when the mouse is within a few pixels of a selected point.
+-- True when the mouse is within a few pixels of a selected point (in the lane under it); also gives that lane's height.
 local function hit_selected(px, py, pw, ph, mx, my)
-  for p, frames in pairs(sel) do
-    local frq = data.frq[p]
-    for f in pairs(frames) do
-      local x = px + tx(data.times[f], pw)
-      if math.abs(x - mx) <= 7 then
-        local y = py + fy(frq[f], ph)
-        if math.abs(y - my) <= 7 then return true end
+  local lane = lane_at(py, ph, my)
+  if not lane then return false end
+  for _, ci in ipairs(lane.chans) do
+    local hit = false
+    as_channel(ci, function()
+      if not sel_info then return end
+      for p, frames in pairs(sel) do
+        local frq = data.frq[p]
+        for f in pairs(frames) do
+          local x = px + tx(data.times[f], pw)
+          if math.abs(x - mx) <= 7 then
+            local y = py + lane.off + fy(frq[f], lane.h)
+            if math.abs(y - my) <= 7 then hit = true; return end
+          end
+        end
       end
-    end
+    end)
+    if hit then return true, lane.h end
   end
   return false
 end
@@ -1039,28 +1220,127 @@ local function draw_progress_under(x, w, y, frac, rgb)
   gfx.drawstr(label)
 end
 
--- The channel buttons (an extra header row, only when there are several channels); a star marks unsaved changes.
+-- The channel row (only when there are several channels): per channel an ON/OFF button (a star marks unsaved changes)
+-- and a visibility slider (20-100 %), then the STACK/OVERLAY button.
+local function chan_pitch()
+  return math.max(math.min(104, math.floor((gfx.w - MARGIN_L - 130) / math.max(#chs, 1))), 44)
+end
 local function channel_button_rect(i)
-  return MARGIN_L + (i - 1) * 40, MARGIN_T - 2, 36, 18
+  return MARGIN_L + (i - 1) * chan_pitch(), MARGIN_T - 2, 30, 18
+end
+local function slider_rect(i)
+  local pitch = chan_pitch()
+  return MARGIN_L + (i - 1) * pitch + 34, MARGIN_T + 2, pitch - 42, 10
+end
+local function mode_rect()
+  return MARGIN_L + #chs * chan_pitch() + 4, MARGIN_T - 2, 100, 18
 end
 
 local function draw_channel_buttons()
   if #chs < 2 then return end
   gfx.setfont(1, "Arial", 13)
   for i = 1, #chs do
+    local c = chs[i]
+    local tc = tint_of(i)
     local x, y, w, h = channel_button_rect(i)
-    local on = (i == cur)
-    if on then gfx.set(0.20, 0.45, 0.42, 1) else gfx.set(0.16, 0.18, 0.22, 1) end
+    if c.on then gfx.set(tc[1] * 0.45, tc[2] * 0.45, tc[3] * 0.45, 1) else gfx.set(0.16, 0.18, 0.22, 1) end
     gfx.rect(x, y, w, h, 1)
-    gfx.set(on and 0.55 or 0.35, on and 0.90 or 0.38, on and 0.82 or 0.43, 1)
+    if c.on then gfx.set(tc[1], tc[2], tc[3], 1) else gfx.set(0.35, 0.38, 0.43, 1) end
     gfx.rect(x, y, w, h, 0)
-    local label = tostring(i) .. (((i == cur and modified) or (i ~= cur and chs[i].modified)) and "*" or "")
-    gfx.set(1, 1, 1, on and 1 or 0.7)
+    local label = tostring(i) .. (((i == cur and modified) or (i ~= cur and c.modified)) and "*" or "")
+    gfx.set(1, 1, 1, c.on and 1 or 0.5)
     gfx.x = x + (w - gfx.measurestr(label)) / 2
     gfx.y = y + 2
     gfx.drawstr(label)
+    -- the visibility slider
+    local sx, sy, sw, sh = slider_rect(i)
+    gfx.set(0.16, 0.18, 0.22, 1)
+    gfx.rect(sx, sy, sw, sh, 1)
+    if c.on then
+      local fill = (c.vis - VIS_MIN) / (1 - VIS_MIN)
+      gfx.set(tc[1], tc[2], tc[3], 0.55)
+      gfx.rect(sx, sy, sw * fill, sh, 1)
+      gfx.set(1, 1, 1, 0.9)
+      gfx.rect(sx + math.floor((sw - 3) * fill), sy - 2, 3, sh + 4, 1)
+    end
+    gfx.set(0.35, 0.38, 0.43, 1)
+    gfx.rect(sx, sy, sw, sh, 0)
   end
-  text_at(MARGIN_L + #chs * 40 + 6, MARGIN_T, "channel " .. cur .. " of " .. #chs .. "   (Tab switches)", 0.6, 0.65, 0.7)
+  local x, y, w, h = mode_rect()
+  gfx.set(0.16, 0.18, 0.22, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.55, 0.90, 0.82, 1)
+  gfx.rect(x, y, w, h, 0)
+  local label = (view_mode == "stack") and "STACK" or "OVERLAY"
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
+-- Switches channel i on or off. At least one stays on.
+local function toggle_channel(i)
+  local c = chs[i]
+  if c.on then
+    if #on_list() <= 1 then set_status("at least one channel stays on"); return end
+    capture_channel()
+    c.on = false
+    if i == cur then
+      for j, x in ipairs(chs) do if x.on then switch_channel(j); break end end
+    end
+    chs[i].sel, chs[i].sel_info = {}, nil                         -- an OFF channel keeps no selection
+  else
+    c.on = true
+  end
+  dirty = true
+end
+
+-- Tab: solo the next channel; after the last one, all channels again.
+local function solo_next()
+  local on = on_list()
+  local target
+  if #on == #chs then target = 1
+  elseif #on == 1 then target = (on[1] < #chs) and on[1] + 1 or nil end
+  for i, c in ipairs(chs) do
+    capture_channel()
+    c.on = (target == nil) or i == target
+  end
+  if not chs[cur].on then for j, x in ipairs(chs) do if x.on then switch_channel(j); break end end end
+  for i, c in ipairs(chs) do if not c.on then c.sel, c.sel_info = {}, nil end end
+  dirty = true
+end
+
+local function toggle_view_mode()
+  view_mode = (view_mode == "stack") and "overlay" or "stack"
+  dirty = true
+  set_status("view: " .. view_mode)
+end
+
+local slider_drag = nil           -- the channel whose visibility slider is being dragged
+
+local function set_slider_from_mouse(i, mx)
+  local sx, _, sw = slider_rect(i)
+  local v = VIS_MIN + clamp((mx - sx) / sw, 0, 1) * (1 - VIS_MIN)
+  chs[i].vis = math.floor(v * 100 + 0.5) / 100
+  set_status(string.format("channel %d visibility %d %%", i, math.floor(chs[i].vis * 100 + 0.5)))
+  dirty = true
+end
+
+-- A left click in the channel row; true when it hit something there.
+local function channel_row_click(mx, my)
+  if #chs < 2 then return false end
+  for i = 1, #chs do
+    local bx, by, bw, bh = channel_button_rect(i)
+    if mx >= bx and mx < bx + bw and my >= by and my < by + bh then toggle_channel(i); return true end
+    local sx, sy, sw, sh = slider_rect(i)
+    if chs[i].on and mx >= sx - 2 and mx < sx + sw + 2 and my >= sy - 3 and my < sy + sh + 3 then
+      slider_drag = i
+      set_slider_from_mouse(i, mx)
+      return true
+    end
+  end
+  local x, y, w, h = mode_rect()
+  if mx >= x and mx < x + w and my >= y and my < y + h then toggle_view_mode(); return true end
+  return false
 end
 
 local function draw_audition_button()
@@ -1135,6 +1415,12 @@ function draw_note_scale(px, py, pw, ph)
   end
 end
 
+local function any_modified()
+  if modified then return true end
+  for i, c in ipairs(chs) do if i ~= cur and c.modified then return true end end
+  return false
+end
+
 local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 14)
   if not data then
@@ -1146,7 +1432,7 @@ local function draw_header(px, py, pw, ph, plain)
   local name = fname:match("([^/\\]+)$") or fname
   local hop_ms = data.frame_size / data.sr * 1000
   local info = string.format("%s%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
-    name, modified and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
+    name, any_modified() and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or "")
   text_at(px, 8, info)
   if not plain then
@@ -1168,46 +1454,65 @@ local function draw_header(px, py, pw, ph, plain)
     text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- third header row: what the last action did
   end
   if plain then return end
-  if sel_info then
-    local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
-      sel_info.points, sel_info.partials, sel_info.t0, sel_info.t1, fmt_freq(sel_info.f0), fmt_freq(sel_info.f1))
-    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 48, msg, 1, 0.5, 0.82)
-  end
-  -- hover readout
-  local mx, my = gfx.mouse_x, gfx.mouse_y
-  if mx >= px and mx < px + pw and my >= py and my < py + ph then
-    local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
-    local f = view.f0 * (view.f1 / view.f0) ^ ((py + ph - my) / ph)
-    local line = string.format("t = %.3f s    f = %s  (%s)", t, fmt_freq(f), ats.note_name(f))
-    local fi = frame_at(t)
-    local best, bestd = nil, 9
-    for p = 1, show_partials and data.partials or 0 do
-      if data.amp[p][fi] > amp_thresh and data.frq[p][fi] > 0 then
-        local d = math.abs(py + fy(data.frq[p][fi], ph) - my)
-        if d < bestd then best, bestd = p, d end
+  if any_sel() then
+    local pts, parts, nch, t0, t1, f0, f1 = 0, 0, 0, math.huge, -math.huge, math.huge, -math.huge
+    for i, c in ipairs(chs) do
+      local si = (i == cur) and sel_info or c.sel_info
+      if si and c.on then
+        pts, parts, nch = pts + si.points, parts + si.partials, nch + 1
+        t0, t1, f0, f1 = math.min(t0, si.t0), math.max(t1, si.t1), math.min(f0, si.f0), math.max(f1, si.f1)
       end
     end
+    local msg = string.format("selected: %d points in %d partials%s   %.3f-%.3f s   %s - %s",
+      pts, parts, nch > 1 and (" (" .. nch .. " channels)") or "", t0, t1, fmt_freq(f0), fmt_freq(f1))
+    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 48, msg, 1, 0.5, 0.82)
+  end
+  -- hover readout (the lane under the mouse; in the overlay every channel that is on)
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  local lane = (mx >= px and mx < px + pw) and lane_at(py, ph, my) or nil
+  if lane then
+    local lpy, lph = py + lane.off, lane.h
+    local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+    local f = view.f0 * (view.f1 / view.f0) ^ ((lpy + lph - my) / lph)
+    local line = string.format("t = %.3f s    f = %s  (%s)", t, fmt_freq(f), ats.note_name(f))
     text_at(px, 28, line, 0.7, 0.75, 0.8)
-    if best then
-      local db = 20 * math.log(data.amp[best][fi] / data.ampmax, 10)
-      text_at(px + 330, 28, string.format("partial %d: %s (%s)   %.1f dB   frame %d",
-        best, fmt_freq(data.frq[best][fi]), ats.note_name(data.frq[best][fi]), db, fi), 1, 0.95, 0.6)
-      -- highlight the whole partial
-      local times, amp, frq = data.times, data.amp[best], data.frq[best]
-      gfx.set(1, 1, 1, 0.95)
-      for f = 1, data.frames - 1 do
-        if amp[f] > amp_thresh and amp[f + 1] > amp_thresh and frq[f] > 0 and frq[f + 1] > 0 then
-          local cx1, cy1, cx2, cy2 = clip_segment(tx(times[f], pw), fy(frq[f], ph),
-                                                  tx(times[f + 1], pw), fy(frq[f + 1], ph), pw, ph)
-          if cx1 then gfx.line(px + cx1, py + cy1, px + cx2, py + cy2, 1) end
-        end
+    local best, bestd, bestch, bestfi = nil, 9, nil, nil
+    if show_partials then
+      for _, ci in ipairs(lane.chans) do
+        as_channel(ci, function()
+          local fi = frame_at(t)
+          for p = 1, data.partials do
+            if data.amp[p][fi] > amp_thresh and data.frq[p][fi] > 0 then
+              local d = math.abs(lpy + fy(data.frq[p][fi], lph) - my)
+              if d < bestd then best, bestd, bestch, bestfi = p, d, ci, fi end
+            end
+          end
+        end)
       end
+    end
+    if best then
+      as_channel(bestch, function()
+        local fi = bestfi
+        local db = 20 * math.log(data.amp[best][fi] / data.ampmax, 10)
+        text_at(px + 330, 28, string.format("%spartial %d: %s (%s)   %.1f dB   frame %d",
+          #chs > 1 and ("ch " .. bestch .. "  ") or "", best, fmt_freq(data.frq[best][fi]), ats.note_name(data.frq[best][fi]), db, fi), 1, 0.95, 0.6)
+        -- highlight the whole partial
+        local times, amp, frq = data.times, data.amp[best], data.frq[best]
+        gfx.set(1, 1, 1, 0.95)
+        for f = 1, data.frames - 1 do
+          if amp[f] > amp_thresh and amp[f + 1] > amp_thresh and frq[f] > 0 and frq[f + 1] > 0 then
+            local cx1, cy1, cx2, cy2 = clip_segment(tx(times[f], pw), fy(frq[f], lph),
+                                                    tx(times[f + 1], pw), fy(frq[f + 1], lph), pw, lph)
+            if cx1 then gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1) end
+          end
+        end
+      end)
     end
   end
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
+  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -1297,16 +1602,20 @@ local function handle_input(px, py, pw, ph)
     elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
       ruler_drag = true                                          -- a click (or drag) on the time ruler sets the playhead
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
-    elseif (function() for i = 1, #chs do local bx, by, bw, bh = channel_button_rect(i)
-                                          if #chs > 1 and mx >= bx and mx < bx + bw and my >= by and my < by + bh then switch_channel(i); return true end end end)() then
-      -- (a channel button: handled above)
-    elseif data and inside then
-      if sel_info and hit_selected(px, py, pw, ph, mx, my) then
-        mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
+    elseif channel_row_click(mx, my) then
+      -- (the channel row: handled above)
+    elseif data and inside and lane_at(py, ph, my) then
+      local lane = lane_at(py, ph, my)
+      local hit, lh = false, nil
+      if any_sel() then hit, lh = hit_selected(px, py, pw, ph, mx, my) end
+      if hit then
+        mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false, h = lh }
       else
-        box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0 }
+        box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
       end
     end
+  elseif down and slider_drag then
+    set_slider_from_mouse(slider_drag, mx)
   elseif down and ruler_drag then
     set_playhead(view.t0 + (clamp(mx, px, px + pw) - px) / pw * (view.t1 - view.t0))
   elseif down and mover then
@@ -1319,11 +1628,11 @@ local function handle_input(px, py, pw, ph)
     end
   elseif down and box then
     box.x1 = clamp(mx, px, px + pw)
-    box.y1 = clamp(my, py, py + ph)
+    box.y1 = clamp(my, py + box.off, py + box.off + box.h)
   elseif (not down) and prev_down and mover then
     local m = mover
     if m.active then
-      local df, ratio = mover_delta(pw, ph)
+      local df, ratio = mover_delta(pw, m.h or ph)
       mover = nil
       move_selection(df, ratio)
     end
@@ -1338,18 +1647,18 @@ local function handle_input(px, py, pw, ph)
       end
     else
       local function t_of(x) return view.t0 + (x - px) / pw * (view.t1 - view.t0) end
-      local function f_of(y) return view.f0 * (view.f1 / view.f0) ^ ((py + ph - y) / ph) end
+      local function f_of(y) return view.f0 * (view.f1 / view.f0) ^ ((py + b.off + b.h - y) / b.h) end
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
-  if not down then ruler_drag = false end
+  if not down then ruler_drag = false; slider_drag = nil end
   prev_down = down
 
   local ch = gfx.getchar()
   if ch < 0 then stop_audition(); return false end
   if ch == 27 then
     if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
-    elseif sel_info then clear_selection() else stop_audition(); return false end
+    elseif any_sel() then clear_selection() else stop_audition(); return false end
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
   if ch == 6579564 then delete_selection()                      -- Delete
@@ -1362,7 +1671,8 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
-  elseif ch == 9 then if #chs > 1 then switch_channel(cur % #chs + 1) end        -- Tab: the next channel
+  elseif ch == 9 then if #chs > 1 then solo_next() end           -- Tab: only the next channel (then all again)
+  elseif ch == 118 or ch == 86 then if #chs > 1 then toggle_view_mode() end   -- V: stack / overlay
   elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
@@ -1432,7 +1742,7 @@ local function loop()
 
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
-  gfx.blit(1, 1, 0, 0, 0, pw, ph, px, py, pw, ph)
+  for k, lane in ipairs(lane_layout(ph)) do gfx.blit(k, 1, 0, 0, 0, pw, lane.h, px, py + lane.off, pw, lane.h) end
   draw_selection(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)

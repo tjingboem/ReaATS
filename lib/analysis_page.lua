@@ -349,7 +349,7 @@ function Page:set_source(wav)
     return false
   end
   self.wav, self.info, self.result = wav, info, nil
-  self.s.channels = clamp(self.s.channels, 1, info.channels)
+  self.s.channels = info.channels                          -- a new sound: analyse all its channels (lower it by hand if you want fewer)
   if not self.out_custom then self.out = unique_out(wav) end
   self:say(nil)
   return true

@@ -225,9 +225,17 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   channels play as they are) while PRINT stays multichannel ("I do think Printing can be multichannel though"; REAPER must
   be set up for multichannel use); PRINT raises the track to an even number
   of channels >= N (`I_NCHAN`) and the item state lists every file (`files`, `channel`). Ctrl+S saves the whole set as
-  name_edit[N]_ch1.ats ... ; EXPORT writes name_ch1.ats ... from the chosen name (asks before replacing any). Edits still
-  apply to ONE channel at a time. NOT built (the rest of the design in docs/multichannel_design.md): several channels switched
-  on and edited together, the overlay in channel colours, the visibility sliders. Tests: tests/mock_channels.lua (real engine
+  name_edit[N]_ch1.ats ... ; EXPORT writes name_ch1.ats ... from the chosen name (asks before replacing any). STACK / OVERLAY
+  + CHANNEL SELECTORS + SLIDERS (BUILT 9 Nov 2026, tjingboem: "see both channels separate under each other ... an option to see all
+  channels in one window but with channel selectors, and the 20%-100% visible sliders"): the channel buttons are now ON/OFF toggles
+  (`chs[i].on`, at least one stays on, an OFF channel keeps no selection); each channel has a slider `chs[i].vis` 0.2..1 (screen only);
+  `view_mode` "stack" (one lane per ON channel under each other, `lane_layout`, LANE_GAP 4, one image buffer per lane) or "overlay"
+  (one lane, channel colours `TINTS`, loudness = brightness, alpha = vis); mode button + V; Tab = solo next channel (after the last:
+  all). Drawing/hit-tests run a channel through `as_channel(i, fn)` (swaps only data/amp_thresh/sel/sel_info). The reference channel
+  `cur` keeps its bundle in the globals; `on_channels()` + `with_channel(i, fn)` run an edit on each ON channel; select_box,
+  delete/transpose/move go through `edit_on_channels` (selection region applies to every ON channel's own points). UNDO is by
+  GROUP: every do_edit stores `group`; Ctrl+Z/Y undo/redo the newest group across all channels (one step for a multi-channel edit);
+  a new edit clears all redo stacks. Box/mover remember their lane (`box.off/h`, `mover.h`) so frequency maps with that lane's height. Tests: tests/mock_channels.lua (real engine
   makes a 3-channel set), test_ats_synth.lua (12 new for multi-channel rendering and the WAV).
 
 - INCIDENT 9 Nov 2026 (tjingboem: the Analysis page showed "800 seconds" and never finished; they cancelled the import):

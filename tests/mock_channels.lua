@@ -36,7 +36,9 @@ local chosen_save, mb_answer = nil, 6
 local open_choice = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "line", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "set", "rect", "line", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+local blits = {}
+gfx.blit = function(src, _, _, _, _, _, h, _, dy) blits[#blits + 1] = { src = src, y = dy, h = h }; return 0 end
 gfx.measurestr = function(s) return #s * 7, 14 end
 gfx.drawstr = function(s) strings[#strings + 1] = s end
 local script = { keys = {} }
@@ -94,36 +96,78 @@ local function until_done(done, max_frames)
 end
 local ats = dofile("lib/ats_file.lua")
 local wavinfo = dofile("lib/wav_info.lua")
-local function button(i) return 62 + (i - 1) * 40 + 18, 77 end           -- the centre of channel button i (the header has the extra row)
+local function button(i) return 62 + (i - 1) * 104 + 15, 77 end          -- the centre of channel button i (the header has the extra row)
+local function slider(i, frac) return 62 + (i - 1) * 104 + 34 + math.floor(62 * frac), 77 end   -- a point on channel i's slider
+local MODE = { 62 + 3 * 104 + 4 + 50, 77 }                                 -- the STACK / OVERLAY button
+local function lanes_now() blits = {}; strings = {}; frame(); return blits end
+local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame()
+  gfx.mouse_x, gfx.mouse_y = x1, y1; frame(); gfx.mouse_cap = 0; frame(); frame()
+end
 
--- 1. opening one channel file opens the whole set, at that channel
+-- 1. opening one channel file opens the whole set; every channel is on, in a stack
 start(scratch .. "mc_ch2.ats"); strings = {}; frame()
-assert(saw("^mc_ch2%.ats"), "the header should show channel 2's file: " .. tostring(saw("ats")))
-assert(saw("^channel 2 of 3"), "the set should be recognised: " .. tostring(saw("channel")))
+assert(saw("^mc_ch%d%.ats"), "the header shows a channel file: " .. tostring(saw("ats")))
 assert(saw("^1$") and saw("^2$") and saw("^3$"), "a button for every channel")
-print("opening mc_ch2.ats opens the set of 3, at channel 2")
+assert(saw("^STACK$"), "the view starts as a stack")
+local b = lanes_now()
+assert(#b == 3 and b[1].y < b[2].y and b[2].y < b[3].y and b[1].h == b[2].h, "three lanes under each other: " .. #b)
+print("opening mc_ch2.ats opens the set of 3: three lanes in a stack")
 
--- 2. the buttons and Tab switch the channel
+-- 2. buttons switch channels ON/OFF; one always stays on; Tab solos; V / the mode button give the overlay
+click(button(3)); b = lanes_now()
+assert(#b == 2 and b[1].h > 200, "channel 3 off: two taller lanes (" .. #b .. ")")
+click(button(3)); b = lanes_now()
+assert(#b == 3, "channel 3 on again")
+click(button(1)); click(button(2)); b = lanes_now()
+assert(#b == 1 and b[1].h == 496, "only channel 3 is on: a single full lane")
 click(button(3)); strings = {}; frame()
-assert(saw("^mc_ch3%.ats") and saw("^channel 3 of 3"), "button 3")
-press(9)
-assert(saw("^mc_ch1%.ats") and saw("^channel 1 of 3"), "Tab goes on to channel 1 after channel 3")
-click(button(2)); strings = {}; frame()
-assert(saw("^mc_ch2%.ats"), "button 2")
-print("channel buttons and Tab switch channels")
+assert(saw("at least one channel stays on"), "the last channel cannot be switched off")
+click(button(1)); click(button(2))
+press(9); b = lanes_now()
+assert(#b == 1, "Tab: only channel 1")
+press(9); press(9); b = lanes_now()
+assert(#b == 1, "Tab twice more: only channel 3")
+press(9); b = lanes_now()
+assert(#b == 3, "Tab after the last channel: all again")
+click(MODE[1], MODE[2]); b = lanes_now()
+assert(#b == 1 and b[1].h == 496 and saw("^OVERLAY$"), "OVERLAY: all channels in one lane")
+press(118); b = lanes_now()
+assert(#b == 3 and saw("^STACK$"), "V goes back to the stack")
+print("channel buttons switch ON/OFF (one stays on), Tab solos, STACK/OVERLAY")
 
--- 3. edits belong to one channel; undo is per channel
-click(button(1)); press(102)                                                  -- channel 1, fit
-gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 100; frame()
-gfx.mouse_x, gfx.mouse_y = 1040, 560; frame(); gfx.mouse_cap = 0; frame(); frame()
-press(6579564)                                                                -- Delete in channel 1
+-- 3. visibility sliders: 20 % .. 100 %, only on screen
+click(MODE[1], MODE[2])
+click(slider(1, 0)); assert(saw("channel 1 visibility 20 %%"), "the slider's left end is 20 %: " .. tostring(saw("visib")))
+click(slider(1, 0.5)); assert(saw("channel 1 visibility 60 %%"), "the middle is 60 %: " .. tostring(saw("visib")))
+click(slider(1, 1)); assert(saw("channel 1 visibility 100 %%"), "the right end is 100 %")
+click(button(2)); click(slider(2, 0.5)); strings = {}; frame()
+assert(not saw("channel 2 visibility"), "an OFF channel's slider does nothing")
+click(button(2)); click(MODE[1], MODE[2])
+print("visibility sliders give 20 % to 100 %")
+
+-- 4. a region selects and every edit applies to every ON channel, as ONE undo step
+press(102)                                                                    -- fit
+local lane1 = lanes_now()[1]
+sweep(65, 95, 1040, 90 + lane1.h - 5)
 strings = {}; frame()
-assert(saw("^1%*$"), "channel 1 shows that it has unsaved changes: " .. table.concat(strings, " / ", 1, math.min(#strings, 30)))
-click(button(2)); strings = {}; frame()
-assert(saw("^1%*$") and not saw("%*   |"), "channel 2 has no changes of its own; button 1 keeps its star")
-click(button(1)); press(26, 4); strings = {}; frame()                         -- Ctrl+Z in channel 1
-assert(not saw("^1%*$"), "undo works in the channel that was edited")
-print("edits and undo are per channel")
+assert(saw("%(3 channels%)"), "the selection covers all three channels: " .. tostring(saw("selected") or "(no selection text)"))
+press(6579564)
+strings = {}; frame()
+assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "the delete reached every channel")
+press(26, 4); strings = {}; frame()
+assert(not saw("^%d%*$"), "ONE Ctrl+Z undoes it in every channel")
+press(25, 4); strings = {}; frame()
+assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "and Ctrl+Y does it again in every channel")
+press(26, 4)
+-- with channel 2 off, only 1 and 3 are edited
+click(button(2)); press(102)
+lane1 = lanes_now()[1]
+sweep(65, 95, 1040, 90 + lane1.h - 5)
+press(6579564); strings = {}; frame()
+assert(saw("^1%*$") and saw("^3%*$") and not saw("^2%*$"), "channel 2 is off: it is not edited")
+press(26, 4); click(button(2))
+print("a region and every edit apply to all ON channels; one undo step")
 
 -- 4. AUDITION plays all channels
 local n_prev = #previews
@@ -142,13 +186,13 @@ local pinfo = wavinfo.read(item.src)
 assert(pinfo.channels == 3, "the printed WAV has 3 channels")
 assert(project.tracks[1].nchan >= 4 and project.tracks[1].nchan % 2 == 0, "the track needs an even number of channels, at least 3: " .. project.tracks[1].nchan)
 local state = dofile("lib/reaats_serial.lua").deserialize(projext["ReaATS_ItemSettings|" .. item.guid])
-assert(state and #state.files == 3 and state.channel == 1 and state.files[2]:match("mc_ch2%.ats$"), "the item remembers the files of the set")
+assert(state and #state.files == 3 and type(state.channel) == "number" and state.files[2]:match("mc_ch2%.ats$"), "the item remembers the files of the set")
 print("PRINT: a 3-channel WAV, the track has " .. project.tracks[1].nchan .. " channels, the item remembers all 3 files")
 
 -- 6. Ctrl+S saves the whole set; it opens as a set again
-click(button(2)); press(102)
-gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 100; frame()
-gfx.mouse_x, gfx.mouse_y = 1040, 560; frame(); gfx.mouse_cap = 0; frame(); frame()
+press(102)
+lane1 = lanes_now()[1]
+sweep(65, 95, 1040, 90 + lane1.h - 5)
 press(6579564)
 press(19, 4); strings = {}; frame()
 for k = 1, 3 do assert(reaper.file_exists(scratch .. "mc_edit_ch" .. k .. ".ats"), "mc_edit_ch" .. k .. ".ats should exist") end
@@ -157,7 +201,7 @@ local e2 = assert(ats.load(scratch .. "mc_edit_ch2.ats")); local e1 = assert(ats
 local active2 = 0; for p = 1, e2.partials do for f = 1, e2.frames do if e2.amp[p][f] > 0 then active2 = active2 + 1 end end end
 assert(active2 < 100, "the edited channel 2 has (almost) nothing left, the saved copy shows it: " .. active2)
 start(scratch .. "mc_edit_ch3.ats"); strings = {}; frame()
-assert(saw("^channel 3 of 3"), "the saved set opens as a set again")
+assert(saw("^1$") and saw("^2$") and saw("^3$"), "the saved set opens as a set again")
 print("Ctrl+S saves every channel as mc_edit_chK.ats; the set opens again")
 
 -- 7. Export chooses a name for the whole set
@@ -168,11 +212,11 @@ print("Export writes xp_ch1.ats ... xp_ch3.ats")
 
 -- 8. channel files that do not fit together open alone; a single file has no buttons
 start(scratch .. "mm_ch1.ats"); strings = {}; frame(); strings = {}; frame()
-assert(not saw("^channel %d of"), "a set whose channels differ in length opens as one file")
+assert(not saw("^3$") and not saw("^STACK$"), "a set whose channels differ in length opens as one file")
 assert(saw("do not have the same frame grid"), "and says why: " .. tostring(saw("grid") or saw("channel")))
 copy(scratch .. "mc_ch1.ats", scratch .. "mc.ats")
 start(scratch .. "mc.ats"); strings = {}; frame()
-assert(not saw("^channel %d of") and not saw("^3$"), "a file that is not name_chK.ats has no channel buttons")
+assert(not saw("^3$") and not saw("^STACK$"), "a file that is not name_chK.ats has no channel buttons")
 print("mismatching channel files and single files open alone")
 
 clean()
