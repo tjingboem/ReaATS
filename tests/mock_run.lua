@@ -6,7 +6,7 @@ local root = os.getenv("PWD")
 local calls = {}
 local function count(name) return function(...) calls[name] = (calls[name] or 0) + 1; return 0 end end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "line", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = count(n) end
+for _, n in ipairs({ "set", "rect", "line", "circle", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = count(n) end
 local strings = {}
 gfx.drawstr = function(s) strings[#strings + 1] = s end
 gfx.measurestr = function(s) return #s * 7, 14 end

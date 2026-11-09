@@ -47,6 +47,7 @@ function M.header(path)
   fh:seek("set", 0)
   local s = fh:read(80)
   fh:close()
+  if bytes == 0 then return nil, "the file is empty (0 bytes): the program that made it did not finish. Analyse the sound again" end
   if not s or #s < 80 then return nil, "file too short for an ATS header" end
   local endian = "<"
   local magic = string.unpack("<d", s, 1)

@@ -102,6 +102,10 @@ local mover = nil              -- a drag that moves the selection: { x0, y0, x, 
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
 local lasso = nil              -- Alt+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
 local amp_thresh = 0
+-- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
+-- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
+-- chunk of this file is at Lua's limit of 200 local variables).
+local W = { m = dofile(script_dir .. "/lib/ats_warp.lua") }
 local last_audition = nil      -- the last sound AUDITION made (see start_preview)
 
 local LOG = math.log
@@ -314,6 +318,7 @@ end
 
 local function load_file(path)
   data_rev = data_rev + 1
+  W.w, W.region = nil, nil
   local files, which = find_set(path)
   -- 1. Look at the headers only: is everything readable, do the channels fit together, will it fit in memory?
   local heads, note = {}, nil
@@ -414,6 +419,8 @@ end
 
 -- ---------------------------------------------------------------- selection
 function clear_selection()
+  W.commit()                                   -- (a bend that has been shaped but not applied is applied before the selection goes)
+  W.region = nil
   sel, sel_info = {}, nil
   for i, c in ipairs(chs) do if i ~= cur then c.sel, c.sel_info = {}, nil end end
 end
@@ -443,9 +450,11 @@ local function select_box(ta, tb, fa, fb, add)
   if not data then return end
   if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
   if #on_channels() == 0 then set_status("no channel is editable: click an LED to make it green"); return end
+  W.commit()
   for _, i in ipairs(on_channels()) do
     with_channel(i, function() select_box_single(ta, tb, fa, fb, add) end)
   end
+  W.set_region(ta, tb, fa, fb, add)
 end
 
 -- Lasso: selects the points inside a closed freehand loop. The loop is given in time and log-frequency (poly_t, poly_lf), the points
@@ -491,9 +500,11 @@ local function select_poly(poly_t, poly_lf, add)
     lmin, lmax = math.min(lmin, poly_lf[i]), math.max(lmax, poly_lf[i])
   end
   local fmin, fmax = math.exp(lmin), math.exp(lmax)
+  W.commit()
   for _, i in ipairs(on_channels()) do
     with_channel(i, function() select_poly_single(poly_t, poly_lf, tmin, tmax, fmin, fmax, add) end)
   end
+  W.set_region(tmin, tmax, fmin, fmax, add)
 end
 
 -- Recomputes the selection summary (point count, time and frequency range) from sel.
@@ -572,6 +583,7 @@ end
 
 -- Ctrl+Z / Ctrl+Y act on the most recent group of edits, in every channel it touched.
 local function undo()
+  W.w, W.region = nil, nil                       -- (undo drops a bend that was shaped and not applied)
   capture_channel()
   local best, who = -1, {}
   for i, c in ipairs(chs) do
@@ -587,6 +599,7 @@ local function undo()
 end
 
 local function redo()
+  W.w, W.region = nil, nil
   capture_channel()
   local best, who = math.huge, {}
   for i, c in ipairs(chs) do
@@ -604,6 +617,7 @@ end
 -- An edit function that works on the reference channel's selection, run on every channel that is on and has a selection,
 -- as one undo group.
 local function edit_on_channels(fn_single, label)
+  if not W.busy then W.commit() end            -- (a bend that was shaped is applied first; W.commit itself calls this with W.busy set)
   local targets = {}
   for _, i in ipairs(on_channels()) do if chs[i].sel_info then targets[#targets + 1] = i end end
   if #targets == 0 then return end
@@ -611,6 +625,7 @@ local function edit_on_channels(fn_single, label)
   edit_group = group_counter
   for _, i in ipairs(targets) do with_channel(i, fn_single) end
   edit_group = nil
+  W.region = nil                               -- (the box is the one round the selection as it is now)
   if #targets > 1 and label then set_status(label .. " in " .. #targets .. " channels") end
 end
 
@@ -672,6 +687,7 @@ local function move_selection(df, ratio) edit_on_channels(function() move_single
 local clipboard = nil              -- { pieces = { [channel] = { { p, df, amp, frq }, ... } }, count }
 
 local function copy_selection()
+  W.commit()
   local gathered, count, fmin = {}, 0, math.huge
   for _, i in ipairs(on_channels()) do
     local c = chs[i]
@@ -702,6 +718,7 @@ end
 
 local function paste_clipboard()
   if not data then return end
+  W.commit()
   if not clipboard then set_status("nothing copied yet: select points, then Ctrl+C"); return end
   local targets = {}
   for _, i in ipairs(on_channels()) do if clipboard.pieces[i] then targets[#targets + 1] = i end end
@@ -726,6 +743,7 @@ local function paste_clipboard()
     end)
   end
   edit_group = nil
+  W.region = nil
   if total == 0 then set_status("nothing could be pasted there: the playhead is too near the end of the file"); return end
   set_status(string.format("pasted %d points at %.3f s%s%s (they are selected now)", total, at,
                            #targets > 1 and (" in " .. #targets .. " channels") or "",
@@ -832,6 +850,7 @@ end
 -- job and starts the sound.
 local function audition()
   if not data then return end
+  W.commit()                                   -- (what you hear includes a bend that was shaped)
   if pending and pending.kind == "print" then set_status("wait: the print is being prepared"); return end
   stop_audition()
   local use_sines = show_partials
@@ -1020,6 +1039,7 @@ end
 -- whole, every channel, as <name>_edit_ch1.ats, <name>_edit_ch2.ats ... (so it opens as a set again).
 local function save_file()
   if not data or not fname then return end
+  W.commit()
   if #chs > 1 then
     local first = chs[1].fname
     local base = set_names(first, 1)[1]:gsub("_ch1%.[^./\\]+$", ""):gsub("_edit%d*$", "")
@@ -1051,6 +1071,7 @@ end
 -- extension is installed, otherwise a box to type the path). An existing file is only replaced after a yes.
 local function save_as()
   if not data or not fname then return end
+  W.commit()
   local here = current_file or fname
   local dir = reaper.GetExtState(EXT_SECTION, "save_dir")
   if dir == "" then dir = here:match("^(.*)[/\\]") or "" end
@@ -1102,6 +1123,7 @@ end
 
 local function print_to_track()
   if not data then return end
+  W.commit()
   if pending and pending.kind == "print" then return end
   capture_channel()
   local unsaved = false
@@ -1507,6 +1529,277 @@ local function hit_selected(px, py, pw, ph, mx, my)
     if hit then return true, lane.h end
   end
   return false
+end
+
+-- ------------------------------------------------------------ the box and its handles (the "rubber sheet")
+-- The selection has a box round it, with a dot in each corner and the middle of every edge free to be dragged: the dots bend the box, and
+-- the selected points follow it (lib/ats_warp.lua has the maths). Drag a corner dot or a border dot up or down; drag an edge between the
+-- dots to move the whole edge; Ctrl+click on an edge adds a border dot, right-click on a border dot removes it, Alt+drag on an edge arches it,
+-- Shift makes the movement fine. Nothing is changed in the data until Enter applies it (Esc, Ctrl+R: back to flat). Frequency only for now.
+function W.sel_info_of(i) return (i == cur) and sel_info or chs[i].sel_info end
+
+function W.set_region(ta, tb, fa, fb, add)
+  W.w = nil
+  if ta > tb then ta, tb = tb, ta end
+  if fa > fb then fa, fb = fb, fa end
+  local base = add and W.current_region() or nil
+  if base then ta, tb, fa, fb = math.min(ta, base.t0), math.max(tb, base.t1), math.min(fa, base.f0), math.max(fb, base.f1) end
+  W.region = { t0 = ta, t1 = tb, f0 = fa, f1 = fb }
+end
+
+-- The box: the one the selection was made with, or else the one round the selected points.
+function W.current_region()
+  if W.region then return W.region end
+  local t0, t1, f0, f1 = math.huge, -math.huge, math.huge, 0
+  for i, c in ipairs(chs) do
+    local si = W.sel_info_of(i)
+    if c.on and c.edit and si then
+      t0, t1, f0, f1 = math.min(t0, si.t0), math.max(t1, si.t1), math.min(f0, si.f0), math.max(f1, si.f1)
+    end
+  end
+  if t0 == math.huge or not data then return nil end
+  local dt = (data.times[data.frames] - data.times[1]) / math.max(data.frames - 1, 1)
+  if t1 - t0 < dt then local m = (t0 + t1) / 2; t0, t1 = m - dt / 2, m + dt / 2 end
+  if f1 / f0 < 1.06 then local m = math.sqrt(f0 * f1); f0, f1 = m / 1.03, m * 1.03 end
+  return { t0 = t0, t1 = t1, f0 = f0, f1 = f1 }
+end
+
+function W.get()
+  if not W.w then
+    local r = W.current_region()
+    if not r then return nil end
+    -- A box that is only a few pixels high or wide (one partial, a few frames) would have its dots on top of each other: it is made at
+    -- least 30 px each way (round its middle) when the bend is started.
+    local t0, t1, f0, f1 = r.t0, r.t1, r.f0, r.f1
+    local px0, py0, pw0, ph0 = plot_rect()
+    local lane_h = lane_layout(ph0)[1].h
+    local per_st = lane_h / (12 * math.log(view.f1 / view.f0, 2))
+    local height = 12 * math.log(f1 / f0, 2) * per_st
+    if height < 30 then
+      local extra = (30 - height) / per_st / 2
+      f0, f1 = f0 / 2 ^ (extra / 12), f1 * 2 ^ (extra / 12)
+    end
+    local per_s = pw0 / (view.t1 - view.t0)
+    local width = (t1 - t0) * per_s
+    if width < 30 then local extra = (30 - width) / per_s / 2; t0, t1 = t0 - extra, t1 + extra end
+    W.w = W.m.new(t0, t1, f0, f1)
+  end
+  return W.w
+end
+
+-- Applies the bend to the selected points of every channel that is on and green (one undo step), and opens a flat box round them.
+function W.commit()
+  local w = W.w
+  W.w = nil
+  if not w or W.m.is_flat(w) then return end
+  local peak = W.m.max_abs(w)
+  W.busy = true
+  edit_on_channels(function()
+    if not sel_info then return end
+    local changes = W.m.changes(data, sel, w)
+    if #changes > 0 then do_edit(string.format("bend up to %.1f st", peak), changes); update_sel_info() end
+  end, "bend")
+  W.busy = false
+  W.region = nil
+end
+
+-- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone).
+function W.geo(px, py, pw, lane, w)
+  local lpy = py + lane.off
+  return { x0 = px + tx(w.t0, pw), x1 = px + tx(w.t1, pw), yt = lpy + fy(w.f1, lane.h), yb = lpy + fy(w.f0, lane.h),
+           pxs = lane.h / (12 * math.log(view.f1 / view.f0, 2)) }
+end
+
+-- Where a point of an edge is on the screen (s along the edge, v its displacement in semitones).
+function W.pos(g, edge, s, v)
+  if edge == "bottom" then return g.x0 + s * (g.x1 - g.x0), g.yb - v * g.pxs
+  elseif edge == "top" then return g.x0 + s * (g.x1 - g.x0), g.yt - v * g.pxs
+  elseif edge == "left" then return g.x0, g.yb + s * (g.yt - g.yb) - v * g.pxs
+  else return g.x1, g.yb + s * (g.yt - g.yb) - v * g.pxs end
+end
+
+-- The lanes that have a selection, with the geometry of the box in each.
+function W.lane_geos(px, py, pw, ph)
+  local list = {}
+  if not (data and show_partials and any_sel()) then return list end
+  local w = W.get()
+  if not w then return list end
+  for _, lane in ipairs(lane_layout(ph)) do
+    local has = false
+    for _, ci in ipairs(lane.chans) do if chs[ci].edit and W.sel_info_of(ci) then has = true end end
+    if has then list[#list + 1] = { lane = lane, g = W.geo(px, py, pw, lane, w) } end
+  end
+  return list
+end
+
+local function seg_distance(x, y, ax, ay, bx, by)
+  local dx, dy = bx - ax, by - ay
+  local len2 = dx * dx + dy * dy
+  local t = (len2 > 0) and clamp(((x - ax) * dx + (y - ay) * dy) / len2, 0, 1) or 0
+  local qx, qy = ax + t * dx, ay + t * dy
+  return math.sqrt((x - qx) ^ 2 + (y - qy) ^ 2), t
+end
+
+-- What is under the mouse: a dot ("point"), or a stretch of an edge ("edge", s along it); nil for nothing.
+function W.hit(px, py, pw, ph, mx, my)
+  local lane = lane_at(py, ph, my)
+  if not lane then return nil end
+  local w = W.w
+  for _, e in ipairs(W.lane_geos(px, py, pw, ph)) do
+    if e.lane.off == lane.off then
+      w = W.w
+      local best, found = 9, nil
+      for _, edge in ipairs(W.m.EDGES) do
+        for i, pt in ipairs(w[edge].pts) do
+          local x, y = W.pos(e.g, edge, pt.s, pt.v)
+          local d = math.sqrt((mx - x) ^ 2 + (my - y) ^ 2)
+          if d < best then best, found = d, { kind = "point", edge = edge, i = i, s = pt.s, g = e.g } end
+        end
+      end
+      if found then return found end
+      best = 6
+      for _, edge in ipairs(W.m.EDGES) do
+        local px0, py0 = W.pos(e.g, edge, 0, W.m.edge_value(w[edge], 0))
+        for k = 1, 40 do
+          local s1 = k / 40
+          local px1, py1 = W.pos(e.g, edge, s1, W.m.edge_value(w[edge], s1))
+          local d, t = seg_distance(mx, my, px0, py0, px1, py1)
+          if d < best then best, found = d, { kind = "edge", edge = edge, s = (k - 1 + t) / 40, g = e.g } end
+          px0, py0 = px1, py1
+        end
+      end
+      return found
+    end
+  end
+  return nil
+end
+
+-- A click on the box: a dot is dragged; an edge is dragged as a whole (Ctrl: a new dot, Alt: an arch). Returns true when it took the click.
+function W.mouse_down(px, py, pw, ph, mx, my, cap)
+  if not (data and show_partials and any_sel()) then return false end
+  local h = W.hit(px, py, pw, ph, mx, my)
+  if not h then return false end
+  local alt, ctrl = (cap & 16) ~= 0, (cap & 4) ~= 0
+  -- A selected point that happens to lie on an edge is moved, not the edge (the dots are always the box's own).
+  if h.kind == "edge" and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end        -- (Ctrl there is the one-axis move)
+  local w = W.get()
+  local d = { py0 = my, lasty = my, ev = 0, g = h.g, edge = h.edge }
+  if h.kind == "point" and not alt and not ctrl then
+    d.kind, d.i, d.v0 = "point", h.i, w[h.edge].pts[h.i].v
+  elseif ctrl then
+    local i = W.m.add_point(w, h.edge, h.s)
+    if not i then return true end
+    d.kind, d.i, d.v0 = "point", i, w[h.edge].pts[i].v
+  elseif alt then
+    local pts, seg = w[h.edge].pts, 1
+    for i = 1, #pts - 1 do if h.s >= pts[i].s then seg = i end end
+    d.kind, d.seg, d.b0 = "bulge", seg, w[h.edge].bulge[seg] or 0
+  else
+    d.kind, d.vals0 = "edge", {}
+    for i, pt in ipairs(w[h.edge].pts) do d.vals0[i] = pt.v end
+  end
+  W.drag = d
+  return true
+end
+
+-- The mouse moves with a handle held: up is up in frequency (Shift: a fifth of the movement).
+function W.drag_to(mx, my, cap)
+  local d, w = W.drag, W.w
+  if not (d and w) then return end
+  d.ev = d.ev + (d.lasty - my) * (((cap & 8) ~= 0) and 0.2 or 1)
+  d.lasty = my
+  d.dv = clamp(d.ev / d.g.pxs, -48, 48)
+  if d.kind == "point" then
+    W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48))
+    if d.edge == "bottom" or d.edge == "top" then
+      W.m.set_position(w, d.edge, d.i, (mx - d.g.x0) / math.max(d.g.x1 - d.g.x0, 1))      -- (a border dot also slides along its edge)
+    end
+  elseif d.kind == "edge" then
+    for i, v in ipairs(d.vals0) do W.m.set_value(w, d.edge, i, clamp(v + d.dv, -48, 48)) end
+  else
+    w[d.edge].bulge[d.seg] = clamp(d.b0 + d.dv, -48, 48)
+  end
+  set_status(string.format("bend %+.2f st: Enter applies, Esc cancels", d.dv))
+end
+
+-- Right-click: a border dot goes away (true), anything else is not ours.
+function W.right_click(px, py, pw, ph, mx, my)
+  if not (data and show_partials and any_sel()) then return false end
+  local h = W.hit(px, py, pw, ph, mx, my)
+  if h and h.kind == "point" and W.m.remove_point(W.get(), h.edge, h.i) then
+    set_status("border dot removed")
+    return true
+  end
+  return false
+end
+
+-- Draws the boxes (the original faint, the bent shape bright), the dots, and the selected points where the bend puts them.
+function W.draw(px, py, pw, ph)
+  local list = W.lane_geos(px, py, pw, ph)
+  if #list == 0 then return end
+  local w = W.w
+  local flat = W.m.is_flat(w)
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  for _, e in ipairs(list) do
+    local g, lane = e.g, e.lane
+    gfx.set(1, 1, 1, flat and 0.0 or 0.22)
+    gfx.rect(g.x0, g.yt, g.x1 - g.x0, g.yb - g.yt, 0)
+    gfx.set(0.45, 0.9, 1, 0.85)
+    for _, edge in ipairs(W.m.EDGES) do
+      local x0, y0 = W.pos(g, edge, 0, W.m.edge_value(w[edge], 0))
+      for k = 1, 32 do
+        local s1 = k / 32
+        local x1, y1 = W.pos(g, edge, s1, W.m.edge_value(w[edge], s1))
+        gfx.line(x0, y0, x1, y1, 1)
+        x0, y0 = x1, y1
+      end
+    end
+    if not flat then                                           -- the selected points as the bend would put them
+      gfx.set(1, 0.9, 0.95, 0.95)
+      local span_t, l0, span_l = w.t1 - w.t0, math.log(w.f0), math.log(w.f1) - math.log(w.f0)
+      for _, ci in ipairs(lane.chans) do
+        as_channel(ci, function()
+          if not sel_info then return end
+          local times = data.times
+          for p, frames in pairs(sel) do
+            local frq = data.frq[p]
+            for f in pairs(frames) do
+              if frames[f + 1] then
+                local function put(k)
+                  local fr = frq[k]
+                  local st = W.m.displacement(w, (times[k] - w.t0) / span_t, (math.log(fr) - l0) / span_l)
+                  return px + tx(times[k], pw), py + lane.off + fy(fr * 2 ^ (st / 12), lane.h)
+                end
+                local ax, ay = put(f)
+                local bx, by = put(f + 1)
+                local cx1, cy1, cx2, cy2 = clip_segment(ax - px, ay - py - lane.off, bx - px, by - py - lane.off, pw, lane.h)
+                if cx1 then gfx.line(px + cx1, py + lane.off + cy1, px + cx2, py + lane.off + cy2, 1) end
+              end
+            end
+          end
+        end)
+      end
+    end
+    for _, edge in ipairs(W.m.EDGES) do                         -- the dots
+      for i, pt in ipairs(w[edge].pts) do
+        local x, y = W.pos(g, edge, pt.s, pt.v)
+        local corner = (i == 1 or i == #w[edge].pts)
+        local hover = (W.drag and W.drag.edge == edge and W.drag.i == i) or (not W.drag and (mx - x) ^ 2 + (my - y) ^ 2 < 81)
+        gfx.set(hover and 1 or 0.45, hover and 0.95 or 0.9, hover and 0.5 or 1, 1)
+        gfx.circle(x, y, corner and 5 or 4, 1)
+        gfx.set(0.05, 0.06, 0.08, 0.9)
+        gfx.circle(x, y, corner and 5 or 4, 0)
+      end
+    end
+    if not flat then
+      gfx.setfont(1, "Arial", 13)
+      text_at(g.x0 + 4, math.max(g.yt - 18, py + lane.off + 2), string.format("bend up to %.1f st    Enter applies   Esc cancels", W.m.max_abs(w)), 0.65, 0.95, 1)
+    end
+  end
+  if W.drag and W.drag.dv then
+    gfx.setfont(1, "Arial", 13)
+    text_at(mx + 14, my - 22, string.format("%+.2f st", W.drag.dv), 1, 0.95, 0.6)
+  end
 end
 
 -- Noise-layer checkbox, top right of the header.
@@ -1932,11 +2225,11 @@ local function draw_header(px, py, pw, ph, plain)
     end
   end
   gfx.setfont(1, "Arial", 12)
-  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   drag a selected point = move (Shift fine, Ctrl one axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
+  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   box dots bend (Enter applies)   drag a selected point = move (Shift fine, Ctrl one axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 19:26"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 20:01"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
@@ -2004,9 +2297,11 @@ local function handle_input(px, py, pw, ph)
       drag = { x = mx, y = my, x0 = mx, y0 = my, moved = false, right = (cap & 2) ~= 0 }
     end
   else
-    if drag and drag.right and not drag.moved then              -- a right-click without a drag: the whole file in view (as F; the same in ReaShapeM)
-      fit_view()
-      set_status("whole file in view")
+    if drag and drag.right and not drag.moved then              -- a right-click without a drag: a border dot goes away, else the whole file in view (as F; the same in ReaShapeM)
+      if not W.right_click(px, py, pw, ph, drag.x0, drag.y0) then
+        fit_view()
+        set_status("whole file in view")
+      end
     end
     drag = nil
   end
@@ -2038,6 +2333,8 @@ local function handle_input(px, py, pw, ph)
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
     elseif channel_row_click(mx, my) then
       -- (the channel row: handled above)
+    elseif data and inside and (cap & 8) == 0 and W.mouse_down(px, py, pw, ph, mx, my, cap) then
+      -- (the box and its handles: handled above; Shift is left for adding to the selection)
     elseif data and inside and (cap & 16) ~= 0 and lane_at(py, ph, my) then       -- Alt+drag: a lasso
       local lane = lane_at(py, ph, my)
       lasso = { pts = { { mx, my } }, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
@@ -2069,6 +2366,8 @@ local function handle_input(px, py, pw, ph)
     else
       mover.axis = nil
     end
+  elseif down and W.drag then
+    W.drag_to(mx, my, cap)
   elseif down and lasso then
     local x, y = clamp(mx, px, px + pw), clamp(my, py + lasso.off, py + lasso.off + lasso.h)
     local last = lasso.pts[#lasso.pts]
@@ -2113,13 +2412,14 @@ local function handle_input(px, py, pw, ph)
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
-  if not down then ruler_drag = false; slider_drag = nil end
+  if not down then ruler_drag = false; slider_drag = nil; W.drag = nil end
   prev_down = down
 
   local ch = gfx.getchar()
   if ch < 0 then stop_audition(); return false end
   if ch == 27 then
     if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
+    elseif W.w and not W.m.is_flat(W.w) then W.w = nil; set_status("bend cancelled")
     elseif any_sel() then clear_selection() else stop_audition(); return false end
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
@@ -2130,6 +2430,9 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 1818584692 or ch == 1919379572 then              -- Left / Right arrow: move in time
     local frames = ctrl and 10 or 1
     move_selection(ch == 1919379572 and frames or -frames, 1)
+  elseif ch == 13 then                                          -- Enter: apply the bend
+    if W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
+  elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
   elseif ch == 24 then if copy_selection() then delete_selection() end   -- Ctrl+X
   elseif ch == 22 then paste_clipboard()                        -- Ctrl+V: at the playhead
@@ -2183,8 +2486,11 @@ local function loop()
     analysis:mouse(gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap, gfx.mouse_wheel)
     gfx.mouse_wheel = 0
     local ch = gfx.getchar()
-    if ch < 0 then keep = false
-    elseif ch == 27 then showing_analysis = false; dirty = true end
+    while ch > 0 do                                              -- every key typed since the last frame (a value is typed in a field)
+      if not analysis:key(ch) and ch == 27 then showing_analysis = false; dirty = true end
+      ch = gfx.getchar()
+    end
+    if ch < 0 then keep = false end
     if keep and close_signal_received() then keep = false end
     if not keep then stop_audition() end
     if showing_analysis or not keep then
@@ -2211,6 +2517,7 @@ local function loop()
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   for k, lane in ipairs(lane_layout(ph)) do gfx.blit(k, 1, 0, 0, 0, pw, lane.h, px, py + lane.off, pw, lane.h) end
   draw_selection(px, py, pw, ph)
+  W.draw(px, py, pw, ph)
   draw_crosshair(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)

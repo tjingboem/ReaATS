@@ -128,6 +128,10 @@ do
   check("load: and so is loading it", ats.load(cut) == nil)
   os.remove(cut)
   check("header: a missing file", ats.header("/nonexistent.ats") == nil)
+  local empty = os.tmpname()
+  local h0, e0 = ats.header(empty)
+  check("header: an empty file is called empty", h0 == nil and e0:find("empty"), e0)
+  os.remove(empty)
 end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -96,6 +96,16 @@ local function click(x, y)
   gfx.mouse_cap = 0; frame()
   gfx.mouse_x, gfx.mouse_y = 5, 5
 end
+local function typed(text, ender)                                 -- keys typed into the field that is being edited
+  local keys = {}
+  for c in text:gmatch(".") do keys[#keys + 1] = c:byte() end
+  keys[#keys + 1] = ender or 13
+  script.keys = keys; frame()
+end
+local function enter(x, y, text)                                  -- click a number field, type the value, Enter
+  click(x, y)
+  typed(text)
+end
 local function start(last_file)
   ext[key("tjingboem_ATSViewer", "last_file")] = last_file          -- the other remembered values stay, as in REAPER
   deferred = nil
@@ -135,10 +145,34 @@ print("page opens with Ctrl+A")
 chosen_file = stereo; strings = {}
 click(250, 140); strings = {}; frame()
 assert(saw("44100 Hz, 2 channel%(s%), 16 bit, 12%.00 s") or saw("44100 Hz, 2 channel%(s%), 32 bit float, 12%.00 s"), "the file info should show")
-input_value = "2"; click(260, 285)
-input_value = "100"; click(260, 335)
+enter(260, 285, "2")
+enter(260, 335, "100")
 strings = {}; frame()
 assert(saw("^Window 1765 samples"), "the derived window should follow the lowest frequency: " .. tostring(saw("^Window")))
+-- a value is typed in the field itself: Esc cancels, Tab goes on to the next number, a click elsewhere accepts, bad text is refused
+do
+  strings = {}; frame()
+  local before = saw("^Channels to analyse")
+  click(260, 335)                                                 -- the lowest frequency field: selected, the next key replaces it
+  strings = {}; frame()
+  assert(saw("^100$") or saw("^%d+$"), "the field shows its value while it is edited")
+  typed("77", 27)                                                 -- 77, then Esc: nothing changes
+  strings = {}; frame()
+  assert(not saw("^77$"), "Esc cancels the typing")
+  enter(260, 335, "88")
+  strings = {}; frame()
+  assert(saw("^88$"), "Enter accepts the typed value: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  click(260, 335); typed("99", 9)                                 -- Tab accepts 99 and starts the next number
+  strings = {}; frame()
+  assert(saw("^99$"), "Tab accepts too")
+  script.keys = { 27 }; frame()                                   -- Esc ends the editing the Tab started
+  click(260, 335); typed("abc"); strings = {}; frame()
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 700, 60, 1; frame(); gfx.mouse_cap = 0; frame()     -- a click elsewhere
+  click(260, 335); typed("1x0", 13)                               -- letters are ignored while typing: 10
+  enter(260, 335, "100")                                          -- back to the value the later tests expect
+  print("values are typed in the fields: Enter, Esc, Tab and a click elsewhere")
+end
+
 click(600, 540)
 -- while it runs: the big word, the blinking button, the progress, Cancel
 local colours, saw_big, saw_percent, saw_cancel = {}, false, false, false
@@ -181,7 +215,7 @@ print("settings remembered")
 chosen_file = text_file; click(250, 140); strings = {}; frame()
 assert(saw("^Cannot use this file: not a WAV file"), "text file message: " .. tostring(saw("Cannot")))
 chosen_file = stereo; click(250, 140)
-input_value = "3"; click(260, 285)
+enter(260, 285, "3")
 click(600, 540); strings = {}; frame()
 assert(saw("The file has 2 channel%(s%); 'Channels to analyse' is 3"), "too many channels: " .. tostring(saw("channel")))
 print("a non-WAV file and too many channels are refused")
@@ -200,8 +234,8 @@ chosen_file = stereo
 selected_item = { file = stereo, offs = 0.5, len = 1.0 }
 click(100, 140); strings = {}; frame()
 assert(saw("^Item: the part of the file the item plays is analysed"), "item message: " .. tostring(saw("Item")))
-input_value = "1"; click(260, 285)
-input_value = "100"; click(260, 335)
+enter(260, 285, "1")
+enter(260, 335, "100")
 click(600, 540)
 pump("^Analysed in")
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
@@ -210,8 +244,8 @@ print("the selected item: only its part is analysed")
 -- an item that runs past the end of its file (a few samples, or more) is analysed up to the end of the file
 selected_item = { file = stereo, offs = 0.5, len = 20.0 }
 click(100, 140)
-input_value = "1"; click(260, 285)
-input_value = "100"; click(260, 335)
+enter(260, 285, "1")
+enter(260, 335, "100")
 click(600, 540)
 pump("^Analysed in")
 assert(saw("11%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. tostring(saw("^channel 1")))
@@ -221,8 +255,8 @@ print("an item that runs past the end of the file is cut to the file")
 local function start_long_job()
   start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
   chosen_file = long_wav; click(250, 140)
-  input_value = "1"; click(260, 285)
-  input_value = "100"; click(260, 335)
+  enter(260, 285, "1")
+  enter(260, 335, "100")
   click(600, 540)
   pump("^ANALYZING%.%.%.$")
 end
@@ -296,7 +330,7 @@ local function popup_after_analyse()
   mb_log = {}
   chosen_file = stereo; click(250, 140)
   for _, f in ipairs({ "an_stereo.ats", "an_stereo_2.ats", "an_stereo_ch1.ats", "an_stereo_ch2.ats" }) do os.remove(scratch .. f) end
-  input_value = "1"; click(260, 285)
+  enter(260, 285, "1")
   click(600, 540); strings = {}; frame()
   return mb_log[#mb_log]
 end

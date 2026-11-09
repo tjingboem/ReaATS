@@ -119,5 +119,20 @@ check("clock: under a minute shows nothing", page.clock(59.2) == "" and page.clo
 check("clock: 536 s is 8:56", page.clock(536.4) == "8:56")
 check("clock: rounds to the second, 59.6 s is 1:00", page.clock(59.6) == "1:00")
 check("clock: an hour and more", page.clock(3725) == "1:02:05")
+-- advice about settings that put a lot of the sound into the noise
+do
+  local info = { rate = 44100, channels = 1, seconds = 20 }
+  local s = page.default_settings()
+  check("advice: the defaults give none", page.noise_advice(s, info) == nil)
+  s.amp_threshold_db = -40
+  local a = page.noise_advice(s, info)
+  check("advice: -40 dB on a short sound", a and a:find("%-40 dB") and a:find("loud"), a)
+  s.amp_threshold_db = -60; s.highest_frequency = 5000
+  a = page.noise_advice(s, info)
+  check("advice: a low highest frequency", a and a:find("5000 Hz"), a)
+  s.highest_frequency = 20000; s.amp_threshold_db = -40
+  check("advice: none for a long sound", page.noise_advice(s, { rate = 48000, channels = 2, seconds = 536 }) == nil)
+  check("advice: none without a sound", page.noise_advice(s, nil) == nil)
+end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

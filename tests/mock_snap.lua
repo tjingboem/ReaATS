@@ -8,7 +8,7 @@ local deferred
 local clock = 100.0
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "line", "blit", "setimgdim", "setfont", "update" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "set", "rect", "line", "circle", "blit", "setimgdim", "setfont", "update" }) do gfx[n] = function() return 0 end end
 gfx.init = function(t) title = t end
 gfx.measurestr = function(s) return #s * 7, 14 end
 gfx.drawstr = function(s) strings[#strings + 1] = s end

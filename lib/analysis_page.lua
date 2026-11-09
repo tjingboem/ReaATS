@@ -139,6 +139,22 @@ function M.long_warning(s, info)
   return nil
 end
 
+-- Settings that make a good part of the sound end up in the noise bands (which then sound too loud), for a sound that is not very long.
+-- Returns a line of advice or nil. (The page remembers its settings: -40 dB, chosen for a long recording, stays for the next sound.)
+function M.noise_advice(s, info)
+  if not info or s.mono_mix == nil then return nil end
+  local secs = (s.duration > 0) and math.min(s.duration, info.seconds - s.start) or (info.seconds - s.start)
+  local reasons = {}
+  if secs <= 120 and s.amp_threshold_db > -55 then
+    reasons[#reasons + 1] = string.format("a threshold of %d dB leaves out the quieter partials", s.amp_threshold_db)
+  end
+  if s.highest_frequency < 0.7 * (info.rate / 2) and s.highest_frequency < 15000 then
+    reasons[#reasons + 1] = string.format("nothing above %d Hz is followed as partials", math.floor(s.highest_frequency))
+  end
+  if #reasons == 0 then return nil end
+  return "Noise: " .. table.concat(reasons, " and ") .. "; that sound ends up in the noise bands and the noise will be loud. Try -60 dB and 20000 Hz."
+end
+
 -- What the window will be like, from the sound and the settings (the same arithmetic as the engine).
 function M.derived(s, info)
   if not info then return nil end
@@ -425,15 +441,56 @@ function Page:set_defaults(csound)
   self:say(csound and "Csound atsa defaults (its SMR contribution is 0.5)." or "Defaults of the Python engine.")
 end
 
-function Page:edit_num(key)
-  local f = FIELDS[key]
-  local ok, text = reaper.GetUserInputs(f.label, 1, (f.unit ~= "" and f.unit or "value") .. ",extrawidth=60", fmt_num(self.s[key]))
-  if not ok then return end
+-- A value is typed in the field itself: click it (all of it is selected, so the first key replaces it), type, then Enter (or Tab for
+-- the next number, or a click elsewhere) accepts and Esc cancels.
+function Page:begin_edit(key)
+  self.edit = { key = key, text = fmt_num(self.s[key]), fresh = true }
+end
+
+function Page:commit_edit()
+  local e = self.edit
+  if not e then return end
+  self.edit = nil
+  local f = FIELDS[e.key]
+  local text = e.text
+  if text == "" then return end
   local v = tonumber(text)
   if not v then self:say("'" .. text .. "' is not a number.", true); return end
   v = clamp(v, f.min, f.max)
   if f.int then v = math.floor(v + 0.5) end
-  self.s[key] = v
+  self.s[e.key] = v
+end
+
+-- A typed character, from the editor's loop. Returns true when the page used it.
+function Page:key(ch)
+  local e = self.edit
+  if not e then return false end
+  if ch == 27 then self.edit = nil; return true end                    -- Esc: cancel (and stay on the page)
+  if ch == 13 or ch == 10 then self:commit_edit(); return true end
+  if ch == 9 then                                                      -- Tab: accept, and go on to the next number
+    local key = e.key
+    self:commit_edit()
+    local at
+    for i, k in ipairs(ORDER) do if k == key then at = i end end
+    for step = 1, #ORDER do
+      local k = ORDER[((at or 0) + step - 1) % #ORDER + 1]
+      if FIELDS[k].kind == "num" then self:begin_edit(k); break end
+    end
+    return true
+  end
+  if ch == 8 then                                                      -- Backspace
+    if e.fresh then e.text = "" else e.text = e.text:sub(1, -2) end
+    e.fresh = false
+    return true
+  end
+  local c
+  if (ch >= 48 and ch <= 57) or ch == 46 or ch == 45 or ch == 43 then c = string.char(ch)
+  elseif ch == 44 then c = "."                                         -- a comma is a decimal point
+  elseif ch == 101 or ch == 69 then c = "e" end
+  if not c then return true end                                        -- (other keys do nothing while a value is typed)
+  if e.fresh then e.text = ""; e.fresh = false end
+  if #e.text < 16 then e.text = e.text .. c end
+  return true
 end
 
 function Page:pick_choice(key)
@@ -643,20 +700,35 @@ function Page:field(x, y, key, label_w, box_w)
     self.hits[#self.hits + 1] = { x = x, y = y, w = label_w + 30, h = 20, click = function() self.s[key] = not self.s[key] end, tip = f.tip }
     return
   end
-  gfx.set(0.14, 0.16, 0.19, 1); gfx.rect(bx, y, box_w, 20, 1)
-  gfx.set(0.4, 0.43, 0.48, 1); gfx.rect(bx, y, box_w, 20, 0)
+  local editing = self.edit and self.edit.key == key
+  gfx.set(editing and 0.10 or 0.14, editing and 0.20 or 0.16, editing and 0.17 or 0.19, 1); gfx.rect(bx, y, box_w, 20, 1)
+  if editing then gfx.set(0.45, 0.85, 0.6, 1) else gfx.set(0.4, 0.43, 0.48, 1) end
+  gfx.rect(bx, y, box_w, 20, 0)
   local shown
-  if f.kind == "choice" then shown = (v == 0) and "automatic" or tostring(v) else shown = fmt_num(v) end
+  if editing then shown = self.edit.text
+  elseif f.kind == "choice" then shown = (v == 0) and "automatic" or tostring(v) else shown = fmt_num(v) end
   gfx.set(1, 0.9, 0.6, 1)
   gfx.x, gfx.y = bx + 6, y + 3
+  if editing and self.edit.fresh and shown ~= "" then                   -- all of it selected: the next key replaces it
+    local sw = gfx.measurestr(shown)
+    gfx.set(0.25, 0.45, 0.65, 1); gfx.rect(bx + 5, y + 2, sw + 2, 16, 1)
+    gfx.set(1, 1, 1, 1); gfx.x, gfx.y = bx + 6, y + 3
+  end
   gfx.drawstr(shown)
+  if editing and (math.floor(reaper.time_precise() * 2) % 2 == 0) and not self.edit.fresh then       -- a blinking caret
+    local cx = bx + 6 + gfx.measurestr(shown)
+    gfx.set(1, 1, 1, 1); gfx.line(cx + 1, y + 3, cx + 1, y + 17, 1)
+  end
   if f.kind == "num" and f.unit ~= "" then text(bx + box_w + 6, y + 3, f.unit, 0.55, 0.58, 0.63) end
   if key == "jobs" and self.python and self.python.cores then
     text(bx + box_w + 6, y + 3, string.format("%d at once, of %d cores", M.workers(self.s, self.python.cores), self.python.cores), 0.55, 0.58, 0.63)
   end
   self.hits[#self.hits + 1] = {
-    x = bx, y = y, w = box_w, h = 20, tip = f.tip,
-    click = function() if f.kind == "num" then self:edit_num(key) else self:pick_choice(key) end end,
+    x = bx, y = y, w = box_w, h = 20, tip = f.tip, key = key,
+    click = function()
+      if f.kind == "num" then if not (self.edit and self.edit.key == key) then self:begin_edit(key) end
+      else self:pick_choice(key) end
+    end,
     wheel = function(notches, fine) self:step(key, notches, fine) end,
   }
 end
@@ -746,6 +818,8 @@ function Page:draw(W, H, top)
     else
       local lw = M.long_warning(self.s, self.info)
       if lw then text(rx, ry + 16, lw, 1, 0.7, 0.5) end
+      local na = (not lw) and M.noise_advice(self.s, self.info) or nil
+      if na then text(rx, ry + 16, na, 1, 0.75, 0.45) end
     end
   end
   ry = ry + 38
@@ -842,6 +916,7 @@ function Page:mouse(mx, my, cap, wheel)
   local used = false
   local down = (cap & 1) ~= 0
   if wheel ~= 0 then
+    if self.edit then self:commit_edit() end
     for i = #self.hits, 1, -1 do
       local h = self.hits[i]
       if h.wheel and mx >= h.x and mx < h.x + h.w and my >= h.y and my < h.y + h.h then
@@ -852,6 +927,13 @@ function Page:mouse(mx, my, cap, wheel)
     end
   end
   if down and not self.prev_down then
+    if self.edit then                                                  -- a click anywhere else accepts what was typed
+      local on_it = false
+      for _, h in ipairs(self.hits) do
+        if h.key == self.edit.key and mx >= h.x and mx < h.x + h.w and my >= h.y and my < h.y + h.h then on_it = true end
+      end
+      if not on_it then self:commit_edit() end
+    end
     for i = #self.hits, 1, -1 do
       local h = self.hits[i]
       if h.click and mx >= h.x and mx < h.x + h.w and my >= h.y and my < h.y + h.h then

@@ -367,6 +367,24 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   is drawn in cyan, label "+N frames +x.xx st (time only)". The Shift/Ctrl swap agreed on 10 Nov is built: SHIFT = fine (a fifth of the mouse movement), CTRL = one axis only (the one that moves most),
   both read LIVE every frame (the mover accumulates `ex, ey`, so pressing/releasing mid-drag does not jump; `mover.axis` is set when Ctrl is held and the movement is > 3 px). Shift+box still ADDS to the
   selection. Arrow keys (Left/Right time only, Up/Down frequency only) are the keyboard alternative. No X/Y letter keys (gfx only reports key presses, not held keys). Tests: mock_run (free, Ctrl x2, Shift).
+  BEND BOX / RUBBER SHEET (tjingboem 10 Nov 2026: "the selection box stays open ... corners with a dot ... the box gets another shape ... adding a point on the border ... we need an Apply command. That would be Enter."):
+  PHASE 1 BUILT (frequency only). `lib/ats_warp.lua` (pure maths, tests/test_ats_warp.lua, 27): a warp = box (t0,t1,f0,f1) with four edges (bottom, top along time; left, right up the
+  box), each a list of control points {s, v semitones} + per-segment arch `bulge`; corners are shared (set_value syncs the twin); the displacement inside is a COONS PATCH
+  D(u,v) = (1-v)B(u)+vT(u)+(1-u)L(v)+uR(v) - bilinear corners; `M.changes(d, sel, w)` gives the per-point frequency changes (amplitude unchanged). Editor: everything is in ONE local table
+  `W` (state W.region, W.w, W.drag, W.busy; functions W.draw/W.hit/W.mouse_down/W.drag_to/W.right_click/W.commit ...) because the main chunk is at 197/200 locals. Interaction: dots (corners and border dots)
+  within 9 px, else an edge within 6 px; plain drag = dot or whole edge up/down, Ctrl+click on an edge = add a border dot, right-click on a dot = remove, Alt+drag on an edge = arch (ReaShapeM
+  conventions), Shift = fine (x0.2), Shift also lets a box selection start on a box line. A selected point under the pointer wins over an EDGE (not over a dot; Alt excepted), so moving the
+  selection still works. ENTER = apply (W.commit -> edit_on_channels -> one undo group, "bend up to x st"), ESC = cancel (before clearing the selection), CTRL+R = flat. A pending bend is applied
+  automatically before: a new selection (select_box/select_poly/clear_selection), another edit (edit_on_channels), paste, copy, AUDITION, PRINT, save; undo/redo/load DROP it. W.region = the box the selection
+  was made with (union with Shift), nil after an edit -> the box round the selected points. After Enter the box is flat round the points as they are now.
+  NOT BUILT (phase 2): moving points in TIME with the box (stretch/squeeze): needs resampling of every track onto the frame grid and monotonic edges so tracks cannot cross; the dots are vertical-only today.
+  NOT BUILT: "zoom to selection" (Z).
+  ANALYSIS PAGE: INLINE EDITING + NOISE ADVICE (tjingboem 10 Nov 2026: "when i want to change a value in the Analyzer, i get a window popup ... why can i not enter values in the Analyzer itself?" and "i analyzed Piano.wav ... the noise part is enormous"):
+  (1) numbers are now typed IN the field (`Page:begin_edit/commit_edit/key`, the editor loop drains `gfx.getchar()` and hands every key to `analysis:key`; click = all selected, Enter accepts, Tab next number, Esc cancels,
+  click elsewhere accepts); the GetUserInputs popup remains only for the output path without JS_ReaScriptAPI. (2) The Piano analysis (Piano_2.ats, 16 partials, 54 frames) had been made with the REMEMBERED settings
+  amp threshold -40 dB (my advice for the long recording!) and highest frequency 5000 Hz: everything quieter / higher became noise (sines -15.7 dB, noise -33 dB overall but the tail 1.4-9 dB under the noise).
+  The synthesis was fine; the analysis settings were the cause. `M.noise_advice` shows an orange line on the page for sounds <= 2 min with threshold > -55 dB or highest frequency < 15 kHz. LESSON: settings persist between
+  sounds; don't hand out settings advice without saying it is for long recordings only.
   REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
   + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
   by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.

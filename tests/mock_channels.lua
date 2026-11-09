@@ -417,6 +417,59 @@ do
   print("the playhead: shown on the |< button, Home and the button go to the start")
 end
 
+-- 4g. the box round the selection with dots that bend it: a corner dragged, Enter applies (one undo step, every green channel), Esc cancels
+do
+  press(102)
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  sweep(65, y_top, 600, y_bot)
+  strings = {}; frame()
+  assert(saw("%(3 channels%)"), "the selection to bend, in three channels")
+  local function hold_and_drag(x, y, dx, dy, cap)
+    gfx.mouse_cap = cap or 1; gfx.mouse_x, gfx.mouse_y = x, y; frame()
+    gfx.mouse_x, gfx.mouse_y = x + dx / 2, y + dy / 2; frame()
+    gfx.mouse_x, gfx.mouse_y = x + dx, y + dy; frame()
+    strings = {}; frame()
+  end
+  local function let_go() gfx.mouse_cap = 0; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5 end
+  -- the top right corner of the box, dragged down 30 px
+  hold_and_drag(600, y_top, 0, 30)
+  local live = saw("^bend [%+%-][%d%.]+ st: Enter applies")
+  assert(live and live:find("%-"), "dragging a corner dot shows the bend (down is negative): " .. tostring(live))
+  assert(saw("^bend up to [%d%.]+ st"), "and the box says what it would do: " .. tostring(saw("bend up to")))
+  let_go(); strings = {}; frame()
+  assert(not saw("^%d%*$"), "nothing is changed before Enter")
+  press(13); strings = {}; frame()
+  assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "Enter applies the bend in every green channel: " .. tostring(saw("bend") or "(no status)"))
+  assert(saw("%(3 channels%)"), "the points stay selected after the bend")
+  press(26, 4); strings = {}; frame()
+  assert(not saw("^%d%*$"), "ONE Ctrl+Z takes the bend back from every channel")
+  -- Esc cancels a bend that was shaped
+  sweep(65, y_top, 600, y_bot)
+  hold_and_drag(600, y_top, 0, 30); let_go()
+  press(27); strings = {}; frame()
+  assert(saw("bend cancelled") and not saw("^%d%*$") and saw("%(3 channels%)"), "Esc cancels the bend and keeps the selection: " .. tostring(saw("bend") or saw("selected")))
+  press(13); strings = {}; frame()
+  assert(saw("nothing to apply"), "Enter with a flat box says so")
+  -- a border dot: Ctrl+click on the top edge adds one, it can be dragged along, and a right-click removes it
+  hold_and_drag(332, y_top, 0, 30, 1 + 4); let_go()
+  strings = {}; frame()
+  assert(saw("^bend up to [%d%.]+ st"), "the new border dot bends the edge: " .. tostring(saw("bend") or "(nothing)"))
+  clock_skew = clock_skew + 30
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 332, y_top + 30, 2; frame(); gfx.mouse_cap = 0; strings = {}; frame()
+  assert(saw("border dot removed"), "a right-click on a border dot removes it: " .. tostring(saw("border") or saw("whole")))
+  press(18); strings = {}; frame()
+  assert(saw("bend reset"), "Ctrl+R resets the box to flat")
+  -- the box is applied when the selection goes (here: a click on empty space)
+  hold_and_drag(600, y_top, 0, 30); let_go()
+  sweep(120, 140, 300, y_bot - 20)                                                     -- a new selection: the bend is applied first
+  strings = {}; frame()
+  assert(saw("^1%*$") and saw("^3%*$"), "a bend that was shaped is applied when the selection changes: " .. tostring(saw("bend") or "(no status)"))
+  press(26, 4); press(26, 4); strings = {}; frame()
+  print("the box round the selection: corner dots bend it, Enter applies, Esc cancels, border dots")
+end
+
 -- 5. PRINT makes a multichannel item and the track gets room for it
 press(16)
 until_done(function() return project.tracks[1] and project.tracks[1].items[1] ~= nil and saw("^printed") end)
