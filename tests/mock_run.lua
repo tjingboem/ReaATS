@@ -121,18 +121,9 @@ frame()                                                                     -- o
 local summary = saw("^selected:")
 assert(summary, "no selection summary after box selects")
 print(summary)
--- moving: Right arrow, then a mouse drag on a selected point
+-- moving: Right arrow, then a mouse drag on a selected point (free, with Ctrl = one axis only, with Shift = fine)
 do
   local ats0 = dofile("lib/ats_file.lua")
-  script.keys = { 114 }; frame(); script.keys = { 102 }; frame()               -- reload the copy, fit the view
-  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()                -- select the left part of the plot (t < ~1.2 s)
-  gfx.mouse_x, gfx.mouse_y = 600, 600; frame()
-  gfx.mouse_cap = 0; frame(); frame()
-  gfx.mouse_cap = 0
-  script.keys = { 1919379572 }; strings = {}; frame(); frame()                 -- Right
-  assert(saw("^move %+0 frames") == nil)
-  gfx.mouse_cap = 0
-  -- screen position of partial 1 at frame 101, replicating the viewer's fit
   local d0 = ats0.load(work)
   local thr = d0.ampmax * 10 ^ (-80 / 20)
   local fmin, fmax = math.huge, 0
@@ -143,20 +134,51 @@ do
   local px, py, pw, ph = 62, 70, 988, 516
   local tmax = d0.times[d0.frames]
   local function screen(t, fr) return px + t / tmax * pw, py + ph * (1 - (math.log(fr) - math.log(f0)) / (math.log(f1) - math.log(f0))) end
-  local x, y = screen(d0.times[101], d0.frq[1][101])
   local frame_px = pw * 0.01 / tmax
-  -- the selection is one frame to the right after the Right key, so grab the point there
-  x = x + frame_px
-  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x, y; frame()
-  gfx.mouse_x, gfx.mouse_y = x + 30, y - 20; frame(); frame()
-  gfx.mouse_cap = 0; strings = {}; frame(); frame()
+  -- starts from a freshly loaded copy: select the left part, one frame to the right (Right key), drag the point at partial 1, frame 101
+  local function drag(extra_cap, dx, dy)
+    script.keys = { 114 }; frame(); script.keys = { 102 }; frame()               -- reload the copy, fit the view
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()                -- select the left part of the plot (t < ~1.2 s)
+    gfx.mouse_x, gfx.mouse_y = 600, 600; frame()
+    gfx.mouse_cap = 0; frame(); frame()
+    gfx.mouse_cap = 0
+    script.keys = { 1919379572 }; strings = {}; frame(); frame()                 -- Right
+    local x, y = screen(d0.times[101], d0.frq[1][101])
+    x = x + frame_px                                                             -- (the selection is one frame to the right)
+    gfx.mouse_cap = 1 + extra_cap; gfx.mouse_x, gfx.mouse_y = x, y; frame()
+    gfx.mouse_x, gfx.mouse_y = x + dx / 2, y + dy / 2; frame()
+    gfx.mouse_x, gfx.mouse_y = x + dx, y + dy; frame(); frame()
+    strings = {}; frame()                                                        -- (still dragging: the crosshair says what it will do)
+    drag_label = saw("^[%+%-]%d+ frames   [%+%-][%d%.]+ st[^\n]*")
+    gfx.mouse_cap = 0; strings = {}; frame(); frame()
+  end
+  gfx.mouse_cap = 0
+  drag(0, 30, -20)
   local expected = math.floor(30 / frame_px + 0.5)
   assert(saw("^move %+" .. expected .. " frames"), "drag move status missing, expected +" .. expected .. ": "
          .. table.concat(strings, " / ", 1, math.min(#strings, 30)))
+  assert(drag_label, "the crosshair shows the move while dragging")
+  local free_st = tonumber(saw("^move [%+%-]%d+ frames, ([%+%-][%d%.]+) st"):match("frames, ([%+%-][%d%.]+) st"))
+  assert(free_st and free_st > 0.5, "a free drag also changes the frequency: " .. tostring(free_st))
   gfx.mouse_cap = 4; script.keys = { 26 }; strings = {}; frame(); frame()
   assert(saw("^undo move"), "undo of the drag move missing")
   gfx.mouse_cap = 0
-  print("move OK: arrow and drag (+" .. expected .. " frames), undo works")
+  -- Ctrl: one axis only (the one that moves most): time only, the frequency stays
+  drag(4, 30, -20)
+  assert(drag_label and drag_label:find("%(time only%)"), "the crosshair says which axis Ctrl keeps: " .. tostring(drag_label))
+  assert(saw("^move %+" .. expected .. " frames, %+0%.00 st"), "Ctrl keeps the frequency: " .. tostring(saw("^move") or "(no move)"))
+  gfx.mouse_cap = 4; script.keys = { 26 }; frame(); frame(); gfx.mouse_cap = 0
+  drag(4, 6, -60)
+  assert(saw("^move %+0 frames, %+[%d%.]+ st"), "Ctrl keeps the time when the drag is mostly vertical: " .. tostring(saw("^move") or "(no move)"))
+  gfx.mouse_cap = 4; script.keys = { 26 }; frame(); frame(); gfx.mouse_cap = 0
+  -- Shift: fine, a fifth of the mouse movement
+  drag(8, 30, -20)
+  local fine = math.floor(30 * 0.2 / frame_px + 0.5)
+  assert(saw("^move %+" .. fine .. " frames"), "Shift moves a fifth as far: expected +" .. fine .. ": " .. tostring(saw("^move") or "(no move)"))
+  local fine_st = tonumber(saw("^move [%+%-]%d+ frames, ([%+%-][%d%.]+) st"):match("frames, ([%+%-][%d%.]+) st"))
+  assert(fine_st > 0 and math.abs(fine_st / free_st - 0.2) < 0.06, "and a fifth as far in frequency: " .. fine_st .. " against " .. free_st)
+  gfx.mouse_cap = 4; script.keys = { 26 }; frame(); frame(); gfx.mouse_cap = 0
+  print("move OK: arrow and drag (+" .. expected .. " frames), Ctrl locks the axis, Shift is fine, undo works")
 end
 
 -- editing: transpose, delete, undo, redo, save

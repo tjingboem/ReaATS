@@ -362,6 +362,11 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   `|<` button under PRINT (`start_rect`) that shows the playhead time in amber when it is away from 0 and resets it, the print status says "FROM x s" when the playhead is not at 0,
   and the manual says it in bold at the top of the PRINT chapter. NOTE: the main chunk of ATS_Editor.lua is AT LUA'S 200-LOCAL LIMIT (two locals were inlined to make room): put new
   helpers in an existing table, or split the file, before adding more local functions.
+  CROSSHAIR + DRAG KEYS (tjingboem 10 Nov 2026: "while dragging, add a crosshair. Also: what do we have for shortcut options to keep the same X or Y while dragging?"): `draw_crosshair` draws thin lines through
+  the pointer and a label while a move (`mover.active`), box or lasso is dragged; for a move the lines are at the EFFECTIVE position (after fine/lock), a faint cross marks the start, the kept axis
+  is drawn in cyan, label "+N frames +x.xx st (time only)". The Shift/Ctrl swap agreed on 10 Nov is built: SHIFT = fine (a fifth of the mouse movement), CTRL = one axis only (the one that moves most),
+  both read LIVE every frame (the mover accumulates `ex, ey`, so pressing/releasing mid-drag does not jump; `mover.axis` is set when Ctrl is held and the movement is > 3 px). Shift+box still ADDS to the
+  selection. Arrow keys (Left/Right time only, Up/Down frequency only) are the keyboard alternative. No X/Y letter keys (gfx only reports key presses, not held keys). Tests: mock_run (free, Ctrl x2, Shift).
   REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
   + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
   by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.
@@ -373,3 +378,13 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 - AUDITION LENGTH BUTTON REMOVED (tjingboem 10 Nov 2026: "Remove the Plays: 5s button"): the END/WINDOW/5 s/15 s button and the L key are gone; AUDITION always plays from the playhead to the end (`to = nil`).
   The engine/synth `to` option (`--to`, `opts.to`) stays (tested) but has no UI. HOME/END "did nothing" for tjingboem because the editor window was still the OLD script: a running Lua script keeps its
   old code, so every change needs the editor to be CLOSED AND STARTED AGAIN. A `build DD Mon HH:MM` stamp is now drawn bottom right (update it at every install) to see which version runs.
+
+- IDEA, NOT BUILT (tjingboem 10 Nov 2026, "do not build the controls but add the idea to Claude.md. This needs more experimenting to better pinpoint the issue"): NOISE SHAPING CONTROLS.
+  Context: tjingboem analyses a cello; the bow/breath noise lands in the noise bands. Their workflow: print the sines, then the noise (Sine layer / Noise layer checkboxes), mix in REAPER, and the
+  lower noise bands feel too present (this was before / partly after the noise-shape correction below; re-test with the corrected noise before drawing conclusions). They suggested a high-pass on
+  the noise for a better balance between low and high noise bands. Candidate design (to be tried, not decided): three controls beside the Noise layer checkbox, applied to AUDITION and PRINT and saved
+  in the item state (ReaSnap): LOW CUT (Hz, smooth 12 dB/oct high-pass on the 25 band powers: g_b = 1/sqrt(1+(fc/f_b)^4) at the band centre), TILT (dB per octave around ~1 kHz) and LEVEL (dB).
+  They scale the band energies in the synthesis (Lua `add_noise` and Python `add_noise` both have the per-band envelope), so no filter has to run; the noise caches (memory `c.shape`, disk
+  fingerprint) would need the new parameters in their keys. Interim advice given: a ReaEQ high-pass (about 250-400 Hz, 12 dB/oct) on the printed noise track. A plain high-pass only removes low
+  rumble; a TILT is probably what balances low against high. Later idea: select a region of the noise layer like partials and scale/delete the noise there (editing the noise bands themselves; any
+  such edit must clear `d.noise_cache`). tjingboem wants to experiment first to pin down the problem: do not build until they say so.

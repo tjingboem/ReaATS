@@ -98,7 +98,7 @@ local current_file = nil       -- the .ats file that holds the data as it is now
 local status_msg, status_until = nil, 0
 local showing_analysis = false   -- the Analysis page is on screen instead of the picture
 local analysis = nil            -- the Analysis page object (made at the end of the file)
-local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lock }
+local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lx, ly, ex, ey (the movement in pixels, Shift makes it a fifth), axis (Ctrl) }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
 local lasso = nil              -- Alt+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
 local amp_thresh = 0
@@ -1407,8 +1407,8 @@ end
 
 -- How far the current move-drag goes: whole frames in time, a continuous factor in frequency.
 local function mover_delta(pw, ph)
-  local dx, dy = mover.x - mover.x0, mover.y - mover.y0
-  if mover.lock == "x" then dy = 0 elseif mover.lock == "y" then dx = 0 end
+  local dx, dy = mover.ex, mover.ey
+  if mover.axis == "x" then dy = 0 elseif mover.axis == "y" then dx = 0 end
   local span = view.t1 - view.t0
   local frame_dt = (data.times[data.frames] - data.times[1]) / math.max(data.frames - 1, 1)
   local df = math.floor(dx / pw * span / frame_dt + 0.5)
@@ -1445,6 +1445,44 @@ local function draw_selection(px, py, pw, ph)
     gfx.set(1, 1, 1, 0.8)
     gfx.rect(x0, y0, x1 - x0, y1 - y0, 0)
   end
+end
+
+-- The crosshair while something is dragged (a move, a box, a lasso): thin lines through the pointer with what is there. For a move the
+-- lines are where the points really go (after Shift's fine movement and Ctrl's one axis), a faint cross marks where the drag began, and
+-- the line of the axis that Ctrl keeps is drawn in colour.
+local function draw_crosshair(px, py, pw, ph)
+  if not data or not ((mover and mover.active) or box or lasso) then return end
+  local mx, my = clamp(gfx.mouse_x, px, px + pw), clamp(gfx.mouse_y, py, py + ph)
+  local label
+  if mover then
+    local df, ratio = mover_delta(pw, mover.h or ph)
+    local ax = mover.axis
+    local dx, dy = (ax == "y") and 0 or mover.ex, (ax == "x") and 0 or mover.ey
+    gfx.set(1, 1, 1, 0.16)                                                  -- where the drag began
+    gfx.line(mover.x0, py, mover.x0, py + ph, 1)
+    gfx.line(px, mover.y0, px + pw, mover.y0, 1)
+    if ax == "x" then gfx.set(0.3, 0.9, 1, 0.8); gfx.line(px, mover.y0, px + pw, mover.y0, 1)          -- the frequency stays
+    elseif ax == "y" then gfx.set(0.3, 0.9, 1, 0.8); gfx.line(mover.x0, py, mover.x0, py + ph, 1) end   -- the time stays
+    mx, my = clamp(mover.x0 + dx, px, px + pw), clamp(mover.y0 + dy, py, py + ph)
+    label = string.format("%+d frames   %+.2f st%s", df, 12 * math.log(ratio, 2),
+                          ax == "x" and "   (time only)" or ax == "y" and "   (frequency only)" or "")
+  else
+    local lane = lane_at(py, ph, my)
+    if not lane then return end
+    local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+    local f = view.f0 * (view.f1 / view.f0) ^ ((py + lane.off + lane.h - my) / lane.h)
+    label = string.format("%.3f s   %s (%s)", t, fmt_freq(f), ats.note_name(f))
+  end
+  gfx.set(1, 1, 1, 0.55)
+  gfx.line(mx, py, mx, py + ph, 1)
+  gfx.line(px, my, px + pw, my, 1)
+  gfx.setfont(1, "Arial", 13)
+  local w = gfx.measurestr(label)
+  local bx = (mx + 16 + w + 8 < gfx.w) and (mx + 14) or (mx - 14 - w - 8)
+  local by = (my + 34 < py + ph) and (my + 14) or (my - 30)
+  gfx.set(0.05, 0.06, 0.08, 0.85)
+  gfx.rect(bx, by, w + 10, 18, 1)
+  text_at(bx + 5, by + 2, label, 0.95, 0.95, 0.8)
 end
 
 -- True when the mouse is within a few pixels of a selected point (in the lane under it); also gives that lane's height.
@@ -1894,11 +1932,11 @@ local function draw_header(px, py, pw, ph, plain)
     end
   end
   gfx.setfont(1, "Arial", 12)
-  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   drag a selected point = move (Shift locks axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
+  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   drag a selected point = move (Shift fine, Ctrl one axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 19:03"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 19:26"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
@@ -2008,7 +2046,7 @@ local function handle_input(px, py, pw, ph)
       local hit, lh = false, nil
       if any_sel() then hit, lh = hit_selected(px, py, pw, ph, mx, my) end
       if hit then
-        mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false, h = lh }
+        mover = { x0 = mx, y0 = my, x = mx, y = my, lx = mx, ly = my, ex = 0, ey = 0, active = false, h = lh }
       else
         box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
       end
@@ -2018,12 +2056,18 @@ local function handle_input(px, py, pw, ph)
   elseif down and ruler_drag then
     set_playhead(view.t0 + (clamp(mx, px, px + pw) - px) / pw * (view.t1 - view.t0))
   elseif down and mover then
-    mover.x, mover.y = mx, my
-    if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then
-      mover.active = true
-      if mover.shift then
-        mover.lock = (math.abs(mx - mover.x0) >= math.abs(my - mover.y0)) and "x" or "y"
+    -- Shift: fine (a fifth of the mouse movement); Ctrl: one axis only (the one that moves most), the other keeps its place.
+    -- Both are read all the time, so they can be pressed or let go in the middle of a drag.
+    local fine = ((cap & 8) ~= 0) and 0.2 or 1
+    mover.ex, mover.ey = mover.ex + (mx - mover.lx) * fine, mover.ey + (my - mover.ly) * fine
+    mover.lx, mover.ly, mover.x, mover.y = mx, my, mx, my
+    if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then mover.active = true end
+    if (cap & 4) ~= 0 then
+      if not mover.axis and math.abs(mover.ex) + math.abs(mover.ey) > 3 then
+        mover.axis = (math.abs(mover.ex) >= math.abs(mover.ey)) and "x" or "y"
       end
+    else
+      mover.axis = nil
     end
   elseif down and lasso then
     local x, y = clamp(mx, px, px + pw), clamp(my, py + lasso.off, py + lasso.off + lasso.h)
@@ -2167,6 +2211,7 @@ local function loop()
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   for k, lane in ipairs(lane_layout(ph)) do gfx.blit(k, 1, 0, 0, 0, pw, lane.h, px, py + lane.off, pw, lane.h) end
   draw_selection(px, py, pw, ph)
+  draw_crosshair(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)

@@ -372,10 +372,12 @@ do
   local function lasso_through(points, cap)
     gfx.mouse_cap = cap; gfx.mouse_x, gfx.mouse_y = points[1][1], points[1][2]; frame()
     for i = 2, #points do gfx.mouse_x, gfx.mouse_y = points[i][1], points[i][2]; frame() end
+    strings = {}; frame(); cross_label = saw("^[%d%.]+ s   ")                   -- (while drawing: the crosshair says where the pointer is)
     gfx.mouse_cap = 0; frame(); frame(); gfx.mouse_x, gfx.mouse_y = 5, 5
   end
   -- the same rectangle, drawn as a loop with Alt held: the same points
   lasso_through({ { 65, y_top }, { 330, y_top }, { 600, y_top }, { 600, (y_top + y_bot) / 2 }, { 600, y_bot }, { 330, y_bot }, { 65, y_bot }, { 65, (y_top + y_bot) / 2 } }, 1 + 16)
+  assert(cross_label, "while a lasso is drawn the crosshair shows time and frequency")
   local n_lasso, t_lasso = selected_count()
   assert(n_lasso == n_box and t_lasso:find("3 channels"), "the lasso round the same rectangle selects the same: " .. n_lasso .. " against " .. n_box)
   -- a triangle holds fewer points than the rectangle round it

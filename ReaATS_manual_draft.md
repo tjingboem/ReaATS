@@ -107,7 +107,8 @@ All edits work on the selected points.
 
 - **Delete** makes the points silent. Their amplitude becomes 0, which is how ATS marks a partial that is not sounding.
 - **Up and Down** transpose the points by a semitone. Shift makes it 10 cents and Ctrl makes it an octave.
-- **Dragging** a selected point moves the whole selection. Press on one of the pink points to start. Sideways movement shifts the points in time, in whole frames, because the file stores one value per frame. Vertical movement changes the frequency continuously. Hold Shift to lock the drag to the direction you start in. While you drag, the selection dims and a lighter copy shows where it will land.
+- **Dragging** a selected point moves the whole selection. Press on one of the pink points to start. Sideways movement shifts the points in time, in whole frames, because the file stores one value per frame. Vertical movement changes the frequency continuously. While you drag, the selection dims and a lighter copy shows where it will land. Hold Ctrl to move in one direction only, the one you move most: the time stays the same, or the frequency stays the same. You can press or release Ctrl in the middle of the drag. Hold Shift for fine movement, a fifth of the mouse movement, for precise placing; Shift can also be pressed and released during the drag. For the same reason there are the arrow keys, which move in time only (Left and Right) or in frequency only (Up and Down).
+- **The crosshair.** While you drag something (a move, a box or a lasso), thin lines cross the picture through the pointer, with a small label: the time and frequency of the pointer, or for a move how many frames and semitones the points will move. For a move the lines show where the points really go, a faint cross marks where the drag began, and when Ctrl keeps one axis, the line of that axis is drawn in colour and the label says "time only" or "frequency only".
 - **Left and Right** move the selection one frame in time. Ctrl makes it ten frames.
 - **Ctrl+C, Ctrl+X and Ctrl+V** copy, cut and paste, see below.
 - **Ctrl+Z** undoes the last edit, and **Ctrl+Y** redoes it. Ctrl+Shift+Z redoes too.
@@ -215,7 +216,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 |---|---|
 | Left drag | Select with a box. With Shift: add to the selection. |
 | Alt + left drag | Select with a lasso: draw a loop round the points. With Shift: add to the selection. |
-| Left drag on a selected point | Move the selection. With Shift: one direction only. |
+| Left drag on a selected point | Move the selection. With Ctrl: one direction only (the time or the frequency stays). With Shift: fine movement. A crosshair shows where it goes. |
 | Click on empty space | Clear the selection. |
 | Right or middle drag | Pan. |
 | Mouse wheel | Zoom in time. With Ctrl: zoom in frequency. With Shift: scroll in time. |
