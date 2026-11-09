@@ -544,16 +544,58 @@ local function apply_changes(changes, forward)
   dirty = true
 end
 
-local function do_edit(name, changes, rows_before, rows_after)
+-- Frames in front of the file (a stretch to before 0) move everything k frames later: the cells an edit has touched are numbered again.
+local function shift_edited(k)
+  local moved = {}
+  for p, frames in pairs(edited_cells) do
+    local row = {}
+    for f in pairs(frames) do if f + k >= 1 then row[f + k] = true end end
+    moved[p] = row
+  end
+  edited_cells = moved
+end
+
+-- Makes this channel's file longer: k frames in front (everything later) and/or up to frames_after frames in all. Returns what is needed to undo it.
+local function lengthen(front, frames_after)
+  local before_frames, before_dur = data.frames, data.dur
+  if front and front > 0 then
+    edit.prepend_frames(data, front)
+    shift_edited(front)
+  end
+  if frames_after and frames_after > data.frames then edit.add_frames(data, frames_after - data.frames) end
+  return before_frames, before_dur
+end
+
+-- ext (optional): { front = k, frames_after = n }: the file becomes longer first (k frames in front, n frames in all); the way back is in the undo entry.
+local function do_edit(name, changes, rows_before, rows_after, ext)
   if #changes == 0 then return end
   if rows_after and rows_after > data.partials then edit.add_rows(data, rows_after - data.partials) end
+  local frames_before, dur_before
+  if ext and (((ext.front or 0) > 0) or (ext.frames_after or 0) > data.frames) then
+    frames_before, dur_before = lengthen(ext.front, ext.frames_after)
+  end
   apply_changes(changes, true)
   if not edit_group then group_counter = group_counter + 1 end
   undo_stack[#undo_stack + 1] = { name = name, changes = changes, rows_before = rows_before, rows_after = rows_after,
-                                  group = edit_group or group_counter }      -- (one group = one Ctrl+Z, even across channels)
+                                  frames_before = frames_before, frames_after = frames_before and ext.frames_after, front = frames_before and ext.front,
+                                  dur_before = dur_before, group = edit_group or group_counter }      -- (one group = one Ctrl+Z, even across channels)
   redo_stack = {}
   modified = (#undo_stack ~= saved_depth)
   set_status(string.format("%s: %d points", name, #changes))
+end
+
+-- A channel that has no points in an edit that makes the file longer still gets longer (all channels share one frame grid): an entry
+-- without changes, so that Ctrl+Z makes it short again together with the others.
+local function do_extend_only(name, frames_after, front)
+  if frames_after <= data.frames and (front or 0) == 0 then return end
+  local frames_before, dur_before = lengthen(front, frames_after)
+  data_rev = data_rev + 1
+  dirty = true
+  if not edit_group then group_counter = group_counter + 1 end
+  undo_stack[#undo_stack + 1] = { name = name, changes = {}, frames_before = frames_before, frames_after = frames_after, front = front,
+                                  dur_before = dur_before, group = edit_group or group_counter }
+  redo_stack = {}
+  modified = (#undo_stack ~= saved_depth)
 end
 
 local function undo_single()
@@ -563,6 +605,27 @@ local function undo_single()
   if e.rows_before and data.partials > e.rows_before then
     edit.truncate_rows(data, e.rows_before)
     for p in pairs(edited_cells) do if p > data.partials then edited_cells[p] = nil end end     -- (rows that are gone have no cells to remember)
+  end
+  if e.frames_before then                                              -- the file was made longer by this edit: as it was again
+    local k = e.front or 0
+    if data.frames > e.frames_before + k then edit.truncate_frames(data, e.frames_before + k) end        -- (the end)
+    if k > 0 then                                                      -- (the start: everything moves k frames earlier)
+      edit.drop_front(data, k, e.dur_before)
+      local moved = {}
+      for p, frames in pairs(edited_cells) do
+        local row = {}
+        for f in pairs(frames) do if f - k >= 1 then row[f - k] = true end end
+        moved[p] = row
+      end
+      edited_cells = moved
+    else
+      data.dur = e.dur_before
+    end
+    for _, frames in pairs(edited_cells) do
+      for f in pairs(frames) do if f > data.frames then frames[f] = nil end end
+    end
+    data_rev = data_rev + 1
+    dirty = true
   end
   redo_stack[#redo_stack + 1] = e
   clear_selection()
@@ -574,6 +637,11 @@ local function redo_single()
   local e = table.remove(redo_stack)
   if not e then set_status("nothing to redo"); return end
   if e.rows_after and e.rows_after > data.partials then edit.add_rows(data, e.rows_after - data.partials) end
+  if e.frames_before and data.frames == e.frames_before and (e.front or 0) > 0 then
+    edit.prepend_frames(data, e.front)
+    shift_edited(e.front)
+  end
+  if e.frames_after and e.frames_after > data.frames then edit.add_frames(data, e.frames_after - data.frames) end
   apply_changes(e.changes, true)
   undo_stack[#undo_stack + 1] = e
   clear_selection()
@@ -594,7 +662,13 @@ local function undo()
     end
   end
   if best < 0 then set_status("nothing to undo"); return end
+  local front = 0
+  for _, i in ipairs(who) do front = math.max(front, chs[i].undo_stack[#chs[i].undo_stack].front or 0) end
   for _, i in ipairs(who) do with_channel(i, undo_single) end
+  if front > 0 then                                                    -- frames in front are gone: what was shown stays where it was
+    local dt = front * chs[cur].data.frame_size / chs[cur].data.sr
+    view.t0, view.t1, playhead = view.t0 - dt, view.t1 - dt, math.max(playhead - dt, 0)
+  end
   if #who > 1 then set_status("undo in " .. #who .. " channels") end
 end
 
@@ -610,7 +684,13 @@ local function redo()
     end
   end
   if #who == 0 then set_status("nothing to redo"); return end
+  local front = 0
+  for _, i in ipairs(who) do front = math.max(front, chs[i].redo_stack[#chs[i].redo_stack].front or 0) end
   for _, i in ipairs(who) do with_channel(i, redo_single) end
+  if front > 0 then
+    local dt = front * chs[cur].data.frame_size / chs[cur].data.sr
+    view.t0, view.t1, playhead = view.t0 + dt, view.t1 + dt, playhead + dt
+  end
   if #who > 1 then set_status("redo in " .. #who .. " channels") end
 end
 
@@ -814,11 +894,16 @@ local function start_synth(wav, o)
       -- The channel's file is on disk already: the program reads it from there and gets only the cells edited since it was
       -- written (a long sound is a file of hundreds of megabytes; writing it again for every AUDITION is slow and can use up the memory).
       files[i] = c.current_file
+      local hdr = ats.header(c.current_file)
       local cells, n = c.edited_cells or {}, 0
       local path = string.format("%s/reaats_%s_ch%d_edits.bin", dir, id, i)
       local fh = io.open(path, "wb")
       if not fh then discard(); return lua_job() end
       local buf = {}
+      if hdr and (d.frames ~= hdr.frames or (d.front_frames or 0) > 0) then       -- the sound was made longer: a record with partial 0 (frames, duration, frames in front)
+        buf[#buf + 1] = string.pack("<dddd", 0, d.frames, d.dur, d.front_frames or 0)
+        n = n + 1
+      end
       for p, frames in pairs(cells) do
         for f in pairs(d.amp[p] and frames or {}) do                -- (a row that an undo took away has nothing to send)
           buf[#buf + 1] = string.pack("<dddd", p, f, d.amp[p][f], d.frq[p][f])
@@ -1005,6 +1090,7 @@ local function write_ats(path, verb)
   local ok, err = ats.save(path, data, { phase = true })
   if ok then
     modified = false
+    data.front_frames = 0                                    -- (the file on disk has all the frames now)
     saved_depth, current_file = #undo_stack, path
     set_status((verb or "saved") .. " " .. (path:match("([^/\\]+)$") or path) .. " (with phase)")
     return path
@@ -1598,21 +1684,72 @@ function W.commit()
   if peak > 0.005 then parts[#parts + 1] = string.format("up to %.1f st", peak) end
   if peak_h > 0.0005 then parts[#parts + 1] = string.format("in time up to %.0f ms", peak_h * 1000) end
   local label = "bend " .. table.concat(parts, ", ")
-  local dropped = 0
+  -- 1. the plan of every channel that is edited together (nothing is changed yet): how far the file has to grow, at the end and in front
+  local targets, plans, need_end, need_front, rows_max = on_channels(), {}, 0, 0, 1
+  local list = {}
+  for _, i in ipairs(targets) do if chs[i].sel_info then list[#list + 1] = i end end
+  if #list == 0 then return end
+  for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
+  for _, i in ipairs(list) do
+    with_channel(i, function()
+      -- the file may get longer when a stretch goes past its end or before its start: at most as long again at each side, and never more
+      -- than 20 million new cells. (What goes before the start puts frames in front: everything in the file moves later.)
+      local room = math.min(data.frames, math.floor(2e7 / math.max(rows_max, 1)))
+      plans[i] = edit.plan_warp(data, sel, map, { max_extra = room, max_front = room })
+      if plans[i] then
+        need_end = math.max(need_end, plans[i].frames_after)
+        need_front = math.max(need_front, plans[i].frames_front)
+      end
+    end)
+  end
+  need_end = math.max(need_end, chs[1].data.frames)
+  -- 2. one undo group: every channel gets its own entry (the edit, or just the longer file). The frames in front move all the numbers.
   W.busy = true
-  edit_on_channels(function()
-    if not sel_info then return end
-    local plan = edit.plan_warp(data, sel, map)                -- (frequencies point by point; time: every run made again on the frames)
-    if plan and #plan.changes > 0 then
-      do_edit(label, plan.changes, plan.rows_before, plan.rows_after)
-      sel = plan.sel
-      update_sel_info()
-      dropped = dropped + plan.dropped
-    end
-  end, "bend")
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  local dropped, frames_before, dur_before = 0, chs[1].data.frames, chs[1].data.dur
+  local hop = chs[1].data.frame_size / chs[1].data.sr
+  for i = 1, #chs do
+    with_channel(i, function()
+      local plan = plans[i]
+      local total = need_end + need_front
+      local ext = (need_front > 0 or total > data.frames) and { front = need_front, frames_after = total } or nil
+      if plan and #plan.changes > 0 then
+        if need_front > 0 then                                          -- the cells of the plan are numbered from the old first frame: later by the frames in front
+          for _, c in ipairs(plan.changes) do c.f = c.f + need_front end
+          local moved = {}
+          for p, frames in pairs(plan.sel) do
+            local row = {}
+            for f in pairs(frames) do row[f + need_front] = true end
+            moved[p] = row
+          end
+          plan.sel = moved
+        end
+        do_edit(label, plan.changes, plan.rows_before, plan.rows_after, ext)
+        sel = plan.sel
+        update_sel_info()
+        dropped = dropped + plan.dropped
+      elseif ext then
+        do_extend_only(label, total, need_front)
+      end
+    end)
+  end
+  edit_group = nil
   W.busy = false
   W.region = nil
-  if dropped > 0 then set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped)) end
+  if need_front > 0 then                                                -- what was shown stays where it was: the data is later by the frames in front
+    view.t0, view.t1, playhead = view.t0 + need_front * hop, view.t1 + need_front * hop, playhead + need_front * hop
+  end
+  local grown = chs[1].data.frames - frames_before
+  if grown > 0 then
+    local where = {}
+    if need_front > 0 then where[#where + 1] = string.format("%d frames in front (everything is %.2f s later)", need_front, need_front * hop) end
+    if grown - need_front > 0 then where[#where + 1] = string.format("%d at the end", grown - need_front) end
+    set_status(string.format("%s: the file is %.2f s longer now: %s%s", label, chs[1].data.dur - dur_before, table.concat(where, ", "),
+      dropped > 0 and (string.format(", %d piece(s) still fell outside", dropped)) or ""))
+  elseif dropped > 0 then
+    set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped))
+  end
 end
 
 -- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone).
@@ -1670,6 +1807,10 @@ function W.hit(px, py, pw, ph, mx, my)
         end
       end
       if found then return found end
+      for _, edge in ipairs(W.m.EDGES) do                          -- the handle in the middle of every edge: it takes the whole edge
+        local x, y = W.pos(e.g, edge, 0.5, W.m.edge_value(w[edge], 0.5), W.m.edge_h(w[edge], 0.5))
+        if (mx - x) ^ 2 + (my - y) ^ 2 < 100 then return { kind = "edge", edge = edge, s = 0.5, mid = true, g = e.g } end
+      end
       best = 6
       for _, edge in ipairs(W.m.EDGES) do
         local px0, py0 = W.pos(e.g, edge, 0, W.m.edge_value(w[edge], 0), W.m.edge_h(w[edge], 0))
@@ -1694,9 +1835,9 @@ function W.mouse_down(px, py, pw, ph, mx, my, cap)
   if not h then return false end
   local alt, ctrl = (cap & 16) ~= 0, (cap & 4) ~= 0
   -- A selected point that happens to lie on an edge is moved, not the edge (the dots are always the box's own).
-  if h.kind == "edge" and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end        -- (Ctrl there is the one-axis move)
+  if h.kind == "edge" and not h.mid and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end   -- (Ctrl there is the one-axis move; the handle in the middle of an edge is always the box's)
   local w = W.get()
-  local d = { lastx = mx, lasty = my, ex = 0, ey = 0, g = h.g, edge = h.edge, good = W.m.snapshot(w) }
+  local d = { lastx = mx, lasty = my, ex = 0, ey = 0, th = 0, g = h.g, edge = h.edge, good = W.m.snapshot(w) }
   if h.kind == "point" and not alt and not ctrl then
     d.kind, d.i, d.v0, d.h0 = "point", h.i, w[h.edge].pts[h.i].v, w[h.edge].pts[h.i].h
   elseif ctrl then
@@ -1723,16 +1864,33 @@ function W.drag_to(mx, my, cap)
   if not (d and w) then return end
   local fine = ((cap & 8) ~= 0) and 0.2 or 1
   d.ex, d.ey = d.ex + (mx - d.lastx) * fine, d.ey + (d.lasty - my) * fine
+  d.th = d.th + (mx - d.lastx) * fine / d.g.pps                       -- the movement in time, in seconds (it also counts what the window scrolls)
   d.lastx, d.lasty = mx, my
+  -- The window follows the drag: with the pointer in the last stretch of the picture it scrolls on (faster the further in), so a
+  -- bend can be dragged as long as you like; what the window scrolls is added to the movement, so the dot stays under the pointer.
+  local px0, _, pw0 = plot_rect()
+  local zone = math.max(48, 0.08 * pw0)
+  local right, left = px0 + pw0 - zone, px0 + zone
+  local lower = w.t0 - 3.2 * (w.t1 - w.t0)                              -- how far before the start the window may follow (the file gets frames in front)
+  local scroll = 0
+  if mx > right then scroll = (view.t1 - view.t0) * 0.012 * clamp((mx - right) / zone, 0, 2.5)
+  elseif mx < left and view.t0 > lower then scroll = -(view.t1 - view.t0) * 0.012 * clamp((left - mx) / zone, 0, 2.5) end
+  if scroll < 0 and view.t0 + scroll < lower then scroll = lower - view.t0 end
+  if scroll ~= 0 then
+    view.t0, view.t1 = view.t0 + scroll, view.t1 + scroll
+    d.th = d.th + scroll
+    d.lastscroll = scroll
+    dirty = true
+  end
   if (cap & 4) ~= 0 then
     if not d.axis and math.abs(d.ex) + math.abs(d.ey) > 3 then d.axis = (math.abs(d.ex) >= math.abs(d.ey)) and "x" or "y" end
   else
     d.axis = nil
   end
-  local ex, ey = (d.axis == "y") and 0 or d.ex, (d.axis == "x") and 0 or d.ey
+  local ey = (d.axis == "x") and 0 or d.ey
   d.dv = clamp(ey / d.g.pxs, -48, 48)
   local span = w.t1 - w.t0
-  d.dh = clamp(ex / d.g.pps, -3 * span, 3 * span)
+  d.dh = (d.axis == "y") and 0 or clamp(d.th, -3 * span, 3 * span)
   if d.kind == "point" then
     W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48), d.h0 + d.dh)
   elseif d.kind == "edge" then
@@ -1805,6 +1963,14 @@ function W.draw(px, py, pw, ph)
           end
         end)
       end
+    end
+    for _, edge in ipairs(W.m.EDGES) do                         -- the handle in the middle of every edge (drag it: the whole edge moves: a bend, a stretch)
+      local x, y = W.pos(g, edge, 0.5, W.m.edge_value(w[edge], 0.5), W.m.edge_h(w[edge], 0.5))
+      local hover = (W.drag and W.drag.kind == "edge" and W.drag.edge == edge) or (not W.drag and (mx - x) ^ 2 + (my - y) ^ 2 < 100)
+      gfx.set(hover and 1 or 0.45, hover and 0.95 or 0.9, hover and 0.5 or 1, 1)
+      gfx.rect(x - 4, y - 4, 9, 9, 1)
+      gfx.set(0.05, 0.06, 0.08, 0.9)
+      gfx.rect(x - 4, y - 4, 9, 9, 0)
     end
     for _, edge in ipairs(W.m.EDGES) do                         -- the dots
       for i, pt in ipairs(w[edge].pts) do
@@ -2260,7 +2426,7 @@ local function draw_header(px, py, pw, ph, plain)
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 21:26"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 22:07"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
@@ -2547,6 +2713,14 @@ local function loop()
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   for k, lane in ipairs(lane_layout(ph)) do gfx.blit(k, 1, 0, 0, 0, pw, lane.h, px, py + lane.off, pw, lane.h) end
+  if data then                                                  -- what lies before the start and after the end of the file is darker (a bend can go there)
+    local x_start, x_end = px + tx(data.times[1], pw), px + tx(data.times[data.frames], pw)
+    gfx.set(0, 0, 0, 0.38)
+    for _, lane in ipairs(lane_layout(ph)) do
+      if x_start > px then gfx.rect(px, py + lane.off, math.min(x_start, px + pw) - px, lane.h, 1) end
+      if x_end < px + pw then gfx.rect(math.max(x_end, px), py + lane.off, px + pw - math.max(x_end, px), lane.h, 1) end
+    end
+  end
   draw_selection(px, py, pw, ph)
   W.draw(px, py, pw, ph)
   draw_crosshair(px, py, pw, ph)

@@ -130,6 +130,8 @@ def load_ats(path):
     a.noise = np.array(a.m[:, nz0:nz0 + BANDS], dtype=np.float64).T.copy() if a.has_noise else None
     a.edits = None
     a.rows = a.partials                          # rows to make: the file's, and more when the editor's edits added rows
+    a.file_frames = a.frames                      # frames in the file (the editor's edits may make the sound longer)
+    a.front = 0                                   # frames the editor's edits put in front of the file's own
     return a
 
 
@@ -147,6 +149,27 @@ def load_edits(path):
     return e.reshape(-1, 4)
 
 
+def apply_edits(a, e):
+    """Takes the editor's edits: the cells, the rows they add and, when the sound was made longer (a stretch past the end), the new
+    length: a record with partial 0, whose frame field is the number of frames, whose amplitude field is the duration and whose frequency field is the number of frames put in front."""
+    a.edits = e
+    if e is None or not len(e):
+        return
+    a.rows = max(a.partials, int(e[:, 0].max()))
+    rec = e[e[:, 0] == 0]
+    if len(rec):
+        frames_new, dur_new, front = int(rec[-1, 1]), float(rec[-1, 2]), int(rec[-1, 3])
+        if frames_new > a.frames or front > 0:
+            hop = a.frame_size / a.sr
+            a.front = front                                                  # frames put in front of the file's own (everything is later by that much)
+            a.times = a.times[0] + hop * np.arange(frames_new)
+            if a.noise is not None:
+                noise = np.zeros((a.noise.shape[0], frames_new))
+                noise[:, front:front + a.file_frames] = a.noise[:, :a.file_frames]
+                a.noise = noise
+            a.frames, a.dur = frames_new, dur_new
+
+
 def chunk(a, p0, p1):
     """Partials p0 .. p1-1 as two arrays [partial, frame] (amplitude, frequency), with the editor's edits applied."""
     cols = slice(1 + a.pp * p0, 1 + a.pp * p1, a.pp)
@@ -154,8 +177,8 @@ def chunk(a, p0, p1):
     amp = np.zeros((p1 - p0, a.frames))
     frq = np.zeros((p1 - p0, a.frames))
     if k > 0:
-        amp[:k] = np.array(a.m[:, 1 + a.pp * p0:1 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
-        frq[:k] = np.array(a.m[:, 2 + a.pp * p0:2 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
+        amp[:k, a.front:a.front + a.file_frames] = np.array(a.m[:, 1 + a.pp * p0:1 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
+        frq[:k, a.front:a.front + a.file_frames] = np.array(a.m[:, 2 + a.pp * p0:2 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
     if a.edits is not None:
         e = a.edits
         sel = (e[:, 0] > p0) & (e[:, 0] <= p1) & (e[:, 1] >= 1) & (e[:, 1] <= a.frames)
@@ -432,9 +455,7 @@ def synth_task(t):
     _IDX = t["k"]
     NOISE_SHAPE = t["shape"]
     a = load_ats(t["path"])
-    a.edits = load_edits(t["edits"])
-    if a.edits is not None and len(a.edits):
-        a.rows = max(a.partials, int(a.edits[:, 0].max()))
+    apply_edits(a, load_edits(t["edits"]))
     out, t_start = render_channel(a, t["start"], t["end"], t["sines"], t["noise"], t["seed"], 0.0, 1.0, t["cache"])
     _SHARED[_IDX] = 1.0
     return out, t_start
@@ -522,9 +543,7 @@ def main(argv=None):
             fail("--edits must be given once for every file")
         files = [load_ats(p) for p in a.ats]
         for k, f in enumerate(files):
-            f.edits = load_edits(a.edits[k]) if a.edits else None
-            if f.edits is not None and len(f.edits):
-                f.rows = max(f.partials, int(f.edits[:, 0].max()))
+            apply_edits(f, load_edits(a.edits[k]) if a.edits else None)
         first = files[0]
         for f in files[1:]:
             if f.frames != first.frames or abs(f.sr - first.sr) > 1e-6 or abs(f.frame_size - first.frame_size) > 1e-6:

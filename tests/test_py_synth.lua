@@ -158,6 +158,62 @@ do
   for _, f in ipairs({ full_path, ep, a, b, plain }) do os.remove(f) end
 end
 
+-- edits that make the sound LONGER (a stretch past the end): the program extends the file by the number of frames in the record of partial 0
+do
+  local ed3 = dofile("lib/ats_edit.lua")
+  local base = assert(ats.load("examples/sax.ats"))
+  local grown = assert(ats.load("examples/sax.ats"))
+  ed3.add_frames(grown, 30)
+  for f = 215, 245 do grown.amp[2][f] = 0.15; grown.frq[2][f] = 500 + f end              -- sound in the new frames, in a row the file has
+  local full3 = scratch .. "/ps_long_" .. math.random(100000, 999999) .. ".ats"
+  assert(ats.save(full3, grown, { phase = false }))
+  local ep3 = scratch .. "/ps_longedits_" .. math.random(100000, 999999) .. ".bin"
+  local fh3 = io.open(ep3, "wb")
+  fh3:write(string.pack("<dddd", 0, grown.frames, grown.dur, 0))                          -- the record: the file now has this many frames
+  for f = 215, 245 do fh3:write(string.pack("<dddd", 2, f, grown.amp[2][f], grown.frq[2][f])) end
+  fh3:close()
+  local la, lb = scratch .. "/ps_la.wav", scratch .. "/ps_lb.wav"
+  run("--no-noise --out " .. la .. " " .. full3)
+  run("--no-noise --out " .. lb .. " --edits " .. ep3 .. " " .. sax_path)
+  local fa3 = io.open(la, "rb"); local da3 = fa3:read("a"); fa3:close()
+  local fb3 = io.open(lb, "rb"); local db3 = fb3:read("a"); fb3:close()
+  check("longer: the original file plus the edits sounds exactly like the longer data written out", da3 == db3 and #da3 > 1000, #da3 .. " " .. #db3)
+  local plain3 = scratch .. "/ps_lc.wav"
+  run("--no-noise --out " .. plain3 .. " " .. sax_path)
+  local fc3 = io.open(plain3, "rb"); local dc3 = fc3:read("a"); fc3:close()
+  check("longer: and the sound is longer than the file's own", #da3 > #dc3, #da3 .. " vs " .. #dc3)
+  local noise_full = scratch .. "/ps_ln.wav"
+  run("--out " .. noise_full .. " --edits " .. ep3 .. " " .. sax_path)
+  local fd = io.open(noise_full, "rb"); local dd = fd:read("a"); fd:close()
+  check("longer: with the noise too (zeros after the old end)", #dd == #da3)
+  for _, f in ipairs({ full3, ep3, la, lb, plain3, noise_full }) do os.remove(f) end
+end
+
+-- edits that put frames IN FRONT (a stretch to before 0): everything of the file is later, the record of partial 0 says by how much
+do
+  local ed4 = dofile("lib/ats_edit.lua")
+  local grown = assert(ats.load("examples/sax.ats"))
+  ed4.prepend_frames(grown, 12)
+  ed4.add_frames(grown, 5)
+  for f = 2, 30 do grown.amp[3][f] = 0.2; grown.frq[3][f] = 400 + f end               -- sound in the new frames at the start
+  grown.amp[1][40] = grown.amp[1][40] * 0.5                                              -- and an edit of the file's own sound (it is later by 12 frames)
+  local full4 = scratch .. "/ps_front_" .. math.random(100000, 999999) .. ".ats"
+  assert(ats.save(full4, grown, { phase = false }))
+  local ep4 = scratch .. "/ps_frontedits_" .. math.random(100000, 999999) .. ".bin"
+  local fh4 = io.open(ep4, "wb")
+  fh4:write(string.pack("<dddd", 0, grown.frames, grown.dur, 12))                       -- the file now has this many frames, 12 of them in front
+  for f = 2, 30 do fh4:write(string.pack("<dddd", 3, f, grown.amp[3][f], grown.frq[3][f])) end
+  fh4:write(string.pack("<dddd", 1, 40, grown.amp[1][40], grown.frq[1][40]))
+  fh4:close()
+  local ma, mb = scratch .. "/ps_ma.wav", scratch .. "/ps_mb.wav"
+  run("--out " .. ma .. " " .. full4)
+  run("--out " .. mb .. " --edits " .. ep4 .. " " .. sax_path)
+  local fa4 = io.open(ma, "rb"); local da4 = fa4:read("a"); fa4:close()
+  local fb4 = io.open(mb, "rb"); local db4 = fb4:read("a"); fb4:close()
+  check("front: the original file plus the edits sounds exactly like the data written out (with noise)", da4 == db4 and #da4 > 1000, #da4 .. " " .. #db4)
+  for _, f in ipairs({ full4, ep4, ma, mb }) do os.remove(f) end
+end
+
 -- errors are told, not crashes
 local msg = run("--out " .. out .. " " .. scratch .. "/does_not_exist.ats")
 check("a missing file is reported", msg:find("ERROR"), msg)

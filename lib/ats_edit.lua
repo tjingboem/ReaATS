@@ -28,6 +28,87 @@ function M.truncate_rows(d, n)
   d.partials = math.min(d.partials, n)
 end
 
+-- The length of the file: appends k silent frames (every partial 0, the noise bands 0) after the last one, with the same spacing in time,
+-- and makes the duration longer by k frames. All the channels of a set must be made equally long (the same frame grid).
+function M.add_frames(d, k)
+  local NF = d.frames
+  local hop = d.frame_size / d.sr
+  for f = NF + 1, NF + k do d.times[f] = d.times[NF] + (f - NF) * hop end
+  for p = 1, d.partials do
+    local amp, frq, pha = d.amp[p], d.frq[p], d.has_phase and d.pha[p] or nil
+    for f = NF + 1, NF + k do
+      amp[f], frq[f] = 0, 0
+      if pha then pha[f] = 0 end
+    end
+  end
+  if d.has_noise then
+    for b = 1, #d.noise do for f = NF + 1, NF + k do d.noise[b][f] = 0 end end
+  end
+  d.frames = NF + k
+  d.dur = d.dur + k * hop
+end
+
+-- Takes the frames after frame n away again (the way back of add_frames); `dur` is the duration to go back to.
+function M.truncate_frames(d, n, dur)
+  for f = d.frames, n + 1, -1 do d.times[f] = nil end
+  for p = 1, d.partials do
+    local amp, frq, pha = d.amp[p], d.frq[p], d.has_phase and d.pha[p] or nil
+    for f = d.frames, n + 1, -1 do
+      amp[f], frq[f] = nil, nil
+      if pha then pha[f] = nil end
+    end
+  end
+  if d.has_noise then
+    for b = 1, #d.noise do for f = d.frames, n + 1, -1 do d.noise[b][f] = nil end end
+  end
+  d.frames = n
+  if dur then d.dur = dur end
+end
+
+-- Makes the file longer AT THE START: k silent frames in front, so that everything in the file moves k frames later (frame f becomes
+-- frame f + k). The first time stays where it was, the duration grows by k frames. Used when a stretch goes before 0.
+function M.prepend_frames(d, k)
+  local NF = d.frames
+  local hop = d.frame_size / d.sr
+  local function shifted(old)
+    local new = {}
+    for i = 1, k do new[i] = 0 end
+    table.move(old, 1, NF, k + 1, new)
+    return new
+  end
+  for p = 1, d.partials do
+    d.amp[p], d.frq[p] = shifted(d.amp[p]), shifted(d.frq[p])
+    if d.has_phase then d.pha[p] = shifted(d.pha[p]) end
+  end
+  if d.has_noise then for b = 1, #d.noise do d.noise[b] = shifted(d.noise[b]) end end
+  local t1 = d.times[1]
+  d.times = {}
+  for f = 1, NF + k do d.times[f] = t1 + (f - 1) * hop end
+  d.frames = NF + k
+  d.dur = d.dur + k * hop
+  d.front_frames = (d.front_frames or 0) + k                        -- (how many frames the file on disk is behind: for the synthesis of an unsaved edit)
+end
+
+-- The way back of prepend_frames: takes the first k frames away (frame f becomes f - k); `dur` is the duration to go back to.
+function M.drop_front(d, k, dur)
+  local NF = d.frames
+  local function cut(arr)
+    table.move(arr, k + 1, NF, 1)
+    for i = NF - k + 1, NF do arr[i] = nil end
+  end
+  for p = 1, d.partials do
+    cut(d.amp[p]); cut(d.frq[p])
+    if d.has_phase then cut(d.pha[p]) end
+  end
+  if d.has_noise then for b = 1, #d.noise do cut(d.noise[b]) end end
+  local t1 = d.times[1]
+  for f = 1, NF - k do d.times[f] = t1 + (f - 1) * (d.frame_size / d.sr) end
+  for f = NF - k + 1, NF do d.times[f] = nil end
+  d.frames = NF - k
+  if dur then d.dur = dur end
+  d.front_frames = math.max((d.front_frames or 0) - k, 0)
+end
+
 -- Plans moving the selected points by `df` frames (integer) and a frequency factor `ratio`.
 -- Nothing is changed in d. Every contiguous run of one partial moves together: it stays in its own
 -- row when the destination cells are free, otherwise goes to the nearest row that is silent there,
@@ -219,8 +300,10 @@ end
 -- needs are silent there, else it goes to the nearest row that is silent for the whole run, else a new row. Frames before the first or
 -- after the last frame of the file are dropped. Returns nil (nothing selected) or
 --   { changes, sel (the new cells), rows_before, rows_after, count (points moved), dropped (runs that fell outside) }
-function M.plan_warp(d, sel, map)
+function M.plan_warp(d, sel, map, opts)
   local NF, P0 = d.frames, d.partials
+  local limit = NF + ((opts and opts.max_extra) or 0)                 -- the last frame a run may reach: the end of the file, or further when the file may grow
+  local first_ok = 1 - ((opts and opts.max_front) or 0)                -- the first frame a run may reach: frame 1, or earlier (frames 0, -1 ...) when the file may grow at the start
   local times = d.times
   local hop = (times[NF] - times[1]) / math.max(NF - 1, 1)
   local ny = d.sr / 2 - 1
@@ -264,8 +347,8 @@ function M.plan_warp(d, sel, map)
     end
     run.cells = {}
     local k = 1
-    for f = math.max(lo, 1), math.min(hi, NF) do
-      local tau = times[f]
+    for f = math.max(lo, first_ok), math.min(hi, limit) do
+      local tau = (f >= 1 and f <= NF) and times[f] or (f > NF and (times[NF] + (f - NF) * hop) or (times[1] + (f - 1) * hop))
       while k < n and tp[k + 1] < tau do k = k + 1 end
       local a, fr
       if n == 1 then
@@ -283,7 +366,7 @@ function M.plan_warp(d, sel, map)
   local taken = {}
   local function free(q, f)
     if taken[q] and taken[q][f] then return false end
-    if q > P0 then return true end
+    if q > P0 or f > NF or f < 1 then return true end
     if d.amp[q][f] <= 0 then return true end
     return (sel[q] and sel[q][f]) or false                  -- a selected cell is vacated by the move
   end
@@ -306,11 +389,12 @@ function M.plan_warp(d, sel, map)
 
   local order, by_key = {}, {}
   local function cell(q, f)
-    local key = q * (NF + 1) + f
+    local key = q * (limit - first_ok + 2) + (f - first_ok)
     local c = by_key[key]
     if not c then
-      local oa = (q <= P0) and d.amp[q][f] or 0
-      local of_ = (q <= P0) and d.frq[q][f] or 0
+      local inside = (q <= P0 and f >= 1 and f <= NF)
+      local oa = inside and d.amp[q][f] or 0
+      local of_ = inside and d.frq[q][f] or 0
       c = { p = q, f = f, oa = oa, na = oa, of = of_, nf = of_ }
       by_key[key] = c
       order[#order + 1] = c
@@ -320,9 +404,11 @@ function M.plan_warp(d, sel, map)
   for _, run in ipairs(runs) do                              -- first silence every source cell
     for f = run.f0, run.f1 do cell(run.p, f).na = 0 end
   end
-  local newsel, rows_after = {}, P0
+  local newsel, rows_after, frames_after, first_frame = {}, P0, NF, 1
   for _, run in ipairs(runs) do                              -- then write the destinations
     if #run.cells > 0 then
+      if run.cells[#run.cells].f > frames_after then frames_after = run.cells[#run.cells].f end
+      if run.cells[1].f < first_frame then first_frame = run.cells[1].f end
       local q = choose(run)
       if q > rows_after then rows_after = q end
       taken[q] = taken[q] or {}
@@ -339,7 +425,8 @@ function M.plan_warp(d, sel, map)
   for _, c in ipairs(order) do
     if c.na ~= c.oa or c.nf ~= c.of then changes[#changes + 1] = c end
   end
-  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped }
+  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, frames_before = NF, frames_after = frames_after,
+           frames_front = 1 - first_frame, count = count, dropped = dropped }
 end
 
 return M

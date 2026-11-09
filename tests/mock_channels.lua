@@ -123,7 +123,8 @@ local function slider(i, frac) return 62 + (i - 1) * 104 + 34 + math.floor(62 * 
 local function led(i) return 62 + (i - 1) * 104 + 15, 74 end                -- the LED above button i
 local MODE = { 62 + 3 * 104 + 4 + 50, 87 }                                 -- the STACK / OVERLAY button
 local function lanes_now() blits = {}; strings = {}; frame(); return blits end
-local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag
+local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag (an Alt+click first: no old selection with its box and dots is in the way)
+  gfx.mouse_cap = 1 + 16; gfx.mouse_x, gfx.mouse_y = 500, 125; frame(); gfx.mouse_cap = 0; frame()
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame()
   gfx.mouse_x, gfx.mouse_y = x1, y1; frame(); gfx.mouse_cap = 0; frame(); frame()
 end
@@ -458,6 +459,65 @@ do
   assert(saw("%(3 channels%)"), "the stretched points stay selected")
   press(26, 4); strings = {}; frame()
   assert(not saw("^%d%*$"), "ONE Ctrl+Z takes the stretch back")
+  -- a stretch past the end of the file makes the file longer, in every channel, as one undo step
+  strings = {}; frame()
+  assert(saw("   2%.00 s   "), "the file is 2.00 s: " .. tostring(saw("partials")))
+  sweep(65, y_top, 1040, y_bot)
+  hold_and_drag(1040, y_top, 200, 0); let_go()
+  press(13); strings = {}; frame()
+  assert(saw("the file is 0%.%d%d s longer now"), "the status says how much longer: " .. tostring(saw("bend") or "(no status)"))
+  assert(saw("   2%.[1-4]%d s   "), "the duration in the header is longer now: " .. tostring(saw("partials")))
+  assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "every channel changed")
+  press(26, 4); strings = {}; frame()
+  assert(saw("   2%.00 s   ") and not saw("^%d%*$"), "ONE Ctrl+Z makes the file 2.00 s again, in every channel: " .. tostring(saw("partials")))
+  press(25, 4); strings = {}; frame()
+  assert(saw("   2%.[1-4]%d s   "), "Ctrl+Y makes it longer again: " .. tostring(saw("partials")))
+  press(26, 4); strings = {}; frame()
+  -- the handle in the middle of the right edge: dragged sideways it STRETCHES the box (the left edge stays), it does not move the selection
+  sweep(65, y_top, 600, y_bot)
+  local y_mid = math.floor((y_top + y_bot) / 2)
+  hold_and_drag(600, y_mid, 60, 0)
+  live = saw("^bend %+%d+ ms: Enter applies")
+  assert(live and not saw("^move"), "the middle handle of the right edge stretches in time: " .. tostring(saw("^bend") or saw("^move") or "(nothing)"))
+  let_go(); strings = {}; frame()
+  assert(not saw("^%d%*$"), "nothing changes before Enter")
+  press(13); strings = {}; frame()
+  assert(saw("^1%*$") and saw("^3%*$") and saw("bend in time up to"), "Enter applies the stretch: " .. tostring(saw("bend") or "(none)"))
+  press(26, 4); strings = {}; frame()
+  assert(not saw("^%d%*$"), "and Ctrl+Z takes it back")
+  -- a stretch to before 0 puts frames in front: everything in the file moves later; one undo step, every channel
+  press(102)
+  sweep(65, y_top, 1040, y_bot)
+  hold_and_drag(65, y_top, -120, 0); let_go()
+  press(13); strings = {}; frame()
+  assert(saw("frames in front"), "frames are put in front of the file: " .. tostring(saw("bend") or "(no status)"))
+  assert(saw("   2%.[1-4]%d s   "), "the file is longer: " .. tostring(saw("partials")))
+  assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "every channel changed")
+  assert(saw("%(3 channels%)"), "the stretched points stay selected")
+  press(26, 4); strings = {}; frame()
+  assert(saw("   2%.00 s   ") and not saw("^%d%*$"), "ONE Ctrl+Z takes the frames in front away again, in every channel: " .. tostring(saw("partials")))
+  press(25, 4); strings = {}; frame()
+  assert(saw("   2%.[1-4]%d s   ") and saw("^1%*$"), "Ctrl+Y puts them back: " .. tostring(saw("partials")))
+  press(26, 4); strings = {}; frame()
+  press(102)
+  -- the window follows the drag: with the pointer in the last stretch of the picture the view scrolls on, past the end of the file
+  sweep(65, y_top, 1040, y_bot)
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 1040, y_top; frame()                 -- hold the top right corner ...
+  gfx.mouse_x = 1070; frame()                                                         -- ... and keep the pointer at the right end of the picture
+  local before_t = nil
+  strings = {}; frame()
+  assert(not saw("^2%.5 s$") and not saw("^3 s$"), "at first the picture ends at the end of the file (about 2 s)")
+  for _ = 1, 40 do frame() end
+  strings = {}; frame()
+  assert(saw("^2%.5 s$") or saw("^3 s$") or saw("^3%.5 s$"), "the picture has scrolled on beyond the end of the file: " .. table.concat(strings, " / ", 1, math.min(#strings, 24)))
+  assert(saw("^bend %+%d+ ms"), "the dragged corner went with it: " .. tostring(saw("^bend") or "(no status)"))
+  local scrolled = tonumber(saw("^bend %+(%d+) ms") and saw("^bend %+(%d+) ms"):match("%+(%d+) ms"))
+  for _ = 1, 40 do frame() end
+  strings = {}; frame()
+  local more = tonumber(saw("^bend %+(%d+) ms") and saw("^bend %+(%d+) ms"):match("%+(%d+) ms"))
+  assert(more and scrolled and more > scrolled, "and it goes on as long as the pointer stays there: " .. tostring(scrolled) .. " then " .. tostring(more))
+  let_go(); press(27)
+  press(102)                                                                          -- (the whole file in view again for the next tests)
   -- both at once, and Ctrl keeps one direction only
   sweep(65, y_top, 600, y_bot)
   hold_and_drag(600, y_top, 40, -30)

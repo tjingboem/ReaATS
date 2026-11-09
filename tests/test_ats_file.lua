@@ -133,5 +133,20 @@ do
   check("header: an empty file is called empty", h0 == nil and e0:find("empty"), e0)
   os.remove(empty)
 end
+-- a file made longer (frames added by an edit) is saved and read back as it is
+do
+  local ed = dofile("lib/ats_edit.lua")
+  local d = assert(ats.load("examples/sax.ats"))
+  local frames, dur = d.frames, d.dur
+  ed.add_frames(d, 20)
+  d.amp[1][frames + 5] = 0.3; d.frq[1][frames + 5] = 440
+  local path = os.tmpname()
+  assert(ats.save(path, d, { phase = true }))
+  local r = assert(ats.load(path))
+  check("longer file: frames and duration are saved", r.frames == frames + 20 and math.abs(r.dur - (dur + 20 * d.frame_size / d.sr)) < 1e-9, r.frames)
+  check("longer file: the new frames are read back", r.amp[1][frames + 5] == 0.3 and r.frq[1][frames + 5] == 440 and r.amp[1][frames + 6] == 0 and r.noise[7][frames + 20] == 0)
+  check("longer file: the times go on with the same spacing", math.abs(r.times[frames + 20] - (r.times[frames] + 20 * d.frame_size / d.sr)) < 1e-9)
+  os.remove(path)
+end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

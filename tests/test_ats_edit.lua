@@ -180,5 +180,65 @@ do
   check("warp: nothing selected: nil", edit.plan_warp(d8, {}, function(t, fr) return t, fr end) == nil)
 end
 
+-- 9. the length of the file: frames added and taken away; a warp that may grow the file
+do
+  local d9 = make(2, 20); d9.dur = 0.2; d9.frame_size = 441; d9.sr = 44100
+  d9.has_noise = true; d9.noise = {}; for b = 1, 25 do d9.noise[b] = {}; for f = 1, 20 do d9.noise[b][f] = 0.1 end end
+  d9.has_phase = true; d9.pha = { {}, {} }; for p = 1, 2 do for f = 1, 20 do d9.pha[p][f] = 0.5 end end
+  edit.add_frames(d9, 5)
+  check("add_frames: 25 frames, longer duration", d9.frames == 25 and math.abs(d9.dur - 0.25) < 1e-9 and math.abs(d9.times[25] - 0.24) < 1e-9, d9.dur)
+  check("add_frames: silent amplitude, frequency, phase and noise", d9.amp[2][25] == 0 and d9.frq[1][21] == 0 and d9.pha[1][23] == 0 and d9.noise[10][25] == 0 and d9.noise[10][20] == 0.1)
+  edit.truncate_frames(d9, 20, 0.2)
+  check("truncate_frames: back to 20 frames", d9.frames == 20 and d9.dur == 0.2 and d9.times[21] == nil and d9.amp[1][21] == nil and d9.noise[3][21] == nil and d9.pha[2][21] == nil)
+  -- a stretch that runs past the end: without room it is clipped, with room the file grows by exactly what is needed
+  local d10 = make(2, 20); d10.frame_size = 441; d10.dur = 0.2
+  for f = 15, 19 do d10.amp[1][f] = 0.1 * (f - 14); d10.frq[1][f] = 200 + 10 * (f - 15) end
+  local t15 = d10.times[15]
+  local function stretch(t, fr) return t15 + 2 * (t - t15), fr end
+  local sel10 = { [1] = { [15] = true, [16] = true, [17] = true, [18] = true, [19] = true } }
+  local clipped = edit.plan_warp(d10, sel10, stretch)
+  check("grow: without room: clipped at frame 20", clipped.frames_after == 20 and clipped.sel[1][20] and not clipped.sel[1][21])
+  local grown = edit.plan_warp(d10, sel10, stretch, { max_extra = 20 })
+  check("grow: with room: frames up to 23 (15 + 8)", grown.frames_after == 23 and grown.sel[1][23] and grown.frames_before == 20, grown.frames_after)
+  check("grow: the rows stay", grown.rows_after == 2 and grown.sel[1][21] and grown.sel[1][22])
+  edit.add_frames(d10, grown.frames_after - d10.frames)
+  apply(d10, grown)
+  check("grow: the new frames hold the stretched sound", math.abs(d10.amp[1][23] - 0.5) < 1e-9 and math.abs(d10.frq[1][23] - 240) < 1e-9 and d10.frames == 23)
+  check("grow: interpolated between the points", math.abs(d10.amp[1][16] - 0.15) < 1e-9 and math.abs(d10.amp[1][20] - 0.35) < 1e-9)
+  -- a run wholly beyond the room that is allowed still falls away
+  local far = edit.plan_warp(d10, { [1] = { [20] = true } }, function(t, fr) return t + 500 * 0.01, fr end, { max_extra = 5 })
+  check("grow: beyond the room: dropped", far.dropped == 1 and far.frames_after == 23)
+end
+
+-- 10. the length of the file at the START: frames in front, everything later; a warp that goes before 0
+do
+  local d = make(2, 20); d.frame_size = 441; d.dur = 0.2
+  d.has_noise = true; d.noise = {}; for b = 1, 25 do d.noise[b] = {}; for f = 1, 20 do d.noise[b][f] = f end end
+  d.has_phase = true; d.pha = { {}, {} }; for p = 1, 2 do for f = 1, 20 do d.pha[p][f] = f / 10 end end
+  for f = 5, 9 do d.amp[1][f] = 0.1 * (f - 4); d.frq[1][f] = 100 + f end
+  edit.prepend_frames(d, 6)
+  check("prepend: 26 frames, longer duration, times from the same start", d.frames == 26 and math.abs(d.dur - 0.26) < 1e-9 and d.times[1] == 0 and math.abs(d.times[26] - 0.25) < 1e-9)
+  check("prepend: everything moved 6 frames later", d.amp[1][5] == 0 and d.amp[1][11] > 0 and math.abs(d.amp[1][11] - 0.1) < 1e-9 and d.frq[1][15] == 109 and d.amp[2][1] == 0)
+  check("prepend: noise and phase moved too, the new frames are silent", d.noise[3][1] == 0 and d.noise[3][7] == 1 and d.noise[3][26] == 20 and d.pha[2][7] == 0.1 and d.pha[1][3] == 0)
+  check("prepend: counted", d.front_frames == 6)
+  edit.drop_front(d, 6, 0.2)
+  check("drop_front: back as it was", d.frames == 20 and d.dur == 0.2 and d.amp[1][5] > 0 and math.abs(d.amp[1][9] - 0.5) < 1e-9 and d.amp[1][21] == nil and d.noise[3][20] == 20 and d.pha[1][20] == 2 and d.times[21] == nil and d.front_frames == 0)
+  -- a stretch to the left, past the start: with room in front the pieces go to frames 0, -1 ... (frames_front says how many)
+  local dw = make(2, 20); dw.frame_size = 441; dw.dur = 0.2
+  for f = 3, 7 do dw.amp[1][f] = 0.1 * (f - 2); dw.frq[1][f] = 200 + 10 * (f - 3) end
+  local t7 = dw.times[7]
+  local function stretch_left(t, fr) return t7 - 2 * (t7 - t), fr end                  -- twice as long, the right end stays
+  local sel = { [1] = { [3] = true, [4] = true, [5] = true, [6] = true, [7] = true } }
+  local clipped = edit.plan_warp(dw, sel, stretch_left)
+  check("front: without room: clipped at frame 1", clipped.frames_front == 0 and clipped.sel[1][1] and not clipped.sel[1][0])
+  local grown = edit.plan_warp(dw, sel, stretch_left, { max_front = 20 })
+  check("front: with room: down to frame -1 (7 - 8), 2 frames in front", grown.frames_front == 2 and grown.sel[1][-1] and grown.sel[1][0] and grown.frames_after == 20, grown.frames_front)
+  check("front: the amplitudes at both ends", true)
+  local first_amp
+  for _, c in ipairs(grown.changes) do if c.f == -1 then first_amp = c.na end end
+  check("front: the first frame holds the start of the stretched run (the amplitude of its first point)", first_amp and math.abs(first_amp - 0.1) < 1e-9, first_amp)
+  check("front: wholly before the room: dropped", edit.plan_warp(dw, { [1] = { [3] = true } }, function(t, fr) return t - 500 * 0.01, fr end, { max_front = 5 }).dropped == 1)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)
