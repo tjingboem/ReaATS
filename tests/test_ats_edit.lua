@@ -119,5 +119,66 @@ plan = edit.plan_paste(d, gapclip, 1)
 apply(d, plan)
 check("paste: a source row beyond the file's rows lands in a row that exists", d.amp[2][1] > 0 and d.amp[2][4] > 0 and active(d) == 2)
 
+-- 8. plan_warp: frequencies per point, time by making every run again on the frames
+do
+  local function ramp(d, p, f0, f1, a0, da, freq)                 -- amplitude a0, a0+da, ... ; frequency freq + 10*k
+    for f = f0, f1 do d.amp[p][f] = a0 + (f - f0) * da; d.frq[p][f] = freq + 10 * (f - f0) end
+  end
+  local hop = 0.01
+  local function selall(p, f0, f1) local t = {}; for f = f0, f1 do t[f] = true end; return { [p] = t } end
+  -- identity: nothing changes
+  local d8 = make(2, 40); ramp(d8, 1, 3, 7, 0.1, 0.1, 200)
+  local plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t, fr end)
+  check("warp: the identity changes nothing", plan8 and #plan8.changes == 0 and plan8.count == 5 and plan8.dropped == 0)
+  -- frequencies only: doubled, same frames, same row
+  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t, fr * 2 end)
+  check("warp: frequencies only: 5 changes in the same cells", #plan8.changes == 5 and plan8.sel[1][3] and plan8.sel[1][7] and plan8.rows_after == 2)
+  local by = {}
+  for _, c in ipairs(plan8.changes) do by[c.f] = c end
+  check("warp: frequencies only: values", math.abs(by[3].nf - 400) < 1e-9 and math.abs(by[5].nf - 440) < 1e-9 and by[5].na == by[5].oa)
+  -- later by 3 frames: the run is made 3 frames to the right
+  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t + 3 * hop, fr end)
+  apply(d8, plan8)
+  check("warp: later by 3 frames", d8.amp[1][3] == 0 and d8.amp[1][5] == 0 and math.abs(d8.amp[1][6] - 0.1) < 1e-9 and math.abs(d8.amp[1][10] - 0.5) < 1e-9 and d8.amp[1][11] == 0)
+  check("warp: the selection follows", plan8.sel[1][6] and plan8.sel[1][10] and not plan8.sel[1][3])
+  revert(d8, plan8)
+  -- stretched to twice the length around the first point: 5 frames become 9, the new frames interpolate the points
+  d8 = make(2, 60); ramp(d8, 1, 3, 7, 0.1, 0.1, 200)
+  local t3 = d8.times[3]
+  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t3 + 2 * (t - t3), fr end)
+  apply(d8, plan8)
+  check("warp: stretched x2: 9 frames, 3 to 11", d8.amp[1][2] == 0 and d8.amp[1][3] > 0 and d8.amp[1][11] > 0 and d8.amp[1][12] == 0, d8.amp[1][11])
+  check("warp: stretched x2: the frames between the points are interpolated", math.abs(d8.amp[1][4] - 0.15) < 1e-9 and math.abs(d8.frq[1][4] - 205) < 1e-9 and math.abs(d8.amp[1][5] - 0.2) < 1e-9)
+  check("warp: stretched x2: the end keeps its value", math.abs(d8.amp[1][11] - 0.5) < 1e-9 and math.abs(d8.frq[1][11] - 240) < 1e-9)
+  revert(d8, plan8)
+  check("warp: stretched x2: undo", d8.amp[1][8] == 0 and math.abs(d8.amp[1][7] - 0.5) < 1e-9)
+  -- squeezed to half: 9 frames become 5
+  d8 = make(2, 60); ramp(d8, 1, 3, 11, 0.1, 0.05, 200)
+  plan8 = edit.plan_warp(d8, selall(1, 3, 11), function(t, fr) return t3 + 0.5 * (t - t3), fr end)
+  apply(d8, plan8)
+  check("warp: squeezed to half: frames 3 to 7", d8.amp[1][3] > 0 and d8.amp[1][7] > 0 and d8.amp[1][8] == 0 and d8.amp[1][11] == 0)
+  check("warp: squeezed to half: every second point", math.abs(d8.amp[1][5] - (0.1 + 2 * 0.1)) < 1e-9 and math.abs(d8.amp[1][7] - (0.1 + 4 * 0.1)) < 1e-9)
+  -- a stretched run that meets other sound goes to another row, nothing is overwritten
+  d8 = make(2, 60); ramp(d8, 1, 3, 7, 0.1, 0.1, 200); ramp(d8, 1, 10, 12, 0.9, 0, 900)
+  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t3 + 2 * (t - t3), fr end)
+  apply(d8, plan8)
+  check("warp: a stretch into other sound: the other sound stays", d8.amp[1][10] == 0.9 and d8.frq[1][12] == 920)
+  check("warp: a stretch into other sound: the run is in row 2", d8.amp[2][3] > 0 and d8.amp[2][11] > 0 and plan8.sel[2] and not plan8.sel[1])
+  -- beyond the end of the file: the frames after the last are dropped; a run that is wholly outside is a dropped run
+  d8 = make(2, 20); ramp(d8, 1, 15, 19, 0.1, 0.1, 200)
+  plan8 = edit.plan_warp(d8, selall(1, 15, 19), function(t, fr) return t + 3 * hop, fr end)
+  apply(d8, plan8)
+  check("warp: past the end: the cells that fit are kept", d8.amp[1][18] > 0 and d8.amp[1][20] > 0 and plan8.dropped == 0 and d8.amp[1][15] == 0)
+  d8 = make(2, 20); ramp(d8, 1, 15, 19, 0.1, 0.1, 200)
+  plan8 = edit.plan_warp(d8, selall(1, 15, 19), function(t, fr) return t + 30 * hop, fr end)
+  check("warp: wholly past the end: dropped", plan8.dropped == 1 and #plan8.changes == 5 and next(plan8.sel) == nil)
+  -- a single point goes to the nearest frame
+  d8 = make(2, 40); d8.amp[1][10] = 0.7; d8.frq[1][10] = 300
+  plan8 = edit.plan_warp(d8, selall(1, 10, 10), function(t, fr) return t + 2.4 * hop, fr end)
+  apply(d8, plan8)
+  check("warp: a single point: the nearest frame", d8.amp[1][10] == 0 and math.abs(d8.amp[1][12] - 0.7) < 1e-9)
+  check("warp: nothing selected: nil", edit.plan_warp(d8, {}, function(t, fr) return t, fr end) == nil)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

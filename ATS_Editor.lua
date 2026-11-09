@@ -1592,30 +1592,43 @@ function W.commit()
   local w = W.w
   W.w = nil
   if not w or W.m.is_flat(w) then return end
-  local peak = W.m.max_abs(w)
+  local peak, peak_h = W.m.max_abs(w), W.m.max_abs_h(w)
+  local map = W.m.mapper(w)
+  local parts = {}
+  if peak > 0.005 then parts[#parts + 1] = string.format("up to %.1f st", peak) end
+  if peak_h > 0.0005 then parts[#parts + 1] = string.format("in time up to %.0f ms", peak_h * 1000) end
+  local label = "bend " .. table.concat(parts, ", ")
+  local dropped = 0
   W.busy = true
   edit_on_channels(function()
     if not sel_info then return end
-    local changes = W.m.changes(data, sel, w)
-    if #changes > 0 then do_edit(string.format("bend up to %.1f st", peak), changes); update_sel_info() end
+    local plan = edit.plan_warp(data, sel, map)                -- (frequencies point by point; time: every run made again on the frames)
+    if plan and #plan.changes > 0 then
+      do_edit(label, plan.changes, plan.rows_before, plan.rows_after)
+      sel = plan.sel
+      update_sel_info()
+      dropped = dropped + plan.dropped
+    end
   end, "bend")
   W.busy = false
   W.region = nil
+  if dropped > 0 then set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped)) end
 end
 
 -- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone).
 function W.geo(px, py, pw, lane, w)
   local lpy = py + lane.off
   return { x0 = px + tx(w.t0, pw), x1 = px + tx(w.t1, pw), yt = lpy + fy(w.f1, lane.h), yb = lpy + fy(w.f0, lane.h),
-           pxs = lane.h / (12 * math.log(view.f1 / view.f0, 2)) }
+           pxs = lane.h / (12 * math.log(view.f1 / view.f0, 2)), pps = pw / (view.t1 - view.t0) }
 end
 
--- Where a point of an edge is on the screen (s along the edge, v its displacement in semitones).
-function W.pos(g, edge, s, v)
-  if edge == "bottom" then return g.x0 + s * (g.x1 - g.x0), g.yb - v * g.pxs
-  elseif edge == "top" then return g.x0 + s * (g.x1 - g.x0), g.yt - v * g.pxs
-  elseif edge == "left" then return g.x0, g.yb + s * (g.yt - g.yb) - v * g.pxs
-  else return g.x1, g.yb + s * (g.yt - g.yb) - v * g.pxs end
+-- Where a point of an edge is on the screen (s along the edge, v its displacement in semitones, h in seconds).
+function W.pos(g, edge, s, v, h)
+  local dx = (h or 0) * g.pps
+  if edge == "bottom" then return g.x0 + s * (g.x1 - g.x0) + dx, g.yb - v * g.pxs
+  elseif edge == "top" then return g.x0 + s * (g.x1 - g.x0) + dx, g.yt - v * g.pxs
+  elseif edge == "left" then return g.x0 + dx, g.yb + s * (g.yt - g.yb) - v * g.pxs
+  else return g.x1 + dx, g.yb + s * (g.yt - g.yb) - v * g.pxs end
 end
 
 -- The lanes that have a selection, with the geometry of the box in each.
@@ -1651,7 +1664,7 @@ function W.hit(px, py, pw, ph, mx, my)
       local best, found = 9, nil
       for _, edge in ipairs(W.m.EDGES) do
         for i, pt in ipairs(w[edge].pts) do
-          local x, y = W.pos(e.g, edge, pt.s, pt.v)
+          local x, y = W.pos(e.g, edge, pt.s, pt.v, pt.h)
           local d = math.sqrt((mx - x) ^ 2 + (my - y) ^ 2)
           if d < best then best, found = d, { kind = "point", edge = edge, i = i, s = pt.s, g = e.g } end
         end
@@ -1659,10 +1672,10 @@ function W.hit(px, py, pw, ph, mx, my)
       if found then return found end
       best = 6
       for _, edge in ipairs(W.m.EDGES) do
-        local px0, py0 = W.pos(e.g, edge, 0, W.m.edge_value(w[edge], 0))
+        local px0, py0 = W.pos(e.g, edge, 0, W.m.edge_value(w[edge], 0), W.m.edge_h(w[edge], 0))
         for k = 1, 40 do
           local s1 = k / 40
-          local px1, py1 = W.pos(e.g, edge, s1, W.m.edge_value(w[edge], s1))
+          local px1, py1 = W.pos(e.g, edge, s1, W.m.edge_value(w[edge], s1), W.m.edge_h(w[edge], s1))
           local d, t = seg_distance(mx, my, px0, py0, px1, py1)
           if d < best then best, found = d, { kind = "edge", edge = edge, s = (k - 1 + t) / 40, g = e.g } end
           px0, py0 = px1, py1
@@ -1683,43 +1696,57 @@ function W.mouse_down(px, py, pw, ph, mx, my, cap)
   -- A selected point that happens to lie on an edge is moved, not the edge (the dots are always the box's own).
   if h.kind == "edge" and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end        -- (Ctrl there is the one-axis move)
   local w = W.get()
-  local d = { py0 = my, lasty = my, ev = 0, g = h.g, edge = h.edge }
+  local d = { lastx = mx, lasty = my, ex = 0, ey = 0, g = h.g, edge = h.edge, good = W.m.snapshot(w) }
   if h.kind == "point" and not alt and not ctrl then
-    d.kind, d.i, d.v0 = "point", h.i, w[h.edge].pts[h.i].v
+    d.kind, d.i, d.v0, d.h0 = "point", h.i, w[h.edge].pts[h.i].v, w[h.edge].pts[h.i].h
   elseif ctrl then
     local i = W.m.add_point(w, h.edge, h.s)
     if not i then return true end
-    d.kind, d.i, d.v0 = "point", i, w[h.edge].pts[i].v
+    d.kind, d.i, d.v0, d.h0 = "point", i, w[h.edge].pts[i].v, w[h.edge].pts[i].h
+    d.good = W.m.snapshot(w)
   elseif alt then
     local pts, seg = w[h.edge].pts, 1
     for i = 1, #pts - 1 do if h.s >= pts[i].s then seg = i end end
-    d.kind, d.seg, d.b0 = "bulge", seg, w[h.edge].bulge[seg] or 0
+    d.kind, d.seg, d.b0, d.bh0 = "bulge", seg, w[h.edge].bulge[seg] or 0, w[h.edge].bulge_h[seg] or 0
   else
-    d.kind, d.vals0 = "edge", {}
-    for i, pt in ipairs(w[h.edge].pts) do d.vals0[i] = pt.v end
+    d.kind, d.vals0, d.hals0 = "edge", {}, {}
+    for i, pt in ipairs(w[h.edge].pts) do d.vals0[i], d.hals0[i] = pt.v, pt.h end
   end
   W.drag = d
   return true
 end
 
--- The mouse moves with a handle held: up is up in frequency (Shift: a fifth of the movement).
+-- The mouse moves with a handle held. Up is up in frequency and right is later in time. Shift: a fifth of the movement. Ctrl: one
+-- direction only (the one that moves most). A movement that would make time fold back on itself is not made (the handle waits).
 function W.drag_to(mx, my, cap)
   local d, w = W.drag, W.w
   if not (d and w) then return end
-  d.ev = d.ev + (d.lasty - my) * (((cap & 8) ~= 0) and 0.2 or 1)
-  d.lasty = my
-  d.dv = clamp(d.ev / d.g.pxs, -48, 48)
-  if d.kind == "point" then
-    W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48))
-    if d.edge == "bottom" or d.edge == "top" then
-      W.m.set_position(w, d.edge, d.i, (mx - d.g.x0) / math.max(d.g.x1 - d.g.x0, 1))      -- (a border dot also slides along its edge)
-    end
-  elseif d.kind == "edge" then
-    for i, v in ipairs(d.vals0) do W.m.set_value(w, d.edge, i, clamp(v + d.dv, -48, 48)) end
+  local fine = ((cap & 8) ~= 0) and 0.2 or 1
+  d.ex, d.ey = d.ex + (mx - d.lastx) * fine, d.ey + (d.lasty - my) * fine
+  d.lastx, d.lasty = mx, my
+  if (cap & 4) ~= 0 then
+    if not d.axis and math.abs(d.ex) + math.abs(d.ey) > 3 then d.axis = (math.abs(d.ex) >= math.abs(d.ey)) and "x" or "y" end
   else
-    w[d.edge].bulge[d.seg] = clamp(d.b0 + d.dv, -48, 48)
+    d.axis = nil
   end
-  set_status(string.format("bend %+.2f st: Enter applies, Esc cancels", d.dv))
+  local ex, ey = (d.axis == "y") and 0 or d.ex, (d.axis == "x") and 0 or d.ey
+  d.dv = clamp(ey / d.g.pxs, -48, 48)
+  local span = w.t1 - w.t0
+  d.dh = clamp(ex / d.g.pps, -3 * span, 3 * span)
+  if d.kind == "point" then
+    W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48), d.h0 + d.dh)
+  elseif d.kind == "edge" then
+    for i, v in ipairs(d.vals0) do W.m.set_value(w, d.edge, i, clamp(v + d.dv, -48, 48), d.hals0[i] + d.dh) end
+  else                                                                -- an arch: in the direction that moves most
+    if not d.arch and math.abs(d.ex) + math.abs(d.ey) > 3 then d.arch = (math.abs(d.ex) > math.abs(d.ey)) and "h" or "v" end
+    if d.arch == "h" then w[d.edge].bulge_h[d.seg] = clamp(d.bh0 + d.dh, -3 * span, 3 * span)
+    else w[d.edge].bulge[d.seg] = clamp(d.b0 + d.dv, -48, 48) end
+  end
+  if W.m.monotone(w) then d.good = W.m.snapshot(w) else W.m.restore(w, d.good) end
+  local parts = {}
+  if math.abs(d.dv) > 0.004 then parts[#parts + 1] = string.format("%+.2f st", d.dv) end
+  if math.abs(d.dh) > 0.0004 then parts[#parts + 1] = string.format("%+.0f ms", d.dh * 1000) end
+  set_status("bend " .. (#parts > 0 and table.concat(parts, "  ") or "") .. ": Enter applies, Esc cancels")
 end
 
 -- Right-click: a border dot goes away (true), anything else is not ours.
@@ -1746,17 +1773,17 @@ function W.draw(px, py, pw, ph)
     gfx.rect(g.x0, g.yt, g.x1 - g.x0, g.yb - g.yt, 0)
     gfx.set(0.45, 0.9, 1, 0.85)
     for _, edge in ipairs(W.m.EDGES) do
-      local x0, y0 = W.pos(g, edge, 0, W.m.edge_value(w[edge], 0))
+      local x0, y0 = W.pos(g, edge, 0, W.m.edge_value(w[edge], 0), W.m.edge_h(w[edge], 0))
       for k = 1, 32 do
         local s1 = k / 32
-        local x1, y1 = W.pos(g, edge, s1, W.m.edge_value(w[edge], s1))
+        local x1, y1 = W.pos(g, edge, s1, W.m.edge_value(w[edge], s1), W.m.edge_h(w[edge], s1))
         gfx.line(x0, y0, x1, y1, 1)
         x0, y0 = x1, y1
       end
     end
     if not flat then                                           -- the selected points as the bend would put them
       gfx.set(1, 0.9, 0.95, 0.95)
-      local span_t, l0, span_l = w.t1 - w.t0, math.log(w.f0), math.log(w.f1) - math.log(w.f0)
+      local map = W.m.mapper(w)
       for _, ci in ipairs(lane.chans) do
         as_channel(ci, function()
           if not sel_info then return end
@@ -1766,9 +1793,8 @@ function W.draw(px, py, pw, ph)
             for f in pairs(frames) do
               if frames[f + 1] then
                 local function put(k)
-                  local fr = frq[k]
-                  local st = W.m.displacement(w, (times[k] - w.t0) / span_t, (math.log(fr) - l0) / span_l)
-                  return px + tx(times[k], pw), py + lane.off + fy(fr * 2 ^ (st / 12), lane.h)
+                  local t2, fr2 = map(times[k], frq[k])
+                  return px + tx(t2, pw), py + lane.off + fy(fr2, lane.h)
                 end
                 local ax, ay = put(f)
                 local bx, by = put(f + 1)
@@ -1782,7 +1808,7 @@ function W.draw(px, py, pw, ph)
     end
     for _, edge in ipairs(W.m.EDGES) do                         -- the dots
       for i, pt in ipairs(w[edge].pts) do
-        local x, y = W.pos(g, edge, pt.s, pt.v)
+        local x, y = W.pos(g, edge, pt.s, pt.v, pt.h)
         local corner = (i == 1 or i == #w[edge].pts)
         local hover = (W.drag and W.drag.edge == edge and W.drag.i == i) or (not W.drag and (mx - x) ^ 2 + (my - y) ^ 2 < 81)
         gfx.set(hover and 1 or 0.45, hover and 0.95 or 0.9, hover and 0.5 or 1, 1)
@@ -1793,12 +1819,17 @@ function W.draw(px, py, pw, ph)
     end
     if not flat then
       gfx.setfont(1, "Arial", 13)
-      text_at(g.x0 + 4, math.max(g.yt - 18, py + lane.off + 2), string.format("bend up to %.1f st    Enter applies   Esc cancels", W.m.max_abs(w)), 0.65, 0.95, 1)
+      local what = {}
+      if W.m.max_abs(w) > 0.005 then what[#what + 1] = string.format("up to %.1f st", W.m.max_abs(w)) end
+      if W.m.max_abs_h(w) > 0.0005 then what[#what + 1] = string.format("in time up to %.0f ms", W.m.max_abs_h(w) * 1000) end
+      text_at(g.x0 + 4, math.max(g.yt - 18, py + lane.off + 2), "bend " .. table.concat(what, ", ") .. "    Enter applies   Esc cancels", 0.65, 0.95, 1)
     end
   end
   if W.drag and W.drag.dv then
     gfx.setfont(1, "Arial", 13)
-    text_at(mx + 14, my - 22, string.format("%+.2f st", W.drag.dv), 1, 0.95, 0.6)
+    local label = string.format("%+.2f st", W.drag.dv)
+    if math.abs(W.drag.dh or 0) > 0.0004 then label = label .. string.format("  %+.0f ms", W.drag.dh * 1000) end
+    text_at(mx + 14, my - 22, label, 1, 0.95, 0.6)
   end
 end
 
@@ -2229,7 +2260,7 @@ local function draw_header(px, py, pw, ph, plain)
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 21:13"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 21:26"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)

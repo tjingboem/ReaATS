@@ -212,4 +212,134 @@ function M.plan_paste(d, pts, f0)
   return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped }
 end
 
+-- Plans moving the selected points by a map (t, f -> t', f'): a bend or a stretch of a box (lib/ats_warp.lua). Frequencies change point by
+-- point. Time is different: the points of a track sit on the frames of the file, so every run of one row is made again on the frames that
+-- lie between its new first and last time, from its points by straight lines (amplitude and frequency). A run that is stretched gets
+-- more frames, a squeezed one fewer. Like a move and a paste it never overwrites sound: a run stays in its row when the frames it now
+-- needs are silent there, else it goes to the nearest row that is silent for the whole run, else a new row. Frames before the first or
+-- after the last frame of the file are dropped. Returns nil (nothing selected) or
+--   { changes, sel (the new cells), rows_before, rows_after, count (points moved), dropped (runs that fell outside) }
+function M.plan_warp(d, sel, map)
+  local NF, P0 = d.frames, d.partials
+  local times = d.times
+  local hop = (times[NF] - times[1]) / math.max(NF - 1, 1)
+  local ny = d.sr / 2 - 1
+  local rows = {}
+  for p in pairs(sel) do rows[#rows + 1] = p end
+  table.sort(rows)
+  local runs, count = {}, 0
+  for _, p in ipairs(rows) do
+    local fl = {}
+    for f in pairs(sel[p]) do fl[#fl + 1] = f end
+    table.sort(fl)
+    local first, prev = fl[1], fl[1]
+    for i = 2, #fl + 1 do
+      local f = fl[i]
+      if f == nil or f ~= prev + 1 then
+        runs[#runs + 1] = { p = p, f0 = first, f1 = prev }
+        first = f
+      end
+      prev = f
+    end
+    count = count + #fl
+  end
+  if #runs == 0 then return nil end
+
+  -- every run: its points mapped, then made again on the frames
+  local dropped = 0
+  for _, run in ipairs(runs) do
+    local n = run.f1 - run.f0 + 1
+    local tp, ap, fp = {}, {}, {}
+    for k = 1, n do
+      local f = run.f0 + k - 1
+      local t2, fr2 = map(times[f], d.frq[run.p][f])
+      if k > 1 and t2 <= tp[k - 1] + 1e-9 then t2 = tp[k - 1] + 1e-9 end         -- (time must not go back)
+      tp[k], ap[k], fp[k] = t2, d.amp[run.p][f], clamp(fr2, 1, ny)
+    end
+    local lo = math.ceil((tp[1] - times[1]) / hop - 1e-9) + 1
+    local hi = math.floor((tp[n] - times[1]) / hop + 1e-9) + 1
+    if hi < lo then                                                              -- the run lies between two frames: the nearest one
+      lo = math.floor(((tp[1] + tp[n]) / 2 - times[1]) / hop + 0.5) + 1
+      hi = lo
+    end
+    run.cells = {}
+    local k = 1
+    for f = math.max(lo, 1), math.min(hi, NF) do
+      local tau = times[f]
+      while k < n and tp[k + 1] < tau do k = k + 1 end
+      local a, fr
+      if n == 1 then
+        a, fr = ap[1], fp[1]
+      else
+        local k2 = math.min(k + 1, n)
+        local w = (tp[k2] > tp[k]) and clamp((tau - tp[k]) / (tp[k2] - tp[k]), 0, 1) or 0
+        a, fr = ap[k] + (ap[k2] - ap[k]) * w, fp[k] + (fp[k2] - fp[k]) * w
+      end
+      run.cells[#run.cells + 1] = { f = f, amp = a, frq = fr }
+    end
+    if #run.cells == 0 then dropped = dropped + 1 end
+  end
+
+  local taken = {}
+  local function free(q, f)
+    if taken[q] and taken[q][f] then return false end
+    if q > P0 then return true end
+    if d.amp[q][f] <= 0 then return true end
+    return (sel[q] and sel[q][f]) or false                  -- a selected cell is vacated by the move
+  end
+  local function run_free(q, run)
+    for _, c in ipairs(run.cells) do if not free(q, c.f) then return false end end
+    return true
+  end
+  local function choose(run)
+    if run_free(run.p, run) then return run.p end
+    for k = 1, P0 do
+      local lo, hi = run.p - k, run.p + k
+      if hi <= P0 and run_free(hi, run) then return hi end
+      if lo >= 1 and run_free(lo, run) then return lo end
+      if lo < 1 and hi > P0 then break end
+    end
+    local q = P0 + 1
+    while not run_free(q, run) do q = q + 1 end
+    return q
+  end
+
+  local order, by_key = {}, {}
+  local function cell(q, f)
+    local key = q * (NF + 1) + f
+    local c = by_key[key]
+    if not c then
+      local oa = (q <= P0) and d.amp[q][f] or 0
+      local of_ = (q <= P0) and d.frq[q][f] or 0
+      c = { p = q, f = f, oa = oa, na = oa, of = of_, nf = of_ }
+      by_key[key] = c
+      order[#order + 1] = c
+    end
+    return c
+  end
+  for _, run in ipairs(runs) do                              -- first silence every source cell
+    for f = run.f0, run.f1 do cell(run.p, f).na = 0 end
+  end
+  local newsel, rows_after = {}, P0
+  for _, run in ipairs(runs) do                              -- then write the destinations
+    if #run.cells > 0 then
+      local q = choose(run)
+      if q > rows_after then rows_after = q end
+      taken[q] = taken[q] or {}
+      newsel[q] = newsel[q] or {}
+      for _, c in ipairs(run.cells) do
+        taken[q][c.f] = true
+        newsel[q][c.f] = true
+        local cl = cell(q, c.f)
+        cl.na, cl.nf = c.amp, c.frq
+      end
+    end
+  end
+  local changes = {}
+  for _, c in ipairs(order) do
+    if c.na ~= c.oa or c.nf ~= c.of then changes[#changes + 1] = c end
+  end
+  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped }
+end
+
 return M

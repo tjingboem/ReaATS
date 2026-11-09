@@ -72,5 +72,35 @@ check("changes: only selected points", by["2/1"] == nil and by["2/2"] == nil)
 check("a flat warp gives no changes", #warp.changes(d, { [1] = { [1] = true } }, warp.new(1, 3, 100, 800)) == 0)
 check("max_abs", near(warp.max_abs(w), 12, 1e-6))
 
+-- time: control points also hold a displacement in seconds (h)
+w = warp.new(0, 10, 100, 800)
+warp.move_edge(w, "right", 0, 2)                                     -- the right edge 2 s later: a straight stretch
+check("time: not flat", not warp.is_flat(w))
+check("time: 0 at the left, 2 s at the right, linear in time, at every height",
+      near(warp.displacement_h(w, 0, 0.5), 0) and near(warp.displacement_h(w, 1, 0.2), 2) and near(warp.displacement_h(w, 0.5, 0.9), 1) and near(warp.displacement(w, 0.5, 0.5), 0))
+check("time: the corners carry their h to the other edges", near(w.top.pts[#w.top.pts].h, 2) and near(w.bottom.pts[#w.bottom.pts].h, 2))
+local map = warp.mapper(w)
+local t2, f2 = map(5, 300)
+check("mapper: half way through: 1 s later, same frequency", near(t2, 6) and near(f2, 300))
+check("monotone: a stretch is monotone", warp.monotone(w))
+warp.move_edge(w, "right", 0, -14)                                   -- the right edge pulled to 14 s before where it was: folds time back
+check("monotone: folding time back is refused", not warp.monotone(w))
+w = warp.new(0, 10, 100, 800)
+warp.move_edge(w, "right", 3, 2)
+local t3, f3 = warp.mapper(w)(10, 800)
+check("mapper: both: the top right corner goes later and up", near(t3, 12) and near(f3, 800 * 2 ^ (3 / 12)))
+-- snapshot and restore
+w = warp.new(0, 10, 100, 800)
+local snap = warp.snapshot(w)
+warp.add_point(w, "top", 0.5); warp.move_edge(w, "top", 4, 1); w.top.bulge_h[1] = 2
+check("snapshot: changed", not warp.is_flat(w) and #w.top.pts == 3)
+warp.restore(w, snap)
+check("restore: flat again, two points", warp.is_flat(w) and #w.top.pts == 2 and #w.top.bulge_h == 1)
+-- a border dot carries h too, and its arch keeps its shape when it is cut in two
+w = warp.new(0, 10, 100, 800)
+w.top.bulge_h[1] = 4
+local h25, h50 = warp.edge_h(w.top, 0.25), warp.edge_h(w.top, 0.5)
+local ii = warp.add_point(w, "top", 0.5)
+check("add_point keeps h and its arch", ii == 2 and near(w.top.pts[2].h, h50) and near(warp.edge_h(w.top, 0.25), h25, 1e-6) and near(warp.max_abs_h(w), 4, 1e-6))
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

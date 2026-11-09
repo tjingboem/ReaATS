@@ -425,3 +425,12 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 - BUTTON NAMES (tjingboem 10 Nov 2026): "Import Sound File" (was Choose sound file...), "Import .ats File" (was Import .ats file...), "Inspect Sound File" (was Look at the sound). The Import Sound File dialog shows ONLY
   .wav .flac .aif .aiff: it uses JS_Dialog_BrowseForOpenFiles with `M.SOUND_FILTER` when JS_ReaScriptAPI is installed (the plain GetUserFileNameForRead can only offer one extension plus "all files", so without
   JS it stays as it was). Capitalisation of the page buttons follows these three: Title Case.
+- BEND BOX PHASE 2: TIME (tjingboem 10 Nov 2026: "Bend box. Moving points in time (stretch and squeeze)"): BUILT. `lib/ats_warp.lua` control points hold v (semitones) AND h (seconds); the Coons patch is applied to both
+  (`displacement`, `displacement_h`), arches `bulge` / `bulge_h`, corners sync both, `snapshot/restore`, `monotone(w)` (time must still grow left to right at 9 heights, min step 1/20 of the original) and
+  `mapper(w)` (t, f -> t', f'). `ats_edit.plan_warp(d, sel, map)` replaces the vertical-only `warp.changes` in the editor: for each RUN of consecutive selected frames of one row it maps the points, makes
+  the run again on the frames between the new first and last time (linear interpolation of amp and freq; a run between two frames -> nearest frame), silences the source cells, and places the new run like plan_move/paste
+  (own row if free, else nearest silent row, else a new row); frames outside the file are dropped (`dropped` counts runs that vanished); the FILE LENGTH NEVER CHANGES (a stretch past the end is clipped;
+  extending the file would be a later feature). Editor: handles drag in 2D (right = later; Shift fine x0.2, Ctrl one axis, both live); `W.geo.pps` pixels per second; border dots no longer slide along the edge
+  (horizontal drag is now time; delete + Ctrl+click to reposition); Alt-arch picks v or h by the dominant movement; a drag step that would break `monotone` is REVERTED (`d.good` snapshot) so the dot waits;
+  status "bend +2.50 st  +120 ms". Timing: plan_warp on all of sax.ats (4177 cells) 0.02 s. Tests: tests/test_ats_warp.lua (37), test_ats_edit.lua (45, 17 for plan_warp), mock_channels 4g.
+  STILL NOT BUILT: Z (zoom to selection).

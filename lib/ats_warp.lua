@@ -1,21 +1,22 @@
 -- ats_warp.lua -- the "rubber sheet" behind the selection box (pure maths, no REAPER calls, so it can be tested with plain Lua).
 --
 -- A box in time and frequency has four edges: bottom, top (along time) and left, right (along frequency). Every edge is a line of
--- control points; a point holds a displacement in SEMITONES (how far the points of the sheet at that place move up or down). Between two
--- control points the displacement is linear, plus an arch ("bulge", in semitones at the middle of the segment) that curves it. The corners
--- belong to two edges and always have the same value in both.
+-- control points; a point holds two displacements: v, in SEMITONES (how far the points of the sheet at that place move up or down) and
+-- h, in SECONDS (how far they move later or earlier). Between two control points both are linear, plus an arch ("bulge", "bulge_h": the
+-- extra displacement at the middle of the segment) that curves them. The corners belong to two edges and always have the same values
+-- in both.
 --
--- The displacement inside the box is a Coons patch: the four edges blended, with the corners taken out once:
+-- The displacement inside the box is a Coons patch (for v and for h alike): the four edges blended, with the corners taken out once:
 --   D(u, v) = (1-v) B(u) + v T(u) + (1-u) L(v) + u R(v)  -  [ (1-u)(1-v) c_bl + u (1-v) c_br + (1-u) v c_tl + u v c_tr ]
 -- u runs 0..1 along time, v runs 0..1 from the lowest to the highest frequency of the box (in log frequency). The edge values are
 -- reproduced exactly on the border, and inside the box the points follow smoothly. With all values 0 nothing moves.
--- (Phase 1: displacements are in frequency only; moving points in time is a later step.)
+-- A bend in time must keep the order of time (monotone): M.monotone says whether a warp does.
 
 local M = {}
 
 local function clamp(x, a, b) if x < a then return a elseif x > b then return b else return x end end
 
-local function new_edge() return { pts = { { s = 0, v = 0 }, { s = 1, v = 0 } }, bulge = { 0 } } end
+local function new_edge() return { pts = { { s = 0, v = 0, h = 0 }, { s = 1, v = 0, h = 0 } }, bulge = { 0 }, bulge_h = { 0 } } end
 
 -- A new, flat warp over the box t0..t1 (seconds), f0..f1 (Hz).
 function M.new(t0, t1, f0, f1)
@@ -24,38 +25,46 @@ end
 
 M.EDGES = { "bottom", "top", "left", "right" }
 
--- The displacement (semitones) of an edge at position s (0..1).
-function M.edge_value(edge, s)
+-- The displacement of an edge at position s (0..1): `what` is "v" (semitones) or "h" (seconds).
+local function edge_component(edge, s, what)
   local pts = edge.pts
+  local arch = (what == "h") and edge.bulge_h or edge.bulge
   s = clamp(s, 0, 1)
   for i = 1, #pts - 1 do
     local a, b = pts[i], pts[i + 1]
     if s <= b.s or i == #pts - 1 then
       local w = (b.s > a.s) and clamp((s - a.s) / (b.s - a.s), 0, 1) or 0
-      return a.v + (b.v - a.v) * w + (edge.bulge[i] or 0) * 4 * w * (1 - w)
+      return a[what] + (b[what] - a[what]) * w + (arch[i] or 0) * 4 * w * (1 - w)
     end
   end
   return 0
 end
 
-local function corners(w)
-  return w.bottom.pts[1].v, w.bottom.pts[#w.bottom.pts].v, w.top.pts[1].v, w.top.pts[#w.top.pts].v   -- bl, br, tl, tr
+function M.edge_value(edge, s) return edge_component(edge, s, "v") end
+function M.edge_h(edge, s) return edge_component(edge, s, "h") end
+
+local function corners(w, what)
+  return w.bottom.pts[1][what], w.bottom.pts[#w.bottom.pts][what], w.top.pts[1][what], w.top.pts[#w.top.pts][what]   -- bl, br, tl, tr
 end
 
--- The displacement (semitones) at u (0..1 along time) and v (0..1 up the box).
-function M.displacement(w, u, v)
+local function coons(w, u, v, what)
   u, v = clamp(u, 0, 1), clamp(v, 0, 1)
-  local bl, br, tl, tr = corners(w)
-  return (1 - v) * M.edge_value(w.bottom, u) + v * M.edge_value(w.top, u)
-       + (1 - u) * M.edge_value(w.left, v) + u * M.edge_value(w.right, v)
+  local bl, br, tl, tr = corners(w, what)
+  return (1 - v) * edge_component(w.bottom, u, what) + v * edge_component(w.top, u, what)
+       + (1 - u) * edge_component(w.left, v, what) + u * edge_component(w.right, v, what)
        - ((1 - u) * (1 - v) * bl + u * (1 - v) * br + (1 - u) * v * tl + u * v * tr)
 end
+
+-- The displacement in semitones, and in seconds, at u (0..1 along time) and v (0..1 up the box).
+function M.displacement(w, u, v) return coons(w, u, v, "v") end
+function M.displacement_h(w, u, v) return coons(w, u, v, "h") end
 
 function M.is_flat(w)
   for _, name in ipairs(M.EDGES) do
     local e = w[name]
-    for _, p in ipairs(e.pts) do if math.abs(p.v) > 1e-9 then return false end end
+    for _, p in ipairs(e.pts) do if math.abs(p.v) > 1e-9 or math.abs(p.h) > 1e-9 then return false end end
     for _, b in ipairs(e.bulge) do if math.abs(b) > 1e-9 then return false end end
+    for _, b in ipairs(e.bulge_h) do if math.abs(b) > 1e-9 then return false end end
   end
   return true
 end
@@ -71,16 +80,20 @@ local function twin(w, edge, i)
   else return first and { "bottom", #w.bottom.pts } or { "top", #w.top.pts } end
 end
 
--- Sets the displacement of point i of an edge; a corner changes in both of its edges.
-function M.set_value(w, edge, i, v)
+-- Sets the displacement of point i of an edge (v semitones, and h seconds when given); a corner changes in both of its edges.
+function M.set_value(w, edge, i, v, h)
   w[edge].pts[i].v = v
+  if h then w[edge].pts[i].h = h end
   local t = twin(w, edge, i)
-  if t then w[t[1]].pts[t[2]].v = v end
+  if t then
+    w[t[1]].pts[t[2]].v = v
+    if h then w[t[1]].pts[t[2]].h = h end
+  end
 end
 
--- Moves a whole edge up or down by dv semitones (its corners move with it).
-function M.move_edge(w, edge, dv)
-  for i, p in ipairs(w[edge].pts) do M.set_value(w, edge, i, p.v + dv) end
+-- Moves a whole edge by dv semitones and dh seconds (its corners move with it).
+function M.move_edge(w, edge, dv, dh)
+  for i, p in ipairs(w[edge].pts) do M.set_value(w, edge, i, p.v + (dv or 0), p.h + (dh or 0)) end
 end
 
 -- Moves an interior point along its edge (to position s, between its neighbours).
@@ -97,12 +110,13 @@ function M.add_point(w, edge, s)
   for i = 1, #e.pts - 1 do
     local a, b = e.pts[i], e.pts[i + 1]
     if s > a.s and s < b.s then
-      local v = M.edge_value(e, s)
-      local old = e.bulge[i] or 0
+      local v, h = M.edge_value(e, s), M.edge_h(e, s)
+      local old, old_h = e.bulge[i] or 0, e.bulge_h[i] or 0
       local frac = (s - a.s) / (b.s - a.s)
-      table.insert(e.pts, i + 1, { s = s, v = v })
-      e.bulge[i] = old * frac * frac                       -- (an arch cut in two keeps its shape: each part has the square of its length)
+      table.insert(e.pts, i + 1, { s = s, v = v, h = h })
+      e.bulge[i], e.bulge_h[i] = old * frac * frac, old_h * frac * frac           -- (an arch cut in two keeps its shape: each part has the square of its length)
       table.insert(e.bulge, i + 1, old * (1 - frac) * (1 - frac))
+      table.insert(e.bulge_h, i + 1, old_h * (1 - frac) * (1 - frac))
       return i + 1
     end
   end
@@ -114,12 +128,13 @@ function M.remove_point(w, edge, i)
   local e = w[edge]
   if i <= 1 or i >= #e.pts then return false end
   table.remove(e.pts, i)
-  e.bulge[i - 1] = 0
+  e.bulge[i - 1], e.bulge_h[i - 1] = 0, 0
   table.remove(e.bulge, i)
+  table.remove(e.bulge_h, i)
   return true
 end
 
--- The largest displacement on the border (for a status message), in semitones.
+-- The largest displacement on the border: semitones (max_abs) and seconds (max_abs_h), for a status message.
 function M.max_abs(w)
   local m = 0
   for _, name in ipairs(M.EDGES) do
@@ -128,8 +143,58 @@ function M.max_abs(w)
   return m
 end
 
--- The changes that apply the warp to the selected points of one channel: sel[p] = { [frame] = true }.
--- Returns a list of { p, f, oa, na, of, nf } (the amplitude stays), and nothing for points that do not move.
+function M.max_abs_h(w)
+  local m = 0
+  for _, name in ipairs(M.EDGES) do
+    for k = 0, 20 do m = math.max(m, math.abs(M.edge_h(w[name], k / 20))) end
+  end
+  return m
+end
+
+-- A copy of everything that can change in a warp (the control points and arches), and a way back to it.
+function M.snapshot(w)
+  local snap = {}
+  for _, name in ipairs(M.EDGES) do
+    local e, c = w[name], { pts = {}, bulge = {}, bulge_h = {} }
+    for i, p in ipairs(e.pts) do c.pts[i] = { s = p.s, v = p.v, h = p.h } end
+    for i, b in ipairs(e.bulge) do c.bulge[i] = b end
+    for i, b in ipairs(e.bulge_h) do c.bulge_h[i] = b end
+    snap[name] = c
+  end
+  return snap
+end
+
+function M.restore(w, snap)
+  for _, name in ipairs(M.EDGES) do
+    local c = snap[name]
+    w[name] = { pts = {}, bulge = {}, bulge_h = {} }
+    for i, p in ipairs(c.pts) do w[name].pts[i] = { s = p.s, v = p.v, h = p.h } end
+    for i, b in ipairs(c.bulge) do w[name].bulge[i] = b end
+    for i, b in ipairs(c.bulge_h) do w[name].bulge_h[i] = b end
+  end
+end
+
+-- True when the warp keeps the order of time: at every height of the box the time of a point still grows from left to right (by at
+-- least a twentieth of the spacing it had), so that a track cannot fold back on itself.
+function M.monotone(w)
+  local span = w.t1 - w.t0
+  if span <= 0 then return true end
+  local steps = 64
+  for vi = 0, 8 do
+    local v = vi / 8
+    local prev
+    for ui = 0, steps do
+      local u = ui / steps
+      local t = u * span + M.displacement_h(w, u, v)
+      if prev and t - prev < 0.05 * span / steps then return false end
+      prev = t
+    end
+  end
+  return true
+end
+
+-- The changes that apply the warp to the selected points of one channel when only frequencies move (no time displacement): sel[p] = { [frame] = true }.
+-- Returns a list of { p, f, oa, na, of, nf } (the amplitude stays). (For a warp with time displacement use ats_edit.plan_warp.)
 function M.changes(d, sel, w)
   local out = {}
   local l0, l1 = math.log(w.f0), math.log(w.f1)
@@ -148,6 +213,17 @@ function M.changes(d, sel, w)
     end
   end
   return out
+end
+
+-- A function t, fr -> t', fr' that moves a point of the sheet to where the warp puts it (for ats_edit.plan_warp and for drawing).
+function M.mapper(w)
+  local span_t = w.t1 - w.t0
+  local l0, span_l = math.log(w.f0), math.log(w.f1) - math.log(w.f0)
+  return function(t, fr)
+    local u = (span_t > 0) and (t - w.t0) / span_t or 0
+    local v = (span_l > 0 and fr > 0) and (math.log(fr) - l0) / span_l or 0
+    return t + M.displacement_h(w, u, v), fr * 2 ^ (M.displacement(w, u, v) / 12)
+  end
 end
 
 return M
