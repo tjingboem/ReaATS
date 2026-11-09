@@ -71,9 +71,20 @@ check("zero frequency is bridged", finite)
 -- 6. noise: level follows the formula and stays inside its band
 d = make(1, 101, true)
 for f = 1, 101 do d.noise[10][f] = 0.01 end                       -- band 10 = 920..1080 Hz
-s = synth.render(d, { sines = false })
+s = synth.render(d, { sines = false, noise_shape = "classic" })
 local expect = synth.NOISE_GAIN * math.sqrt(0.01 / (1765 * synth.NOISE_VARIANCE))
-check("noise level", math.abs(rms(s, 100, #s - 100) / expect - 1) < 0.05, rms(s) .. " vs " .. expect)
+check("noise level (classic: as Csound's ATS synthesis)", math.abs(rms(s, 100, #s - 100) / expect - 1) < 0.05, rms(s) .. " vs " .. expect)
+s = synth.render(d, { sines = false })
+expect = synth.NOISE_GAIN_CORRECTED * math.sqrt(0.01 / (1765 * synth.NOISE_VARIANCE))
+check("noise level (corrected, the default: one band keeps its own power)", math.abs(rms(s, 100, #s - 100) / expect - 1) < 0.05, rms(s) .. " vs " .. expect)
+-- the bandwidth correction moves power between bands but keeps the energy of the frame: with equal values in all bands the total power
+-- is only changed by the calibration of the gain
+local dall = make(1, 101, true)
+for b = 1, 25 do for f = 1, 101 do dall.noise[b][f] = 0.01 end end
+local sc, scl = synth.render(dall, { sines = false }), synth.render(dall, { sines = false, noise_shape = "classic" })
+local ratio = rms(sc, 100, #sc - 100) / rms(scl, 100, #scl - 100)
+check("the correction keeps the energy of a frame (ratio " .. string.format("%.3f", ratio) .. " vs the gain ratio " .. string.format("%.3f", synth.NOISE_GAIN_CORRECTED / synth.NOISE_GAIN) .. ")",
+      math.abs(ratio / (synth.NOISE_GAIN_CORRECTED / synth.NOISE_GAIN) - 1) < 0.08)
 local function mean_power(f0, f1, step)           -- averaged over many bins: one bin of noise fluctuates a lot
   local sum, n = 0, 0
   for f = f0, f1, step do sum = sum + power_at(s, f, 44100); n = n + 1 end

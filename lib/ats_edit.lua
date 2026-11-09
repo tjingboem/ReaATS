@@ -132,4 +132,84 @@ function M.plan_move(d, sel, df, ratio)
   return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, df = df, count = count }
 end
 
+-- Plans pasting copied points: `pts` is a list of { p = source row, df = frames from the first copied frame, amp, frq } and the
+-- copy starts at frame f0 of d. Like a move, nothing is overwritten: every contiguous run of one source row goes back in its own
+-- row when the cells there are silent, otherwise in the nearest row that is silent for the whole run, otherwise in a new row.
+-- Points that would land outside the file are dropped. Returns { changes, sel (the pasted cells), rows_before, rows_after,
+-- count, dropped }; nil when nothing is left to paste.
+function M.plan_paste(d, pts, f0)
+  local NF, P0 = d.frames, d.partials
+  local ny = d.sr / 2 - 1
+  local by_row, dropped, count = {}, 0, 0
+  for _, pt in ipairs(pts) do
+    local f = f0 + pt.df
+    if f >= 1 and f <= NF then
+      local r = by_row[pt.p]
+      if not r then r = {}; by_row[pt.p] = r end
+      r[#r + 1] = { f = f, amp = pt.amp, frq = pt.frq }
+      count = count + 1
+    else
+      dropped = dropped + 1
+    end
+  end
+  if count == 0 then return nil end
+  local rows = {}
+  for p in pairs(by_row) do rows[#rows + 1] = p end
+  table.sort(rows)
+  local runs = {}
+  for _, p in ipairs(rows) do
+    local cells = by_row[p]
+    table.sort(cells, function(a, b) return a.f < b.f end)
+    local run = { p = p, cells = { cells[1] } }
+    for i = 2, #cells do
+      if cells[i].f == cells[i - 1].f + 1 then
+        run.cells[#run.cells + 1] = cells[i]
+      else
+        runs[#runs + 1] = run
+        run = { p = p, cells = { cells[i] } }
+      end
+    end
+    runs[#runs + 1] = run
+  end
+
+  local taken = {}
+  local function free(q, f)
+    if taken[q] and taken[q][f] then return false end
+    return q > P0 or d.amp[q][f] <= 0
+  end
+  local function run_free(q, run)
+    for _, c in ipairs(run.cells) do if not free(q, c.f) then return false end end
+    return true
+  end
+  local function choose(run)
+    local start = math.min(run.p, P0)                                 -- (a row that the file does not have: start at its last row)
+    if start >= 1 and run_free(start, run) then return start end
+    for k = 1, P0 do
+      local lo, hi = start - k, start + k
+      if hi <= P0 and run_free(hi, run) then return hi end
+      if lo >= 1 and run_free(lo, run) then return lo end
+      if lo < 1 and hi > P0 then break end
+    end
+    local q = P0 + 1
+    while not run_free(q, run) do q = q + 1 end
+    return q
+  end
+
+  local changes, newsel, rows_after = {}, {}, P0
+  for _, run in ipairs(runs) do
+    local q = choose(run)
+    if q > rows_after then rows_after = q end
+    taken[q] = taken[q] or {}
+    newsel[q] = newsel[q] or {}
+    for _, c in ipairs(run.cells) do
+      taken[q][c.f] = true
+      newsel[q][c.f] = true
+      changes[#changes + 1] = { p = q, f = c.f,
+                                oa = (q <= P0) and d.amp[q][c.f] or 0, na = c.amp,
+                                of = (q <= P0) and d.frq[q][c.f] or 0, nf = clamp(c.frq, 1, ny) }
+    end
+  end
+  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped }
+end
+
 return M

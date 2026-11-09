@@ -34,6 +34,7 @@ local previews = {}
 local clock_skew = 0
 local chosen_save, mb_answer = nil, 6
 local break_py = false
+exit_fns = {}
 local open_choice = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
@@ -55,6 +56,12 @@ reaper = {
   GetUserFileNameForRead = function() if open_choice then return true, open_choice end return false, "" end,
   JS_Dialog_BrowseForSaveFile = function() if chosen_save then return 1, chosen_save end return 0, "" end,
   MB = function() return mb_answer end,
+  atexit = function(fn) exit_fns[#exit_fns + 1] = fn end,
+  EnumerateFiles = function(dir, i)
+    local list = {}
+    local ph = io.popen('ls "' .. dir .. '" 2>/dev/null'); for l in ph:lines() do list[#list + 1] = l end; ph:close()
+    return list[i + 1]
+  end,
   ExecProcess = function(cmd, timeout)
     if timeout == -1 then                                          -- in the background, as in REAPER
       if break_py and cmd:find("reaats_synth", 1, true) then       -- a synthesis program that fails: it answers with an error
@@ -119,6 +126,22 @@ local function lanes_now() blits = {}; strings = {}; frame(); return blits end
 local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame()
   gfx.mouse_x, gfx.mouse_y = x1, y1; frame(); gfx.mouse_cap = 0; frame(); frame()
+end
+
+-- 0. temporary files that an earlier editor left behind (old by the time in their names) are removed at the start, recent ones are not
+do
+  local tmp = assert(os.getenv("TMPDIR"))
+  local old = tmp .. "/reaats_audition_1100000000_111111_1.wav"
+  local old_job = tmp .. "/reaats_1100000000_111111_s2_ch1_edits.bin"
+  local fresh = string.format("%s/reaats_audition_%d_222222_1.wav", tmp, os.time())
+  local other = tmp .. "/reaats_not_ours.txt"
+  for _, f in ipairs({ old, old_job, fresh, other }) do local fh = io.open(f, "w"); fh:write("x"); fh:close() end
+  start(scratch .. "mc_ch2.ats")
+  local function exists(f) local fh = io.open(f, "r"); if fh then fh:close(); return true end return false end
+  assert(not exists(old) and not exists(old_job), "old temporary files are removed at the start")
+  assert(exists(fresh) and exists(other), "recent files and other files are left alone")
+  os.remove(fresh); os.remove(other)
+  print("old temporary files are removed at the start")
 end
 
 -- 1. opening one channel file opens the whole set; every channel is on, in a stack
@@ -210,20 +233,35 @@ assert(saw("3 channels mixed down to stereo"), "the status says so: " .. tostrin
 assert(saw("Python synthesis"), "the sound was made by the Python program: " .. tostring(saw("auditioning")))
 print("AUDITION: 3 channels mixed down to a stereo sound of " .. info.frames .. " samples")
 
--- 4b. how much AUDITION plays (button and L), and the fallback when the Python program fails
+-- 4a. when the editor closes, its sounds are removed
 do
-  press(108); strings = {}; frame()
-  assert(saw("as much as the window shows"), "L: the window length: " .. tostring(saw("AUDITION")))
-  assert(saw("^plays: WINDOW$"), "the button says so")
+  local wavs = {}
+  for _, w in ipairs(previews) do wavs[#wavs + 1] = w end
+  local function exists(f) local fh = io.open(f, "r"); if fh then fh:close(); return true end return false end
+  local before = 0
+  for _, w in ipairs(wavs) do if exists(w) then before = before + 1 end end
+  assert(before > 0, "there are sounds to remove")
+  for _, fn in ipairs(exit_fns) do fn() end
+  local last = previews[#previews]
+  assert(not exists(last), "the last sound is removed when the editor closes")
+  print("sounds are removed when the editor closes")
+end
+
+-- 4b. a right-click shows the whole file, and the fallback when the Python program fails
+do
   press(102)
-  for _ = 1, 4 do gfx.mouse_wheel = 120; strings = {}; frame() end                 -- zoom in on time: a short window
+  for _ = 1, 4 do gfx.mouse_wheel = 120; strings = {}; frame() end                 -- zoom in on time
   gfx.mouse_x, gfx.mouse_y = 5, 5
   local n_prev = #previews
-  press(97)
-  until_done(function() return #previews > n_prev end)
-  local info = wavinfo.read(previews[#previews])
-  assert(info.frames < 60000, "only the window is played: " .. info.frames .. " samples")
-  press(108); press(108); press(108)                                                 -- 5 s, 15 s, END
+  -- a right-click without a drag shows the whole file again (the view was zoomed in above); a right-drag pans instead
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 500, 250, 2; frame(); gfx.mouse_cap = 0; strings = {}; frame()
+  assert(saw("whole file in view"), "right-click: the whole file: " .. tostring(saw("view") or saw("whole")))
+  for _ = 1, 4 do gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 500, 250, 120; frame() end
+  clock_skew = clock_skew + 30                                                       -- (the old status message has gone)
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 500, 250, 2; frame(); gfx.mouse_x = 600; frame(); gfx.mouse_cap = 0; strings = {}; frame()
+  assert(not saw("whole file in view"), "a right-drag pans, it does not fit the view")
+  press(102)
+  gfx.mouse_x, gfx.mouse_y = 5, 5
   do local l1 = lanes_now()[1]; press(102); sweep(65, 105, 1040, 100 + l1.h - 5); press(6579564) end          -- (an edit: else the sound made before is used)
   break_py = true
   n_prev = #previews
@@ -231,14 +269,12 @@ do
   until_done(function() return #previews > n_prev end)
   assert(saw("Lua synthesis") and saw("Python failed with: boom"), "the failure is told and the built-in synthesis took over: " .. tostring(saw("auditioning")))
   break_py = false
-  print("AUDITION length (button/L) and the fall back on Lua when the Python program fails")
+  print("right-click shows the whole file; the fall back on Lua when the Python program fails")
 end
 
 -- 4c. nothing changed since the sound was made: AUDITION plays it again, or starts in the middle of it, without making it again
 do
   press(102)
-  press(108); press(108)                                                           -- length back to END (it was WINDOW, then 5 s, 15 s)
-  press(108); press(108); strings = {}; frame()
   local function audition_now()                                                    -- plays at once when it can; else waits for the sound
     local n0 = #previews
     press(97)
@@ -277,6 +313,106 @@ do
   local w4 = audition_now()
   assert(not saw("already made"), "undo is a change too")
   print("AUDITION replays the sound, or starts in its middle, while nothing has changed")
+end
+
+-- 4d. copy, cut and paste: the selected points of every green channel, pasted at the playhead into the same channels, one undo step
+do
+  press(102)
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+  local function ruler2(frac) gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * frac, 100 + 486 + 6, 1; frame(); gfx.mouse_cap = 0; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5 end
+  strings = {}; frame()
+  while saw("^%d%*$") do press(26, 4); strings = {}; frame() end                    -- start without unsaved changes (undo what the tests above left)
+  press(22); assert(saw("nothing copied yet"), "paste with an empty clipboard says so: " .. tostring(saw("copied") or saw("paste")))
+  local lane1 = lanes_now()[1]
+  sweep(65, 105, 600, 100 + lane1.h - 5)                                              -- the first half of the sound, all three channels
+  strings = {}; frame()
+  assert(saw("%(3 channels%)"), "three channels selected")
+  press(3); strings = {}; frame()
+  assert(saw("copied %d+ points from 3 channels"), "Ctrl+C: " .. tostring(saw("copied") or saw("select")))
+  assert(not saw("^%d%*$"), "copying changes nothing")
+  ruler2(0.4)
+  press(22); strings = {}; frame()
+  assert(saw("pasted %d+ points at [0-9.]+ s in 3 channels %(they are selected now%)"), "Ctrl+V: " .. tostring(saw("pasted") or saw("paste")))
+  assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "every channel has the paste")
+  assert(saw("%(3 channels%)"), "the pasted points are selected, in all three channels")
+  press(26, 4); strings = {}; frame()
+  assert(not saw("^%d%*$"), "ONE Ctrl+Z takes the paste back from every channel")
+  press(25, 4); strings = {}; frame()
+  assert(saw("^1%*$") and saw("^3%*$"), "and Ctrl+Y does it again")
+  press(26, 4)
+  -- a channel that is red does not get its part
+  click(led(2)); strings = {}; frame()
+  press(22); strings = {}; frame()
+  assert(saw("pasted %d+ points .* in 2 channels"), "channel 2 is red: the paste goes to 1 and 3 only: " .. tostring(saw("pasted")))
+  assert(saw("^1%*$") and saw("^3%*$") and not saw("^2%*$"), "stars on 1 and 3")
+  press(26, 4); click(led(2))
+  -- cut = copy + delete; the clipboard can be pasted somewhere else
+  sweep(65, 105, 300, 100 + lane1.h - 5)
+  press(24); strings = {}; frame()
+  assert(saw("^1%*$"), "Ctrl+X deletes what it copied")
+  ruler2(0.8)
+  press(22); strings = {}; frame()
+  assert(saw("pasted"), "and the cut points can be pasted: " .. tostring(saw("pasted") or saw("paste")))
+  press(26, 4); press(26, 4)
+  print("copy, cut and paste work across the channels, in one undo step")
+end
+
+-- 4e. Alt+drag draws a lasso; the points inside the loop are selected, in every green channel; Shift adds
+do
+  press(102)
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  local function selected_count() strings = {}; frame(); local t = saw("^selected: (%d+) points"); return t and tonumber(t:match("^selected: (%d+)")) or 0, t end
+  sweep(65, y_top, 600, y_bot)
+  local n_box, t_box = selected_count()
+  assert(n_box > 0 and t_box:find("3 channels"), "the box selected something in 3 channels: " .. tostring(t_box))
+  press(27)
+  assert(selected_count() == 0, "cleared")
+  local function lasso_through(points, cap)
+    gfx.mouse_cap = cap; gfx.mouse_x, gfx.mouse_y = points[1][1], points[1][2]; frame()
+    for i = 2, #points do gfx.mouse_x, gfx.mouse_y = points[i][1], points[i][2]; frame() end
+    gfx.mouse_cap = 0; frame(); frame(); gfx.mouse_x, gfx.mouse_y = 5, 5
+  end
+  -- the same rectangle, drawn as a loop with Alt held: the same points
+  lasso_through({ { 65, y_top }, { 330, y_top }, { 600, y_top }, { 600, (y_top + y_bot) / 2 }, { 600, y_bot }, { 330, y_bot }, { 65, y_bot }, { 65, (y_top + y_bot) / 2 } }, 1 + 16)
+  local n_lasso, t_lasso = selected_count()
+  assert(n_lasso == n_box and t_lasso:find("3 channels"), "the lasso round the same rectangle selects the same: " .. n_lasso .. " against " .. n_box)
+  -- a triangle holds fewer points than the rectangle round it
+  press(27)
+  lasso_through({ { 65, y_bot }, { 332, y_top }, { 600, y_bot } }, 1 + 16)
+  local n_tri = selected_count()
+  assert(n_tri > 0 and n_tri < n_box, "a triangle selects part of the rectangle: " .. n_tri .. " of " .. n_box)
+  -- Shift+Alt adds a second loop to the first
+  press(27)
+  lasso_through({ { 65, y_top }, { 200, y_top }, { 200, y_bot }, { 65, y_bot } }, 1 + 16)
+  local n_a = selected_count()
+  lasso_through({ { 300, y_top }, { 450, y_top }, { 450, y_bot }, { 300, y_bot } }, 1 + 16 + 8)
+  local n_ab = selected_count()
+  assert(n_a > 0 and n_ab > n_a, "Shift+Alt adds: " .. n_a .. " then " .. n_ab)
+  press(27)
+  -- a plain Alt+click clears (like a click on empty space)
+  print("Alt+drag lasso selects the points inside the loop")
+end
+
+-- 4f. the playhead: the "|<" button shows where it is when it is not at the start, and Home or the button put it back at 0
+do
+  local function ruler3(frac) gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * frac, 100 + 486 + 6, 1; frame(); gfx.mouse_cap = 0; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5 end
+  press(102)
+  ruler3(0.6); strings = {}; frame()
+  assert(saw("^|< [%d%.]+ s$"), "the button shows the playhead when it is not at the start: " .. tostring(saw("|<")))
+  clock_skew = clock_skew + 30
+  press(1752132965); strings = {}; frame()
+  assert(saw("^|< start$") and saw("playhead at the start"), "Home puts the playhead at the start: " .. tostring(saw("|<")))
+  ruler3(0.6); strings = {}; frame()
+  assert(saw("^|< [%d%.]+ s$"), "away again")
+  click(835, 40); strings = {}; frame()
+  assert(saw("^|< start$"), "a click on the button puts it back too: " .. tostring(saw("|<")))
+  ruler3(0.3)
+  press(6647396); strings = {}; frame()
+  assert(saw("playhead at the end"), "End puts it at the end")
+  press(1752132965)
+  print("the playhead: shown on the |< button, Home and the button go to the start")
 end
 
 -- 5. PRINT makes a multichannel item and the track gets room for it

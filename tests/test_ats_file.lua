@@ -112,5 +112,22 @@ do
   check("created phases follow the rule", rule_error(n3, 1, f0, f1) < 1e-9)
   check("created phases start at 0", math.abs(n3.pha[1][f0]) < 1e-12)
 end
+-- header(): the header and the size, without loading the data
+do
+  local h = assert(ats.header("examples/sax.ats"))
+  local d = assert(ats.load("examples/sax.ats"))
+  check("header: same numbers as load", h.partials == d.partials and h.frames == d.frames and h.type == d.type and h.sr == d.sr
+        and h.dur == d.dur and h.has_noise == d.has_noise and h.has_phase == d.has_phase)
+  local fh = io.open("examples/sax.ats", "rb"); local size = #fh:read("a"); fh:close()
+  check("header: file size", h.bytes == size)
+  local cut = os.tmpname()
+  local fh2 = io.open("examples/sax.ats", "rb"); local all = fh2:read("a"); fh2:close()
+  local out = io.open(cut, "wb"); out:write(all:sub(1, #all - 100)); out:close()
+  local hh, err = ats.header(cut)
+  check("header: a file that is too short is refused", hh == nil and err:find("smaller"), err)
+  check("load: and so is loading it", ats.load(cut) == nil)
+  os.remove(cut)
+  check("header: a missing file", ats.header("/nonexistent.ats") == nil)
+end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

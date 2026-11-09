@@ -96,6 +96,68 @@ check("cache: and the edited sound is different from the original", math.abs(rms
 os.remove(edited)
 os.execute("rm -rf " .. cache)
 
+-- channels in parallel (one process each) give exactly the sound of one after the other
+do
+  local a1, a3 = scratch .. "/ps_j1.wav", scratch .. "/ps_j3.wav"
+  run("--jobs 1 --out " .. a1 .. " " .. table.concat(three, " "))
+  run("--jobs 3 --out " .. a3 .. " " .. table.concat(three, " "))
+  local f1 = io.open(a1, "rb"); local d1 = f1:read("a"); f1:close()
+  local f3 = io.open(a3, "rb"); local d3 = f3:read("a"); f3:close()
+  check("parallel: the same file as one after the other", d1 == d3 and #d1 > 1000)
+  local r = read_wav(a3)
+  check("parallel: three channels that differ (each has its own noise)", #r == 3 and corr(r[1], r[2]) < 0.9999)
+  local msg2 = run("--jobs 2 --out " .. a3 .. " " .. sax_path .. " " .. scratch .. "/does_not_exist.ats")
+  check("parallel: an error in one channel is reported", msg2:find("ERROR"), msg2)
+  os.remove(a1); os.remove(a3)
+end
+
+-- edits not yet in the file: the program reads the file and applies the edited cells (no copy of the whole file is written)
+do
+  local ed = assert(ats.load("examples/sax.ats"))
+  local cells = {}
+  for f = 1, ed.frames do ed.amp[3][f] = 0; cells[#cells + 1] = { 3, f }; end
+  for f = 20, 90 do ed.frq[7][f] = ed.frq[7][f] * 1.5; cells[#cells + 1] = { 7, f } end       -- partial 7 up a fifth, frames 20-90
+  local full_path = scratch .. "/ps_full_" .. math.random(100000, 999999) .. ".ats"
+  assert(ats.save(full_path, ed, { phase = false }))
+  local ep = scratch .. "/ps_edits_" .. math.random(100000, 999999) .. ".bin"
+  local fh = io.open(ep, "wb")
+  for _, c in ipairs(cells) do fh:write(string.pack("<dddd", c[1], c[2], ed.amp[c[1]][c[2]], ed.frq[c[1]][c[2]])) end
+  fh:close()
+  local a, b = scratch .. "/ps_ed_a.wav", scratch .. "/ps_ed_b.wav"
+  run("--out " .. a .. " " .. full_path)                                       -- the whole edited data written to a file
+  run("--out " .. b .. " --edits " .. ep .. " " .. sax_path)                     -- the original file plus the edits
+  local fa = io.open(a, "rb"); local da = fa:read("a"); fa:close()
+  local fb = io.open(b, "rb"); local db = fb:read("a"); fb:close()
+  check("edits: the original file plus the edits sounds exactly like the edited data written out", da == db and #da > 1000)
+  local plain = scratch .. "/ps_ed_c.wav"
+  run("--out " .. plain .. " " .. sax_path)
+  local fc = io.open(plain, "rb"); local dc = fc:read("a"); fc:close()
+  check("edits: and differs from the original", dc ~= db)
+  local m2 = run("--out " .. a .. " --edits " .. ep .. " --edits - " .. sax_path)
+  check("edits: --edits must be given for every file", m2:find("ERROR"), m2)
+  -- edits that ADD ROWS (a paste or a move into rows the file does not have): the program makes them too
+  local grown = assert(ats.load("examples/sax.ats"))
+  local extra, cells2 = grown.partials + 1, {}
+  local ed2 = dofile("lib/ats_edit.lua")
+  ed2.add_rows(grown, 2)
+  for f = 30, 60 do grown.amp[extra][f] = 0.2; grown.frq[extra][f] = 880 end
+  for f = 30, 60 do grown.amp[extra + 1][f] = 0.1; grown.frq[extra + 1][f] = 1320 end
+  local full2 = scratch .. "/ps_rows_" .. math.random(100000, 999999) .. ".ats"
+  assert(ats.save(full2, grown, { phase = false }))
+  local ep2 = scratch .. "/ps_rowedits_" .. math.random(100000, 999999) .. ".bin"
+  local fh2 = io.open(ep2, "wb")
+  for r = extra, extra + 1 do for f = 30, 60 do fh2:write(string.pack("<dddd", r, f, grown.amp[r][f], grown.frq[r][f])) end end
+  fh2:close()
+  local ra, rb = scratch .. "/ps_ra.wav", scratch .. "/ps_rb.wav"
+  run("--no-noise --out " .. ra .. " " .. full2)
+  run("--no-noise --out " .. rb .. " --edits " .. ep2 .. " " .. sax_path)
+  local fa2 = io.open(ra, "rb"); local da2 = fa2:read("a"); fa2:close()
+  local fb2 = io.open(rb, "rb"); local db2 = fb2:read("a"); fb2:close()
+  check("edits: rows that the file does not have are made from the edits", da2 == db2 and #da2 > 1000)
+  for _, f in ipairs({ full2, ep2, ra, rb }) do os.remove(f) end
+  for _, f in ipairs({ full_path, ep, a, b, plain }) do os.remove(f) end
+end
+
 -- errors are told, not crashes
 local msg = run("--out " .. out .. " " .. scratch .. "/does_not_exist.ats")
 check("a missing file is reported", msg:find("ERROR"), msg)
@@ -135,6 +197,14 @@ check("job: the WAV exists", reaper.file_exists(o.wav))
 check("job: its files are gone", not reaper.file_exists(scratch .. "/reaats_" .. o.id .. "_synth_result.txt")
   and not reaper.file_exists(scratch .. "/reaats_" .. o.id .. "_synth_result.txt.started"))
 os.remove(o.wav)
+
+-- three channels as one background job (they are made in parallel): progress, the answer
+do
+  local j, oo = start({ files = { sax_path, sax_path, sax_path }, sines = true, noise = true })
+  check("job with 3 channels: finishes", wait(j))
+  check("job with 3 channels: answer", j.nchan == 3 and not j.error, tostring(j.error))
+  os.remove(oo.wav)
+end
 
 -- temp .ats files are removed when the job ends
 local tmp_ats = scratch .. "/ps_temp_" .. math.random(100000, 999999) .. ".ats"

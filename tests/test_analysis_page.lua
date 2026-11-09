@@ -25,7 +25,7 @@ for key, f in pairs(page.FIELDS) do
     check("the engine has " .. flag, help:find(flag, 1, true) ~= nil, key)
   end
 end
-check("checked every flag", flags == 25, flags)
+check("checked every flag", flags == 26, flags)
 for _, wt in ipairs(page.WINDOW_TYPES) do check("engine knows window type " .. wt, help:find(wt, 1, true) ~= nil, wt) end
 
 -- arguments
@@ -115,5 +115,9 @@ check("help: numpy", page.python_help_text("numpy", "Python 3.12.3"):find("does 
 check("help: old", page.python_help_text("old", "Python 3.6.1"):find("too old", 1, true) ~= nil)
 check("help mentions the minimum version", t1:find("3.8", 1, true) ~= nil)
 
+check("clock: under a minute shows nothing", page.clock(59.2) == "" and page.clock(2.17) == "")
+check("clock: 536 s is 8:56", page.clock(536.4) == "8:56")
+check("clock: rounds to the second, 59.6 s is 1:00", page.clock(59.6) == "1:00")
+check("clock: an hour and more", page.clock(3725) == "1:02:05")
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

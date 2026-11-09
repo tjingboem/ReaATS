@@ -49,6 +49,7 @@ def read_ats(path):
     d["times"] = body[:, 0]
     d["amp"] = body[:, 1:1 + per_partial * P:per_partial]
     d["frq"] = body[:, 2:2 + per_partial * P:per_partial]
+    d["noise"] = body[:, 1 + per_partial * P:] if T in (3, 4) else None
     return d
 
 
@@ -158,7 +159,7 @@ class Engine(unittest.TestCase):
         if not os.path.exists(SAX_WAV):
             self.skipTest("the Csound manual example sax file is not on this machine")
         out = os.path.join(self.dir, "sax.ats")
-        r = run_cli(SAX_WAV, out, "--lowest-frequency", 100)
+        r = run_cli(SAX_WAV, out, "--lowest-frequency", 100, "--no-pack-rows")      # (sharing rows reorders them)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(read_bytes(out), read_bytes(os.path.join(ROOT, "examples", "sax.ats")),
                          "must be byte-identical to examples/sax.ats (made with pyatsyn 1.0.0, soundfile and all)")
@@ -317,7 +318,7 @@ class Engine(unittest.TestCase):
         while proc.poll() is None and time.time() - t0 < 90:
             try:
                 parts = read_bytes(res + ".started").decode().split()
-                if len(parts) == 2:
+                if len(parts) >= 2:                                     # progress, time, and the words for the step
                     stamps.append(float(parts[1]))
             except (OSError, ValueError):
                 pass
@@ -437,6 +438,63 @@ class Engine(unittest.TestCase):
         self.assertEqual(read_bytes(os.path.join(self.dir, "long.ats")), read_bytes(ref), "a too long duration gives the whole sound")
         self.assertEqual(read_bytes(os.path.join(self.dir, "few.ats")), read_bytes(ref), "a few samples too long give the whole sound")
         self.assertAlmostEqual(read_ats(os.path.join(self.dir, "start.ats"))["dur"], 1.5, delta=0.01)
+
+    def test_a_length_that_is_not_exact_in_floating_point_analyses(self):
+        # 44109 samples at 44100 Hz: dur = samples / rate, and int(dur * rate) is 44108. The synthesis of the residual was one
+        # sample short and the analysis failed with "operands could not be broadcast together" (seen on a 536 s stereo file,
+        # 25750302 samples at 48000 Hz: the same thing). Every length from 44100 to 44300 must work.
+        self.assertNotEqual(int(44109 / 44100 * 44100), 44109, "this length is a bad case for int()")
+        for n in (44109, 44110, 44127):
+            t = np.arange(n) / 44100.0
+            w = self.wav("odd%d.wav" % n, [0.5 * np.sin(2 * np.pi * 440 * t)])
+            out = os.path.join(self.dir, "odd%d.ats" % n)
+            r = run_cli(w, out, "--lowest-frequency", 100)
+            self.assertEqual(r.returncode, 0, "%d samples: %s" % (n, r.stderr))
+            self.assertAlmostEqual(strongest_frequency(read_ats(out)), 440, delta=3)
+
+    def test_sharing_rows_gives_the_same_sound_in_a_much_smaller_file(self):
+        if not os.path.exists(SAX_WAV):
+            self.skipTest("the Csound manual example sax file is not on this machine")
+        packed, plain = os.path.join(self.dir, "p.ats"), os.path.join(self.dir, "n.ats")
+        self.assertEqual(run_cli(SAX_WAV, packed, "--lowest-frequency", 100).returncode, 0)
+        self.assertEqual(run_cli(SAX_WAV, plain, "--lowest-frequency", 100, "--no-pack-rows").returncode, 0)
+        a, b = read_ats(packed), read_ats(plain)
+        self.assertLess(a["partials"], b["partials"], "tracks that do not overlap must share rows")
+        self.assertEqual(a["frames"], b["frames"])
+        # the same data, row by row regrouped: the amplitude and the noise add up the same, and no row holds two tracks at once
+        self.assertAlmostEqual(float(np.sum(a["amp"])), float(np.sum(b["amp"])), places=9)
+        np.testing.assert_allclose(a["noise"], b["noise"], rtol=1e-9, atol=1e-12)
+        self.assertEqual(int(np.count_nonzero(a["amp"])), int(np.count_nonzero(b["amp"])))
+        # the sound itself (the phase-exact synthesis of the ATS format) is identical
+        from pyatsyn.ats_io import ats_load
+        from pyatsyn.ats_synth import synth
+        sa, sb = synth(ats_load(packed), noise_pct=0.0), synth(ats_load(plain), noise_pct=0.0)
+        self.assertEqual(len(sa), len(sb))
+        self.assertLess(float(np.max(np.abs(sa - sb))), 1e-9)
+
+    def test_the_rows_hold_one_track_at_a_time_with_a_silent_frame_between(self):
+        from pyatsyn.atsa.tracker import pack_track_rows
+
+        class Pk:
+            def __init__(self, track):
+                self.track = track
+        # track 0: frames 0-3, track 1: frames 2-6 (overlaps 0), track 2: frames 5-8 (starts 2 after 0's end: may share row 0),
+        # track 3: frames 4-5 (starts 1 after track 0's end: must NOT share row 0)
+        spans = {0: (0, 3), 1: (2, 6), 2: (5, 8), 3: (4, 5)}
+        frames = [[] for _ in range(9)]
+        for t, (a, b) in spans.items():
+            for f in range(a, b + 1):
+                frames[f].append(Pk(t))
+        n = pack_track_rows(frames, 4)
+        rows = {}
+        for f, peaks in enumerate(frames):
+            for pk in peaks:
+                rows.setdefault(pk.track, []).append(f)
+        self.assertEqual(n, len(rows))
+        for r, fl in rows.items():                       # in one row: no frame twice, and tracks at least two frames apart
+            self.assertEqual(len(fl), len(set(fl)), "a frame holds two peaks in row %d" % r)
+        self.assertLessEqual(n, 3)
+        self.assertGreaterEqual(n, 3, "tracks 1, 2 and 3 are alive together at frame 5")
 
     def test_a_start_past_the_end_says_so(self):
         w = self.wav("beyond.wav", [tone(440, seconds=1.0)])

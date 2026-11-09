@@ -54,6 +54,43 @@ from pyatsyn.atsa.peak_tracking import update_track_averages, peak_tracking
 from pyatsyn.atsa.residual import compute_residual, residual_analysis
 from pyatsyn.ats_io import ats_save
 
+def pack_track_rows(analysis_frames, n_tracks):
+    """ReaATS: gives every track a row of the ATS file, and lets tracks that do not overlap in time share one.
+
+    The original ATS analysis gives every track its own row (partial), so a long sound with thousands of short tracks makes a
+    file of (tracks x frames) numbers, mostly zeros: 240 seconds of music gave 8894 rows and a file of 4.9 GB. Two tracks can
+    use the same oscillator when the second starts at least two frames after the first has ended (one silent frame between
+    them, which is how the first fades out and the second fades in, exactly as when they have rows of their own). The sound is
+    the same; the file is as many rows as there are tracks at the same moment (a few hundred).
+
+    Changes `pk.track` of every peak in `analysis_frames` to its new row number and returns the number of rows."""
+    import heapq
+    first = [None] * n_tracks
+    last = [None] * n_tracks
+    for frame_n, peaks in enumerate(analysis_frames):
+        for pk in peaks:
+            t = pk.track
+            if first[t] is None:
+                first[t] = frame_n
+            last[t] = frame_n
+    order = sorted((t for t in range(n_tracks) if first[t] is not None), key=lambda t: first[t])
+    row_of = [None] * n_tracks
+    busy = []                                      # (last frame, row) of the rows that have a track in them
+    n_rows = 0
+    for t in order:
+        if busy and busy[0][0] + 2 <= first[t]:
+            _, row = heapq.heappop(busy)           # the row that became free first
+        else:
+            row = n_rows
+            n_rows += 1
+        row_of[t] = row
+        heapq.heappush(busy, (last[t], row))
+    for peaks in analysis_frames:
+        for pk in peaks:
+            pk.track = row_of[pk.track]
+    return max(n_rows, 1)
+
+
 def tracker_array ( in_sound,
                     sample_rate, 
                 start = 0.0, # analysis start point (in seconds)
@@ -74,6 +111,7 @@ def tracker_array ( in_sound,
                 residual_file = None, # path of a WAV to write the residual to (optional)
                 compute_noise = True, # compute the residual and the 25 noise bands (needs no file)
                 progress = None,      # ReaATS: a function called with 0..1 while the analysis runs (may raise to stop it)
+                pack_rows = False,    # ReaATS: tracks that do not overlap in time share a row of the file (see pack_track_rows)
                 optimize = True,
                 optimize_amp_threshold = None, # in amplitude
                 force_M = None, # None, or a forced window length in samples
@@ -331,15 +369,21 @@ def tracker_array ( in_sound,
 
     if verbose:
         print("Initializing AtsSound object...")
-    ats_snd = AtsSound(sample_rate, hop, M, len(tracks), frames, analysis_duration, has_phase = True)
+    n_rows = len(tracks)
+    if pack_rows:
+        n_rows = pack_track_rows(analysis_frames, len(tracks))                 # ReaATS: renumbers the peaks' tracks
+        if verbose:
+            print(f"Packed {len(tracks)} tracks into {n_rows} rows")
+    ats_snd = AtsSound(sample_rate, hop, M, n_rows, frames, analysis_duration, has_phase = True)
 
     if optimize:
         ats_snd.optimized = True
         amp_max = 0.0
         frq_max = 0.0
         for tk in tracks:
-            ats_snd.frq_av[tk.track] = tk.frq
-            ats_snd.amp_av[tk.track] = tk.amp
+            if not pack_rows:                          # (the averages are per track: with shared rows they have no row to go in)
+                ats_snd.frq_av[tk.track] = tk.frq
+                ats_snd.amp_av[tk.track] = tk.amp
             amp_max = max(amp_max, tk.amp_max)
             frq_max = max(frq_max, tk.frq_max)
         ats_snd.amp_max = amp_max
@@ -364,13 +408,15 @@ def tracker_array ( in_sound,
     if compute_noise or residual_file:
         if verbose:
             print("Computing Residual...")
-        residual = compute_residual(ats_snd, in_sound, st, nd, residual_file)
+        residual = compute_residual(ats_snd, in_sound, st, nd, residual_file,
+                                    progress=(lambda f: progress(0.85 + 0.08 * f)) if progress is not None else None)   # ReaATS: 0.85 .. 0.93
         if progress is not None:
             progress(0.93)
 
         if verbose:
             print("Analyzing Residual...")
-        residual_analysis(residual, ats_snd, equalize=True, verbose=verbose)       
+        residual_analysis(residual, ats_snd, equalize=True, verbose=verbose,
+                          progress=(lambda f: progress(0.93 + 0.06 * f)) if progress is not None else None)   # ReaATS: 0.93 .. 0.99       
 
     if verbose:
         print("Tracking analysis complete")

@@ -100,7 +100,9 @@ local showing_analysis = false   -- the Analysis page is on screen instead of th
 local analysis = nil            -- the Analysis page object (made at the end of the file)
 local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lock }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
+local lasso = nil              -- Alt+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
 local amp_thresh = 0
+local last_audition = nil      -- the last sound AUDITION made (see start_preview)
 
 local LOG = math.log
 local function clamp(x, a, b) if x < a then return a elseif x > b then return b else return x end end
@@ -113,7 +115,6 @@ local TINTS = { { 0.35, 0.85, 1.00 }, { 1.00, 0.62, 0.25 }, { 0.45, 0.95, 0.45 }
                 { 1.00, 0.93, 0.35 }, { 1.00, 0.40, 0.40 }, { 0.30, 0.90, 0.75 }, { 1.00, 0.60, 0.75 } }
 local function tint_of(i) return TINTS[(i - 1) % #TINTS + 1] end
 local VIS_MIN = 0.20
-local LANE_GAP = 4
 
 -- Runs fn with channel i's data / selection in the globals the drawing and hit-test code reads (no bundle swap:
 -- nothing else changes, the undo stacks stay where they are).
@@ -144,9 +145,9 @@ local function lane_layout(ph)
   local on = on_list()
   if #on < 2 or view_mode == "overlay" then return { { off = 0, h = ph, chans = on } } end
   local n = #on
-  local lh = math.max(math.floor((ph - (n - 1) * LANE_GAP) / n), 8)
+  local lh = math.max(math.floor((ph - (n - 1) * 4) / n), 8)
   local lanes = {}
-  for j, ci in ipairs(on) do lanes[j] = { off = (j - 1) * (lh + LANE_GAP), h = lh, chans = { ci } } end
+  for j, ci in ipairs(on) do lanes[j] = { off = (j - 1) * (lh + 4), h = lh, chans = { ci } } end
   return lanes
 end
 
@@ -300,35 +301,80 @@ local function find_set(path)
 end
 
 local data_rev = 0               -- counts every change of the sound data (an edit, undo, redo, a file loaded): AUDITION replays its last sound while it is unchanged
+-- How much memory the computer has free (bytes), or nil when that cannot be found out (Linux only).
+local function available_memory()
+  local fh = io.open("/proc/meminfo", "r")
+  if not fh then return nil end
+  local t = fh:read("a")
+  fh:close()
+  local kb = t:match("MemAvailable:%s+(%d+)")
+  return kb and tonumber(kb) * 1024 or nil
+end
+
+
 local function load_file(path)
   data_rev = data_rev + 1
   local files, which = find_set(path)
-  local loaded, note = {}, nil
+  -- 1. Look at the headers only: is everything readable, do the channels fit together, will it fit in memory?
+  local heads, note = {}, nil
   for i, f in ipairs(files) do
-    local d, err = ats.load(f)
-    if not d then
+    local h, err = ats.header(f)
+    if not h then
       if #files == 1 then load_error = f .. "\n" .. tostring(err); return false end
       note = "the channel files do not all open (" .. (f:match("([^/\\]+)$") or f) .. "): opened this file alone"
-      files, which, loaded = { path }, 1, {}
+      files, which, heads = { path }, 1, {}
       break
     end
-    loaded[i] = d
+    heads[i] = h
   end
-  if #loaded == 0 then
-    local d, err = ats.load(path)
-    if not d then load_error = path .. "\n" .. tostring(err); return false end
-    loaded[1] = d
+  if #heads == 0 then
+    local h, err = ats.header(path)
+    if not h then load_error = path .. "\n" .. tostring(err); return false end
+    heads[1] = h
   end
-  if #loaded > 1 then                                           -- all channels must have the same frame grid
-    local a = loaded[1]
-    for i = 2, #loaded do
-      local b = loaded[i]
+  if #heads > 1 then                                            -- all channels must have the same frame grid
+    local a = heads[1]
+    for i = 2, #heads do
+      local b = heads[i]
       if b.frames ~= a.frames or b.frame_size ~= a.frame_size or b.sr ~= a.sr or math.abs(b.dur - a.dur) > 1e-6 then
         note = "the channel files do not have the same frame grid: opened this file alone"
-        files, which, loaded = { path }, 1, { loaded[which] }
+        files, which, heads = { path }, 1, { heads[which] }
         break
       end
     end
+  end
+  local need = 0
+  for _, h in ipairs(heads) do need = need + h.bytes * 2.1 end      -- (the tables of a loaded analysis take about twice the size of the file: 16 bytes for every 8-byte number)
+  local free = available_memory()
+  if free then
+    free = free + collectgarbage("count") * 1024               -- what the set that is open now gives back
+    if need > free * 0.85 then
+      local msg = string.format("this analysis needs about %.1f GB in the editor and only %.1f GB is free: analyse again with a higher "
+        .. "amplitude threshold (-50 or -40 dB) or a higher lowest frequency, or one channel at a time", need / 2^30, free / 2^30)
+      load_error = path .. "\n" .. msg
+      if set_status then set_status(msg) end
+      return false
+    end
+  end
+  -- 2. Let go of the set that is open BEFORE loading the next one. Two long analyses in memory at the same time (and the
+  --    garbage collector waiting before it frees the first) used up all the memory of a computer and REAPER was killed.
+  if pending then pending.job.cancel(); pending = nil end
+  if stop_audition then stop_audition() end
+  last_audition = nil
+  chs, data = {}, nil
+  sel, sel_info, undo_stack, redo_stack, edited_cells = {}, nil, {}, {}, {}
+  box, mover = nil, nil
+  collectgarbage("collect")
+  collectgarbage("collect")
+  -- 3. Load.
+  local loaded = {}
+  for i, f in ipairs(files) do
+    local d, err = ats.load(f)
+    if not d then
+      load_error = f .. "\n" .. tostring(err)
+      return false
+    end
+    loaded[i] = d
   end
   chs = {}
   for i, d in ipairs(loaded) do
@@ -402,6 +448,54 @@ local function select_box(ta, tb, fa, fb, add)
   end
 end
 
+-- Lasso: selects the points inside a closed freehand loop. The loop is given in time and log-frequency (poly_t, poly_lf), the points
+-- are tested with the even-odd rule; the same loop is applied to every channel that is on and green, like a box.
+local function select_poly_single(poly_t, poly_lf, tmin, tmax, fmin, fmax, add)
+  if not data then return end
+  if not add then sel = {} end
+  local n = #poly_t
+  local f_lo = math.max(frame_at(tmin) - 1, 1)
+  local f_hi = math.min(frame_at(tmax) + 1, data.frames)
+  local times = data.times
+  for p = 1, data.partials do
+    local amp, frq = data.amp[p], data.frq[p]
+    for f = f_lo, f_hi do
+      local t = times[f]
+      if t >= tmin and t <= tmax and amp[f] > amp_thresh then
+        local fr = frq[f]
+        if fr >= fmin and fr <= fmax then
+          local y, inside, j = LOG(fr), false, n
+          for i = 1, n do
+            local yi, yj = poly_lf[i], poly_lf[j]
+            if (yi > y) ~= (yj > y) and t < (poly_t[j] - poly_t[i]) * (y - yi) / (yj - yi) + poly_t[i] then inside = not inside end
+            j = i
+          end
+          if inside then
+            sel[p] = sel[p] or {}
+            sel[p][f] = true
+          end
+        end
+      end
+    end
+  end
+  update_sel_info()
+end
+
+local function select_poly(poly_t, poly_lf, add)
+  if not data then return end
+  if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
+  if #on_channels() == 0 then set_status("no channel is editable: click an LED to make it green"); return end
+  local tmin, tmax, lmin, lmax = math.huge, -math.huge, math.huge, -math.huge
+  for i = 1, #poly_t do
+    tmin, tmax = math.min(tmin, poly_t[i]), math.max(tmax, poly_t[i])
+    lmin, lmax = math.min(lmin, poly_lf[i]), math.max(lmax, poly_lf[i])
+  end
+  local fmin, fmax = math.exp(lmin), math.exp(lmax)
+  for _, i in ipairs(on_channels()) do
+    with_channel(i, function() select_poly_single(poly_t, poly_lf, tmin, tmax, fmin, fmax, add) end)
+  end
+end
+
 -- Recomputes the selection summary (point count, time and frequency range) from sel.
 function update_sel_info()
   local points, partials = 0, 0
@@ -455,7 +549,10 @@ local function undo_single()
   local e = table.remove(undo_stack)
   if not e then set_status("nothing to undo"); return end
   apply_changes(e.changes, false)
-  if e.rows_before and data.partials > e.rows_before then edit.truncate_rows(data, e.rows_before) end
+  if e.rows_before and data.partials > e.rows_before then
+    edit.truncate_rows(data, e.rows_before)
+    for p in pairs(edited_cells) do if p > data.partials then edited_cells[p] = nil end end     -- (rows that are gone have no cells to remember)
+  end
   redo_stack[#redo_stack + 1] = e
   clear_selection()
   modified = (#undo_stack ~= saved_depth)
@@ -568,6 +665,73 @@ local function delete_selection() edit_on_channels(delete_single, "delete") end
 local function transpose_selection(semitones) edit_on_channels(function() transpose_single(semitones) end, "transpose") end
 local function move_selection(df, ratio) edit_on_channels(function() move_single(df, ratio) end, "move") end
 
+-- ------------------------------------------------------------ copy, cut and paste
+-- Ctrl+C copies the selected points of every channel that is on and green (their frames relative to the first copied frame, so the
+-- channels keep their timing against each other); Ctrl+V pastes them at the playhead, every channel back into its own number, as
+-- one undo step. Like a move, a paste never overwrites sound: it goes into silent cells, else other rows (see edit.plan_paste).
+local clipboard = nil              -- { pieces = { [channel] = { { p, df, amp, frq }, ... } }, count }
+
+local function copy_selection()
+  local gathered, count, fmin = {}, 0, math.huge
+  for _, i in ipairs(on_channels()) do
+    local c = chs[i]
+    if c.sel_info then
+      local list = {}
+      for p, frames in pairs(c.sel) do
+        for f in pairs(frames) do
+          list[#list + 1] = { p = p, f = f, amp = c.data.amp[p][f], frq = c.data.frq[p][f] }
+          if f < fmin then fmin = f end
+        end
+      end
+      gathered[i] = list
+      count = count + #list
+    end
+  end
+  if count == 0 then set_status("nothing selected to copy"); return false end
+  local pieces, channels = {}, 0
+  for i, list in pairs(gathered) do
+    for _, pt in ipairs(list) do pt.df = pt.f - fmin; pt.f = nil end
+    pieces[i] = list
+    channels = channels + 1
+  end
+  clipboard = { pieces = pieces, count = count }
+  set_status(string.format("copied %d points%s: Ctrl+V pastes them at the playhead", count,
+                           channels > 1 and (" from " .. channels .. " channels") or ""))
+  return true
+end
+
+local function paste_clipboard()
+  if not data then return end
+  if not clipboard then set_status("nothing copied yet: select points, then Ctrl+C"); return end
+  local targets = {}
+  for _, i in ipairs(on_channels()) do if clipboard.pieces[i] then targets[#targets + 1] = i end end
+  if #targets == 0 then set_status("the channels that were copied are not editable now: switch them on and make their LED green"); return end
+  clear_selection()
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  for _, c in ipairs(chs) do c.redo_stack = {} end
+  redo_stack = {}
+  local total, dropped, at = 0, 0, 0
+  for _, i in ipairs(targets) do
+    with_channel(i, function()
+      local f0 = frame_at(playhead)
+      at = data.times[f0]
+      local plan = edit.plan_paste(data, clipboard.pieces[i], f0)
+      if plan then
+        do_edit("paste", plan.changes, plan.rows_before, plan.rows_after)
+        sel = plan.sel
+        update_sel_info()
+        total, dropped = total + plan.count, dropped + plan.dropped
+      end
+    end)
+  end
+  edit_group = nil
+  if total == 0 then set_status("nothing could be pasted there: the playhead is too near the end of the file"); return end
+  set_status(string.format("pasted %d points at %.3f s%s%s (they are selected now)", total, at,
+                           #targets > 1 and (" in " .. #targets .. " channels") or "",
+                           dropped > 0 and (", " .. dropped .. " fell outside the file") or ""))
+end
+
 -- ----------------------------------------------------------------- audition
 -- Renders the current (edited) data (sines and noise bands, in Lua) to a temporary WAV and plays it through
 -- REAPER's source preview, so the project is not touched. What you see is what you hear: the P / N switches decide whether sines / noise are included.
@@ -578,7 +742,7 @@ local function move_selection(df, ratio) edit_on_channels(function() move_single
 -- preview can still be playing.
 local preview_until = 0        -- time_precise() at which the running preview ends
 local audition_count = 0
-local last_audition, start_preview, play_from_made   -- (defined below, used by audition)
+local start_preview, play_from_made   -- (defined below, used by audition)
 math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))
 local session_id = string.format("%d_%d", os.time(), math.random(100000, 999999))   -- makes the temporary file names this editor's own
 local wav_history = {}
@@ -604,21 +768,6 @@ local function render_wav(wav, from)
   return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise"), t_start
 end
 
--- How much AUDITION plays from the playhead (button next to it, key L): to the end, as much as the window shows, or 5 / 15 s.
-local AUDITION_LENS = { { "END" }, { "WINDOW" }, { "5 s", 5 }, { "15 s", 15 } }
-local audition_len = 1
-local function audition_end()                                  -- the time where AUDITION stops, or nil for the end of the sound
-  local m = AUDITION_LENS[audition_len]
-  if m[1] == "END" then return nil end
-  return playhead + ((m[1] == "WINDOW") and (view.t1 - view.t0) or m[2])
-end
-local function cycle_audition_len()
-  audition_len = audition_len % #AUDITION_LENS + 1
-  set_status("AUDITION plays " .. (AUDITION_LENS[audition_len][1] == "END" and "from the playhead to the end"
-    or AUDITION_LENS[audition_len][1] == "WINDOW" and "as much as the window shows, from the playhead"
-    or (AUDITION_LENS[audition_len][1] .. " from the playhead")))
-end
-
 local function tmp_dir() return (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "") end
 local synth_count = 0
 local python_missing = false                   -- no Python was found for the synthesis (the Analysis page may find one later)
@@ -639,16 +788,42 @@ local function start_synth(wav, o)
   end
   synth_count = synth_count + 1
   local id = string.format("%s_s%d", session_id, synth_count)
-  local dir, files = tmp_dir(), {}
-  for i, d in ipairs(list) do
-    files[i] = string.format("%s/reaats_%s_ch%d.ats", dir, id, i)
-    local ok = ats.save(files[i], d, { phase = false })       -- (the edited data as it is now; the phase is not needed to listen)
-    if not ok then for _, f in ipairs(files) do os.remove(f) end; return lua_job() end
+  local dir, files, temp, edits, any_edits = tmp_dir(), {}, {}, {}, false
+  local function discard() for _, f in ipairs(temp) do os.remove(f) end end
+  for i, c in ipairs(chs) do
+    local d = list[i]
+    if c.current_file and reaper.file_exists(c.current_file) then
+      -- The channel's file is on disk already: the program reads it from there and gets only the cells edited since it was
+      -- written (a long sound is a file of hundreds of megabytes; writing it again for every AUDITION is slow and can use up the memory).
+      files[i] = c.current_file
+      local cells, n = c.edited_cells or {}, 0
+      local path = string.format("%s/reaats_%s_ch%d_edits.bin", dir, id, i)
+      local fh = io.open(path, "wb")
+      if not fh then discard(); return lua_job() end
+      local buf = {}
+      for p, frames in pairs(cells) do
+        for f in pairs(d.amp[p] and frames or {}) do                -- (a row that an undo took away has nothing to send)
+          buf[#buf + 1] = string.pack("<dddd", p, f, d.amp[p][f], d.frq[p][f])
+          n = n + 1
+          if #buf >= 4096 then fh:write(table.concat(buf)); buf = {} end
+        end
+      end
+      fh:write(table.concat(buf))
+      fh:close()
+      if n > 0 then edits[i] = path; temp[#temp + 1] = path; any_edits = true else edits[i] = "-"; os.remove(path) end
+    else                                                       -- no file for this channel: the edited data goes to a temporary one
+      files[i] = string.format("%s/reaats_%s_ch%d.ats", dir, id, i)
+      temp[#temp + 1] = files[i]
+      edits[i] = "-"
+      local ok = ats.save(files[i], d, { phase = false })      -- (the phase is not needed to listen)
+      if not ok then discard(); return lua_job() end
+    end
   end
-  local job = py_synth.start({ exe = analysis.python.exe, script = script, files = files, temp = files, wav = wav, dir = dir, id = id,
+  if not any_edits then edits = nil end
+  local job = py_synth.start({ exe = analysis.python.exe, script = script, files = files, edits = edits, temp = temp, wav = wav, dir = dir, id = id,
                                from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown,
                                cache_dir = dir .. "/reaats_noise_cache" })
-  if not job then for _, f in ipairs(files) do os.remove(f) end; return lua_job() end
+  if not job then discard(); return lua_job() end
   return job, "Python", req
 end
 
@@ -663,7 +838,7 @@ local function audition()
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  local to = audition_end()
+  local to = nil                                                    -- (AUDITION always plays to the end of the sound)
   local d1 = chs[1].data
   local fs, sr = math.floor(d1.frame_size + 0.5), d1.sr
   local n_total = math.min(math.floor(d1.dur * sr), (d1.frames - 1) * fs)
@@ -692,8 +867,36 @@ end
 
 -- Plays the sound in `wav` through REAPER's preview, and remembers it: while nothing changes, the next AUDITION plays this
 -- file again (replay) instead of making the sound once more.
-last_audition = nil                -- the last sound that was made: { state, wav, s, e (first and last+1 sample in the sound), nch, sr, ... }
+last_audition = nil                -- (declared with the other state; the last sound that was made: { state, wav, s, e (first and last+1 sample in the sound), nch, sr, ... }
 local slice_history = {}           -- pieces cut out of it (kept briefly, then deleted)
+
+
+-- Temporary files. This editor's sounds are removed when it closes (reaper.atexit); what an editor left behind, because REAPER was
+-- closed in a hurry or crashed, is removed at the next start once it is old enough to be nobody's (the file names hold the time).
+-- Sounds of long files are hundreds of megabytes, and they once filled a disk.
+local function cleanup_session()
+  for _, f in ipairs(wav_history) do os.remove(f) end
+  for _, f in ipairs(slice_history) do os.remove(f) end
+  wav_history, slice_history = {}, {}
+end
+if reaper.atexit then reaper.atexit(cleanup_session) end
+
+local function remove_stale_temp_files()
+  if not reaper.EnumerateFiles then return end
+  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+  local now, doomed, i = os.time(), {}, 0
+  while true do
+    local name = reaper.EnumerateFiles(dir, i)
+    if not name then break end
+    i = i + 1
+    local stamp = name:match("^reaats_audition_(%d+)_%d+_%d+%.wav$")          -- a sound made by AUDITION
+              or name:match("^reaats_(%d+)_%d+_s%d+_.+")                      -- a file of a synthesis job (edits, results ...)
+              or name:match("^reaats_(%d+)_%d+_s%d+%.ats$")
+    stamp = tonumber(stamp)
+    if stamp and stamp > 1e9 and now - stamp > 6 * 3600 then doomed[#doomed + 1] = dir .. "/" .. name end
+  end
+  for _, f in ipairs(doomed) do os.remove(f) end
+end
 -- Starts the preview of `wav`. how: nil = a sound that was just made, "replayed" = the same file again, "cut" = a piece cut out
 -- of the sound that was made before.
 function start_preview(p, wav, dur, t_start, how)
@@ -769,7 +972,7 @@ local function advance_pending()
   local s0 = math.floor((t_start or 0) * sr + 0.5)
   local nch = (p.engine == "Python") and job.nchan or math.min(#job.channels, 2)
   wav_history[#wav_history + 1] = wav
-  if #wav_history > 3 then os.remove(table.remove(wav_history, 1)) end
+  if #wav_history > 2 then os.remove(table.remove(wav_history, 1)) end     -- (a sound of minutes is hundreds of MB: keep few)
   last_audition = { state = p.state, wav = wav, s = s0, e = s0 + math.floor(dur * sr + 0.5), nch = nch, sr = sr,
                     mode = p.mode, channels = p.channels, engine = p.engine, note = p.note }
   play_from_made(last_audition, p.span_s, p.span_e, p, true)
@@ -924,7 +1127,8 @@ local function print_to_track()
   local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = playhead })           -- from the playhead
   pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path, files = files, channels = #chs,
               engine = engine, req = req, job = job }
-  set_status("preparing the print ... 0 %   (Esc cancels)")
+  set_status(playhead > 0.0005 and string.format("preparing the print FROM %.2f s (the playhead) ... 0 %%   Esc cancels, Home puts the playhead at the start", playhead)
+                         or "preparing the print ... 0 %   (Esc cancels)")
 end
 
 -- The sound is ready (see advance_pending): write the WAV, put it on the track and remember the settings under the item.
@@ -1227,6 +1431,12 @@ local function draw_selection(px, py, pw, ph)
       end)
     end
   end
+  if lasso and #lasso.pts > 1 then                              -- the loop being drawn, closed with a faint line back to the start
+    gfx.set(1, 1, 1, 0.9)
+    for i = 2, #lasso.pts do gfx.line(lasso.pts[i - 1][1], lasso.pts[i - 1][2], lasso.pts[i][1], lasso.pts[i][2], 1) end
+    gfx.set(1, 1, 1, 0.35)
+    gfx.line(lasso.pts[#lasso.pts][1], lasso.pts[#lasso.pts][2], lasso.pts[1][1], lasso.pts[1][2], 1)
+  end
   if box then
     local x0, x1 = math.min(box.x0, box.x1), math.max(box.x0, box.x1)
     local y0, y1 = math.min(box.y0, box.y1), math.max(box.y0, box.y1)
@@ -1271,9 +1481,9 @@ local function audition_rect()
   return x - 96, y - 2, 86, 20
 end
 
-local function len_rect()                                      -- under AUDITION: how much it plays
+local function start_rect()                                    -- under PRINT: the playhead goes back to the start
   local x, y, w, h = audition_rect()
-  return x, y + 26, w, 16
+  return x - 72, y + 26, 62, 16
 end
 
 local function print_rect()
@@ -1517,15 +1727,16 @@ local function draw_audition_button()
   gfx.drawstr(label)
 end
 
-local function draw_len_button()
-  local x, y, w, h = len_rect()
-  gfx.set(0.14, 0.22, 0.19, 1)
+local function draw_start_button()
+  local x, y, w, h = start_rect()
+  local away = playhead > 0.0005
+  gfx.set(away and 0.30 or 0.14, away and 0.24 or 0.16, away and 0.10 or 0.2, 1)
   gfx.rect(x, y, w, h, 1)
-  gfx.set(0.35, 0.60, 0.48, 1)
+  gfx.set(away and 0.95 or 0.4, away and 0.75 or 0.43, away and 0.35 or 0.5, 1)
   gfx.rect(x, y, w, h, 0)
   gfx.setfont(1, "Arial", 12)
-  local label = "plays: " .. AUDITION_LENS[audition_len][1]
-  gfx.set(0.75, 0.92, 0.82, 1)
+  local label = away and string.format("|< %.1f s", playhead) or "|< start"
+  gfx.set(1, away and 0.9 or 0.65, away and 0.6 or 0.7, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 1
   gfx.drawstr(label)
@@ -1602,15 +1813,16 @@ local function draw_header(px, py, pw, ph, plain)
   end
   local name = fname:match("([^/\\]+)$") or fname
   local hop_ms = data.frame_size / data.sr * 1000
-  local info = string.format("%s%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
-    name, any_modified() and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
+  local info = string.format("%s%s   |   %d partials   %d frames   %.2f s%s   %d Hz   hop %.1f ms   type %d%s%s",
+    name, any_modified() and " *" or "", data.partials, data.frames, data.dur,
+    (data.dur >= 59.5) and (" (" .. Analysis.clock(data.dur) .. ")") or "", data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or "")
   text_at(px, 8, info)
   if not plain then
     draw_checkbox()
     draw_sine_checkbox()
     draw_audition_button()
-    draw_len_button()
+    draw_start_button()
     draw_print_button()
     draw_export_button()
     draw_analyse_button()
@@ -1682,10 +1894,15 @@ local function draw_header(px, py, pw, ph, plain)
     end
   end
   gfx.setfont(1, "Arial", 12)
-  text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
+  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   drag a selected point = move (Shift locks axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   L audition length   Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
+  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
+  local build = "build 09 Nov 19:03"                                             -- (which version of the script is running)
+  local bw = gfx.measurestr(build)
+  gfx.set(0.09, 0.10, 0.12, 1)
+  gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
+  text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
 
 -- --------------------------------------------------------------- interaction
@@ -1732,6 +1949,7 @@ local function handle_input(px, py, pw, ph)
   -- Right or middle button drag = pan.
   if data and (cap & (2 + 64)) ~= 0 then
     if drag then
+      if math.abs(mx - drag.x0) > 3 or math.abs(my - drag.y0) > 3 then drag.moved = true end
       local dx, dy = mx - drag.x, my - drag.y
       if dx ~= 0 or dy ~= 0 then
         local span = view.t1 - view.t0
@@ -1745,9 +1963,13 @@ local function handle_input(px, py, pw, ph)
       end
       drag.x, drag.y = mx, my
     elseif inside then
-      drag = { x = mx, y = my }
+      drag = { x = mx, y = my, x0 = mx, y0 = my, moved = false, right = (cap & 2) ~= 0 }
     end
   else
+    if drag and drag.right and not drag.moved then              -- a right-click without a drag: the whole file in view (as F; the same in ReaShapeM)
+      fit_view()
+      set_status("whole file in view")
+    end
     drag = nil
   end
 
@@ -1765,8 +1987,8 @@ local function handle_input(px, py, pw, ph)
       dirty = true
     elseif mx >= ax and mx < ax + aw and my >= ay and my < ay + ah then
       audition()
-    elseif (function() local lx, ly, lw, lh = len_rect(); return mx >= lx and mx < lx + lw and my >= ly and my < ly + lh end)() then
-      cycle_audition_len()
+    elseif data and (function() local bx, by, bw, bh = start_rect(); return mx >= bx and mx < bx + bw and my >= by and my < by + bh end)() then
+      set_playhead(0); set_status("playhead at the start")
     elseif (function() local rx, ry, rw, rh = print_rect(); return mx >= rx and mx < rx + rw and my >= ry and my < ry + rh end)() then
       print_to_track()
     elseif (function() local ex, ey, ew, eh = export_rect(); return mx >= ex and mx < ex + ew and my >= ey and my < ey + eh end)() then
@@ -1778,6 +2000,9 @@ local function handle_input(px, py, pw, ph)
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
     elseif channel_row_click(mx, my) then
       -- (the channel row: handled above)
+    elseif data and inside and (cap & 16) ~= 0 and lane_at(py, ph, my) then       -- Alt+drag: a lasso
+      local lane = lane_at(py, ph, my)
+      lasso = { pts = { { mx, my } }, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
     elseif data and inside and lane_at(py, ph, my) then
       local lane = lane_at(py, ph, my)
       local hit, lh = false, nil
@@ -1800,6 +2025,10 @@ local function handle_input(px, py, pw, ph)
         mover.lock = (math.abs(mx - mover.x0) >= math.abs(my - mover.y0)) and "x" or "y"
       end
     end
+  elseif down and lasso then
+    local x, y = clamp(mx, px, px + pw), clamp(my, py + lasso.off, py + lasso.off + lasso.h)
+    local last = lasso.pts[#lasso.pts]
+    if math.abs(x - last[1]) + math.abs(y - last[2]) >= 4 then lasso.pts[#lasso.pts + 1] = { x, y } end
   elseif down and box then
     box.x1 = clamp(mx, px, px + pw)
     box.y1 = clamp(my, py + box.off, py + box.off + box.h)
@@ -1811,6 +2040,21 @@ local function handle_input(px, py, pw, ph)
       move_selection(df, ratio)
     end
     mover = nil
+  elseif (not down) and prev_down and lasso then
+    local l = lasso
+    lasso = nil
+    local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(l.pts) do x0, x1, y0, y1 = math.min(x0, q[1]), math.max(x1, q[1]), math.min(y0, q[2]), math.max(y1, q[2]) end
+    if #l.pts < 3 or (x1 - x0 < 4 and y1 - y0 < 4) then
+      if not l.add then clear_selection() end                    -- (a click with Alt held: like a click on empty space)
+    else
+      local pt, plf = {}, {}
+      for i, q in ipairs(l.pts) do
+        pt[i] = view.t0 + (q[1] - px) / pw * (view.t1 - view.t0)
+        plf[i] = LOG(view.f0 * (view.f1 / view.f0) ^ ((py + l.off + l.h - q[2]) / l.h))
+      end
+      select_poly(pt, plf, l.add)
+    end
   elseif (not down) and prev_down and box then
     local b = box
     box = nil
@@ -1842,6 +2086,9 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 1818584692 or ch == 1919379572 then              -- Left / Right arrow: move in time
     local frames = ctrl and 10 or 1
     move_selection(ch == 1919379572 and frames or -frames, 1)
+  elseif ch == 3 then copy_selection()                           -- Ctrl+C
+  elseif ch == 24 then if copy_selection() then delete_selection() end   -- Ctrl+X
+  elseif ch == 22 then paste_clipboard()                        -- Ctrl+V: at the playhead
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
@@ -1850,11 +2097,12 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
-  elseif ch == 108 or ch == 76 then cycle_audition_len()         -- L: how much AUDITION plays
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
-  elseif ch == 102 or ch == 70 or ch == 1752132965 then fit_view()
+  elseif ch == 102 or ch == 70 then fit_view()
+  elseif ch == 1752132965 then set_playhead(0); set_status("playhead at the start")                 -- Home
+  elseif ch == 6647396 then set_playhead(math.huge); set_status("playhead at the end")                -- End
   elseif ch == 112 or ch == 80 then show_partials = not show_partials; dirty = true
   elseif ch == 110 or ch == 78 then show_noise = not show_noise; dirty = true end
   return true
@@ -1962,4 +2210,5 @@ do
 end
 -- Without a snapshot the window starts EMPTY (tjingboem, 9 Nov 2026: "it must start cleared"): no file is reopened and no
 -- dialog asks for one. Press O to open a file, or use ANALYSE. (The last folder is still the dialog's starting point.)
+remove_stale_temp_files()                                       -- (files that an earlier editor left behind)
 loop()

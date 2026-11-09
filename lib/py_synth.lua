@@ -43,6 +43,7 @@ function M.start(opts)
   if opts.noise == false then args[#args + 1] = "--no-noise" end
   if opts.cache_dir then args[#args + 1] = "--cache-dir"; args[#args + 1] = opts.cache_dir end
   if opts.mixdown then args[#args + 1] = "--mixdown"; args[#args + 1] = opts.mixdown end
+  if opts.edits then for i = 1, #opts.files do args[#args + 1] = "--edits"; args[#args + 1] = opts.edits[i] or "-" end end
   for _, f in ipairs(opts.files) do args[#args + 1] = f end
   local fh = io.open(argsfile, "w")
   if not fh then return nil, "cannot write " .. argsfile end

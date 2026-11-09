@@ -38,13 +38,16 @@ end
 --   .pha[p][f]                      only when .has_phase
 --   .noise[b][f]                    only when .has_noise (b = 1..25)
 --   .noise_max                      largest noise value (for scaling)
-function M.load(path)
+-- Reads and checks only the header (80 bytes) and the size of an ATS file: returns { sr, frame_size, window_size, partials, frames,
+-- ampmax, frqmax, dur, type, bytes, endian } or nil plus a message. Cheap, so a long analysis can be looked at before it is loaded.
+function M.header(path)
   local fh, err = io.open(path, "rb")
   if not fh then return nil, "cannot open file: " .. tostring(err) end
-  local s = fh:read("a")
+  local bytes = fh:seek("end")
+  fh:seek("set", 0)
+  local s = fh:read(80)
   fh:close()
-  if #s < 80 then return nil, "file too short for an ATS header" end
-
+  if not s or #s < 80 then return nil, "file too short for an ATS header" end
   local endian = "<"
   local magic = string.unpack("<d", s, 1)
   if magic ~= 123.0 then
@@ -52,26 +55,36 @@ function M.load(path)
     if magic ~= 123.0 then return nil, "not an ATS file (magic number is not 123)" end
     endian = ">"
   end
-
   local h = { string.unpack(endian .. "dddddddddd", s, 1) }
   local d = {
     sr = h[2], frame_size = h[3], window_size = h[4],
     partials = math.floor(h[5] + 0.5), frames = math.floor(h[6] + 0.5),
     ampmax = h[7], frqmax = h[8], dur = h[9], type = math.floor(h[10] + 0.5),
+    bytes = bytes, endian = endian,
   }
   if d.type < 1 or d.type > 4 then return nil, "unknown ATS type " .. tostring(d.type) end
   if d.partials < 1 or d.frames < 1 then return nil, "no partials or frames in header" end
-
-  local P, NF = d.partials, d.frames
   d.has_phase = (d.type == 2 or d.type == 4)
   d.has_noise = (d.type == 3 or d.type == 4)
   local per_partial = d.has_phase and 3 or 2
-  local per_frame = 1 + per_partial * P + (d.has_noise and M.NUM_NOISE_BANDS or 0)
-  if #s < 80 + 8 * per_frame * NF then
-    return nil, string.format("file is smaller than its header says (%d bytes, need %d)",
-                              #s, 80 + 8 * per_frame * NF)
+  d.per_frame = 1 + per_partial * d.partials + (d.has_noise and M.NUM_NOISE_BANDS or 0)
+  d.per_partial = per_partial
+  local need = 80 + 8 * d.per_frame * d.frames
+  if bytes < need then
+    return nil, string.format("file is smaller than its header says (%d bytes, need %d)", bytes, need)
   end
+  return d
+end
 
+-- Loads a file into tables. The file is read a frame at a time (not as one big string): a long analysis is hundreds of
+-- megabytes, and a copy of it in memory next to the tables made loading needlessly heavy.
+function M.load(path)
+  local d, err = M.header(path)
+  if not d then return nil, err end
+  local fh, err2 = io.open(path, "rb")
+  if not fh then return nil, "cannot open file: " .. tostring(err2) end
+  local endian, P, NF, per_frame, per_partial = d.endian, d.partials, d.frames, d.per_frame, d.per_partial
+  d.bytes, d.endian, d.per_frame, d.per_partial = nil, nil, nil, nil
   d.times, d.amp, d.frq = {}, {}, {}
   for p = 1, P do d.amp[p] = {}; d.frq[p] = {} end
   if d.has_phase then d.pha = {}; for p = 1, P do d.pha[p] = {} end end
@@ -82,10 +95,11 @@ function M.load(path)
   d.noise_max = 0
 
   local fmt = endian .. string.rep("d", per_frame)
-  local pos = 81
+  fh:seek("set", 80)
   for f = 1, NF do
-    local v = { string.unpack(fmt, s, pos) }
-    pos = v[per_frame + 1]
+    local rec = fh:read(8 * per_frame)
+    if not rec or #rec < 8 * per_frame then fh:close(); return nil, "file ends early (frame " .. f .. ")" end
+    local v = { string.unpack(fmt, rec) }
     d.times[f] = v[1]
     local k = 2
     for p = 1, P do
@@ -101,6 +115,7 @@ function M.load(path)
       end
     end
   end
+  fh:close()
   return d
 end
 
@@ -172,12 +187,15 @@ function M.save(path, d, opts)
       end
     end
   end
-  local out = { string.pack("<dddddddddd", 123.0, d.sr, d.frame_size, d.window_size,
-                            P, NF, ampmax, frqmax, d.dur, type_) }
+  local fh, err = io.open(path, "wb")
+  if not fh then return nil, "cannot write file: " .. tostring(err) end
+  -- (written frame by frame in blocks, not collected in memory first: a long sound is hundreds of megabytes)
+  fh:write(string.pack("<dddddddddd", 123.0, d.sr, d.frame_size, d.window_size, P, NF, ampmax, frqmax, d.dur, type_))
   local per_partial = with_phase and 3 or 2
   local per_frame = 1 + per_partial * P + (d.has_noise and M.NUM_NOISE_BANDS or 0)
   local fmt = "<" .. string.rep("d", per_frame)
   local v = {}
+  local block, block_bytes = {}, 0
   for f = 1, NF do
     v[1] = d.times[f]
     local k = 2
@@ -189,11 +207,12 @@ function M.save(path, d, opts)
     if d.has_noise then
       for b = 1, M.NUM_NOISE_BANDS do v[k + b - 1] = d.noise[b][f] end
     end
-    out[#out + 1] = string.pack(fmt, table.unpack(v, 1, per_frame))
+    local rec = string.pack(fmt, table.unpack(v, 1, per_frame))
+    block[#block + 1] = rec
+    block_bytes = block_bytes + #rec
+    if block_bytes >= 4 * 1024 * 1024 then fh:write(table.concat(block)); block, block_bytes = {}, 0 end
   end
-  local fh, err = io.open(path, "wb")
-  if not fh then return nil, "cannot write file: " .. tostring(err) end
-  fh:write(table.concat(out))
+  if #block > 0 then fh:write(table.concat(block)) end
   fh:close()
   return true
 end

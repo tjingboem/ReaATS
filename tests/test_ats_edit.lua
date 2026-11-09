@@ -91,5 +91,33 @@ plan = edit.plan_move(d, { [1] = { [2] = true, [3] = true, [6] = true, [7] = tru
 apply(d, plan)
 check("two runs: all points kept", active(d) == activeBefore)
 
+-- 7. paste: into free cells it keeps its row, never overwrites, makes rows when needed, drops what is outside the file
+d = make(2, 20); fill(d, 1, 3, 5, 100)
+local clip = { { p = 1, df = 0, amp = 0.5, frq = 103 }, { p = 1, df = 1, amp = 0.5, frq = 104 }, { p = 1, df = 2, amp = 0.5, frq = 105 } }
+before = snapshot(d)
+plan = edit.plan_paste(d, clip, 10)
+apply(d, plan)
+check("paste: same row when free", plan.rows_after == 2 and d.amp[1][10] > 0 and d.frq[1][12] == 105 and d.amp[1][3] > 0)
+check("paste: selection is the pasted cells", plan.sel[1][10] and plan.sel[1][12] and not plan.sel[1][3] and plan.count == 3 and plan.dropped == 0)
+revert(d, plan)
+check("paste: undo restores everything", snapshot(d) == before)
+plan = edit.plan_paste(d, clip, 4)                                   -- frames 4-6 overlap the existing 4-5 in row 1
+apply(d, plan)
+check("paste on sound: the old sound is untouched", d.frq[1][4] == 104 and d.frq[1][5] == 105)
+check("paste on sound: the copy goes to row 2", d.amp[2][4] > 0 and d.frq[2][4] == 103 and d.frq[2][6] == 105 and plan.sel[2])
+d = make(1, 20); fill(d, 1, 3, 5, 100)
+plan = edit.plan_paste(d, clip, 4)
+apply(d, plan)
+check("paste with no free row: a new row", plan.rows_after == 2 and d.partials == 2 and d.amp[2][4] > 0)
+d = make(1, 12)
+plan = edit.plan_paste(d, clip, 11)                                   -- frames 11, 12 fit; 13 is outside
+check("paste past the end: the rest is dropped", plan and plan.count == 2 and plan.dropped == 1)
+check("paste entirely outside: nothing", edit.plan_paste(d, clip, 40) == nil)
+local gapclip = { { p = 5, df = 0, amp = 0.4, frq = 200 }, { p = 5, df = 3, amp = 0.4, frq = 210 } }   -- two runs of one row (and a row that does not exist)
+d = make(2, 20)
+plan = edit.plan_paste(d, gapclip, 1)
+apply(d, plan)
+check("paste: a source row beyond the file's rows lands in a row that exists", d.amp[2][1] > 0 and d.amp[2][4] > 0 and active(d) == 2)
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

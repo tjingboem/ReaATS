@@ -34,6 +34,7 @@ def compute_residual(   ats_snd,
                         start_sample,
                         end_sample,
                         residual_file = None,
+                        progress = None,      # ReaATS: called with 0..1 now and then
                                 ):
     """Function to computes the time domain difference between the sinusoidal synthesis of spectral trajectories in an ats_snd, 
     and the original sound data
@@ -57,7 +58,7 @@ def compute_residual(   ats_snd,
     residual : ndarray[float]
         a 1D array of floats containing the amplitudes of the computed residual in the time domain
     """ 
-    synthesized = synth(ats_snd)
+    synthesized = synth(ats_snd, progress=progress)
     residual = in_sound[start_sample:end_sample] - synthesized
 
     # export residual to audio file
@@ -74,7 +75,8 @@ def residual_analysis(  residual,
                         pad_factor = 2,
                         band_edges = None,
                         par_energy = False,
-                        verbose = False,                                               
+                        verbose = False,
+                        progress = None,      # ReaATS: called with 0..1 now and then
                         ):
     """Function to compute noise energy in a residual signal across 25 critical bands
 
@@ -138,6 +140,8 @@ def residual_analysis(  residual,
 
     for frame_n in range(frames):
 
+        if progress is not None and frame_n % 200 == 0:
+            progress(frame_n / frames)
         if verbose:
             done = frame_n * 100.0 / frames
             if done > report_flag:

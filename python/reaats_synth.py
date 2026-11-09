@@ -19,6 +19,7 @@ done, R: "OK t_start duration samplerate channels" or "ERROR message". A file R.
 """
 import argparse
 import hashlib
+import multiprocessing
 import os
 import sys
 import threading
@@ -27,7 +28,9 @@ import time
 import numpy as np
 
 NOISE_VARIANCE = 0.04
-NOISE_GAIN = 0.30
+NOISE_GAIN = 0.30                # classic: calibrated against Csound's atsaddnz on examples/sax.ats (level within 0.1 dB)
+NOISE_GAIN_CORRECTED = 0.20      # corrected: calibrated so that the noise has the power of the real residual (see tests)
+NOISE_SHAPE = "corrected"       # "corrected": bands get their share by width; "classic": the stored values are used as they are (as Csound does)
 EDGES = [0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720,
          2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 15500, 20000]
 BANDS = 25
@@ -47,8 +50,18 @@ def write_text(path, text):
     os.replace(tmp, path)
 
 
+_SHARED = None          # in a worker process: the shared array that holds the progress of every channel
+_IDX = 0                # ... and this worker's place in it
+
+
 def progress(p):
-    """Reports how far we are (0..1) and notices a Cancel."""
+    """Reports how far we are (0..1) and notices a Cancel. In a worker process the progress goes to the shared array; the
+    parent writes the files."""
+    if _SHARED is not None:
+        if RESULT and os.path.exists(RESULT + ".cancel"):
+            raise Cancelled()
+        _SHARED[_IDX] = p
+        return
     _BEAT["p"] = p
     if RESULT:
         if os.path.exists(RESULT + ".cancel"):
@@ -83,36 +96,75 @@ class Ats:
 
 
 def load_ats(path):
-    """Reads an ATS file (types 1-4, either byte order)."""
+    """Opens an ATS file (types 1-4, either byte order) WITHOUT reading it into memory: the partials stay in the file (a memory
+    map) and are fetched a block at a time (see Ats.chunk). A long sound with thousands of partials is a file of hundreds of
+    megabytes; reading it whole, in several processes, once ate all the memory of a computer."""
     try:
-        raw = np.fromfile(path, dtype="<f8")
+        with open(path, "rb") as fh:
+            head = fh.read(80)
     except OSError as e:
         raise ValueError("cannot open %s: %s" % (path, e))
-    if raw.size < 10:
+    if len(head) < 80:
         raise ValueError("%s is too short for an ATS header" % path)
-    if raw[0] != 123.0:
-        raw = np.fromfile(path, dtype=">f8").astype("<f8")
-        if raw[0] != 123.0:
+    dt = "<f8"
+    h = np.frombuffer(head, dtype="<f8")
+    if h[0] != 123.0:
+        dt = ">f8"
+        h = np.frombuffer(head, dtype=">f8")
+        if h[0] != 123.0:
             raise ValueError("%s is not an ATS file" % path)
     a = Ats()
-    h = raw[:10]
     a.sr, a.frame_size, a.window_size = float(h[1]), float(h[2]), float(h[3])
     a.partials, a.frames = int(round(h[4])), int(round(h[5]))
     a.dur, a.type = float(h[8]), int(round(h[9]))
     if a.type < 1 or a.type > 4 or a.partials < 1 or a.frames < 1:
         raise ValueError("%s: unusable header" % path)
-    pp = 3 if a.type in (2, 4) else 2
+    a.pp = 3 if a.type in (2, 4) else 2
     a.has_noise = a.type in (3, 4)
-    per_frame = 1 + pp * a.partials + (BANDS if a.has_noise else 0)
-    need = 10 + per_frame * a.frames
-    if raw.size < need:
+    per_frame = 1 + a.pp * a.partials + (BANDS if a.has_noise else 0)
+    if os.path.getsize(path) < 80 + 8 * per_frame * a.frames:
         raise ValueError("%s is smaller than its header says" % path)
-    m = raw[10:need].reshape(a.frames, per_frame)
-    a.times = m[:, 0].copy()
-    a.amp = np.ascontiguousarray(m[:, 1:1 + pp * a.partials:pp].T)          # [partial, frame]
-    a.frq = np.ascontiguousarray(m[:, 2:2 + pp * a.partials:pp].T)
-    a.noise = np.ascontiguousarray(m[:, 1 + pp * a.partials:1 + pp * a.partials + BANDS].T) if a.has_noise else None
+    a.m = np.memmap(path, dtype=dt, mode="r", offset=80, shape=(a.frames, per_frame))
+    a.times = np.array(a.m[:, 0], dtype=np.float64)
+    nz0 = 1 + a.pp * a.partials
+    a.noise = np.array(a.m[:, nz0:nz0 + BANDS], dtype=np.float64).T.copy() if a.has_noise else None
+    a.edits = None
+    a.rows = a.partials                          # rows to make: the file's, and more when the editor's edits added rows
     return a
+
+
+def load_edits(path):
+    """Edits made in the editor and not in the file yet: records of 4 doubles (partial, frame, amplitude, frequency), the
+    partial and the frame counted from 1."""
+    if not path or path == "-":
+        return None
+    try:
+        e = np.fromfile(path, dtype="<f8")
+    except OSError as ex:
+        raise ValueError("cannot open %s: %s" % (path, ex))
+    if e.size % 4:
+        raise ValueError("%s is not an edits file" % path)
+    return e.reshape(-1, 4)
+
+
+def chunk(a, p0, p1):
+    """Partials p0 .. p1-1 as two arrays [partial, frame] (amplitude, frequency), with the editor's edits applied."""
+    cols = slice(1 + a.pp * p0, 1 + a.pp * p1, a.pp)
+    k = max(0, min(p1, a.partials) - p0)                          # (rows beyond the file's own are new rows made by edits: silent but for those)
+    amp = np.zeros((p1 - p0, a.frames))
+    frq = np.zeros((p1 - p0, a.frames))
+    if k > 0:
+        amp[:k] = np.array(a.m[:, 1 + a.pp * p0:1 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
+        frq[:k] = np.array(a.m[:, 2 + a.pp * p0:2 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
+    if a.edits is not None:
+        e = a.edits
+        sel = (e[:, 0] > p0) & (e[:, 0] <= p1) & (e[:, 1] >= 1) & (e[:, 1] <= a.frames)
+        if sel.any():
+            rows = e[sel, 0].astype(np.int64) - 1 - p0
+            cols_f = e[sel, 1].astype(np.int64) - 1
+            amp[rows, cols_f] = e[sel, 2]
+            frq[rows, cols_f] = e[sel, 3]
+    return amp, frq
 
 
 # ------------------------------------------------------------------------------------------------------- synthesis
@@ -150,11 +202,15 @@ def add_sines(a, out, fs, j0, n, base, span):
     two_pi_sr = 2 * np.pi / a.sr
     nf = a.frames
     xs_all = (np.arange(nf) - j0) * fs                           # sample position of every frame
-    for p in range(a.partials):
-        amp, frq = a.amp[p], a.frq[p]
-        seg = (amp[j0:nf - 1] > 0) | (amp[j0 + 1:nf] > 0)         # segment j -> j+1 sounds
-        seg &= (frq[j0:nf - 1] > 0) | (frq[j0 + 1:nf] > 0)
-        if seg.any():
+    for c0 in range(0, a.rows, 256):                             # a block of partials at a time
+        c1 = min(c0 + 256, a.rows)
+        amp_c, frq_c = chunk(a, c0, c1)
+        for p in range(c1 - c0):
+            amp, frq = amp_c[p], frq_c[p]
+            seg = (amp[j0:nf - 1] > 0) | (amp[j0 + 1:nf] > 0)         # segment j -> j+1 sounds
+            seg &= (frq[j0:nf - 1] > 0) | (frq[j0 + 1:nf] > 0)
+            if not seg.any():
+                continue
             edges = np.diff(np.concatenate(([0], seg.astype(np.int8), [0])))
             starts = np.nonzero(edges == 1)[0] + j0                # first segment of every run
             stops = np.nonzero(edges == -1)[0] + j0                # one past the last segment
@@ -175,8 +231,7 @@ def add_sines(a, out, fs, j0, n, base, span):
                 ph = np.cumsum(w) - w + phase0
                 out[x0:x1] += am * np.sin(ph)
                 phase0 = float((ph[-1] + w[-1]) % (2 * np.pi))
-        if p % 8 == 0:
-            progress(base + span * (p + 1) / a.partials)
+        progress(base + span * c1 / a.rows)
     progress(base + span)
 
 
@@ -214,13 +269,25 @@ def add_noise(a, out, fs, j0, n, seed, base, span):
     nf = a.frames
     xs = (np.arange(nf) - j0) * fs
     nyq = a.sr / 2
-    amp_scale = NOISE_GAIN / np.sqrt(a.window_size * NOISE_VARIANCE)
+    amp_scale = (NOISE_GAIN_CORRECTED if NOISE_SHAPE == "corrected" else NOISE_GAIN) / np.sqrt(a.window_size * NOISE_VARIANCE)
     rng = np.random.default_rng(seed)
     i_all = np.arange(n)
+    # Bandwidth correction (see NOISE_SHAPE): the analysis stores, for every band, the AVERAGE squared magnitude of its FFT bins
+    # (equalised so that the bands add up to the energy of the residual), not the energy of the band. A wide band holds more energy
+    # than a narrow one with the same value, so played as it is the noise is too loud in the narrow low bands and too soft in the
+    # wide high ones. Every band's power is multiplied by its width over the (energy-weighted) mean width of that frame: the
+    # energy of a frame stays what it was, and the bands get their right share of it.
+    width = np.array([max(min(EDGES[k + 1], nyq) - EDGES[k], 0.0) for k in range(BANDS)])
+    if NOISE_SHAPE == "corrected":
+        all_e = np.maximum(a.noise[:, j0:nf], 0.0)
+        wbar = (all_e * width[:, None]).sum(axis=0) / np.maximum(all_e.sum(axis=0), 1e-300)
     for b in range(BANDS):
         lo, hi = EDGES[b], EDGES[b + 1]
         e = a.noise[b]
-        env = np.sqrt(np.maximum(e[j0:nf], 0.0)) * amp_scale
+        power = np.maximum(e[j0:nf], 0.0)
+        if NOISE_SHAPE == "corrected":
+            power = power * width[b] / np.maximum(wbar, 1e-300)
+        env = np.sqrt(power) * amp_scale
         if lo >= nyq * 0.98 or not np.any(env > 0):
             progress(base + span * (b + 1) / BANDS)
             continue
@@ -260,7 +327,7 @@ def cache_path(cache_dir, a, j0, n, seed):
     fingerprint of everything the noise is made from: the noise data, the grid, the part and the seed."""
     h = hashlib.sha1()
     h.update(np.ascontiguousarray(a.noise).tobytes())
-    h.update(repr((a.sr, a.frame_size, a.window_size, a.frames, j0, n, seed, "v1")).encode())
+    h.update(repr((a.sr, a.frame_size, a.window_size, a.frames, j0, n, seed, NOISE_SHAPE, NOISE_GAIN, NOISE_GAIN_CORRECTED, "v2")).encode())
     return os.path.join(cache_dir, "reaats_noise_" + h.hexdigest() + ".f32")
 
 
@@ -354,18 +421,76 @@ def write_wav(path, chans, sr):
     os.replace(tmp, path)
 
 
+def _init_worker(shared, result):
+    global _SHARED, RESULT
+    _SHARED, RESULT = shared, result
+
+
+def synth_task(t):
+    """One channel, in a worker process: returns (samples, start time of the samples)."""
+    global _IDX, NOISE_SHAPE
+    _IDX = t["k"]
+    NOISE_SHAPE = t["shape"]
+    a = load_ats(t["path"])
+    a.edits = load_edits(t["edits"])
+    if a.edits is not None and len(a.edits):
+        a.rows = max(a.partials, int(a.edits[:, 0].max()))
+    out, t_start = render_channel(a, t["start"], t["end"], t["sines"], t["noise"], t["seed"], 0.0, 1.0, t["cache"])
+    _SHARED[_IDX] = 1.0
+    return out, t_start
+
+
+def choose_jobs(requested, count):
+    """How many channels are made at the same time: the number asked for, or all cores but two (at least one), never more
+    than the number of channels."""
+    if requested and requested > 0:
+        n = requested
+    else:
+        n = max(1, (os.cpu_count() or 1) - 2)
+    return max(1, min(n, count))
+
+
+def run_parallel(tasks, jobs):
+    """The channels at the same time, `jobs` at once, one process each; the results in channel order. The parent writes the
+    overall progress and watches for the cancel file."""
+    ctx = multiprocessing.get_context()
+    shared = ctx.Array("d", len(tasks), lock=False)
+    pool = ctx.Pool(processes=jobs, initializer=_init_worker, initargs=(shared, RESULT))
+    try:
+        pending = [pool.apply_async(synth_task, (t,)) for t in tasks]
+        while True:
+            for r in pending:                                    # the first failure ends everything (get() raises it)
+                if r.ready() and not r.successful():
+                    r.get()
+            progress(sum(shared) / len(tasks))                   # (also raises Cancelled when the cancel file appears)
+            if all(r.ready() for r in pending):
+                return [r.get() for r in pending]
+            time.sleep(0.05)
+    finally:
+        pool.terminate()
+        pool.join()
+
+
 def build_parser():
     p = argparse.ArgumentParser(description="Renders ATS files (one per channel) to a float WAV.", fromfile_prefix_chars="@")
     p.add_argument("ats", nargs="+", help="the .ats files, one per channel")
     p.add_argument("--out", required=True, help="the WAV file to write")
     p.add_argument("--from", dest="start", type=float, default=0.0, help="start at this time, seconds")
     p.add_argument("--to", dest="end", type=float, default=None, help="stop at this time, seconds (default: the end)")
+    p.add_argument("--edits", action="append", default=[],
+                   help="edits not yet in the .ats file (records of partial, frame, amplitude, frequency), one --edits for each "
+                        "file in the same order; '-' for a file without edits")
     p.add_argument("--no-sines", action="store_true")
     p.add_argument("--no-noise", action="store_true")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--cache-dir", default=None,
                    help="a folder where the noise of a render is kept (it does not change when you edit partials), so that the "
                         "next render of the same part is quick")
+    p.add_argument("--jobs", type=int, default=0,
+                   help="how many channels are made at the same time, one process each (default 0: all cores but two, at least one)")
+    p.add_argument("--noise-shape", choices=("corrected", "classic"), default="corrected",
+                   help="corrected: the noise bands get power in proportion to their width (matches the real residual); classic: the stored "
+                        "values are used as they are, as Csound's ATS synthesis does")
     p.add_argument("--mixdown", choices=("none", "stereo"), default="none",
                    help="stereo: mix more than two channels down to a stereo file (for listening)")
     p.add_argument("--result-file", default=None)
@@ -382,9 +507,10 @@ def expand_args(argv):
 
 
 def main(argv=None):
-    global RESULT
+    global RESULT, NOISE_SHAPE
     a = build_parser().parse_args(expand_args(sys.argv[1:] if argv is None else argv))
     RESULT = a.result_file
+    NOISE_SHAPE = a.noise_shape
     stop_beat = None
     if RESULT:
         write_text(RESULT + ".started", "0.0000 %.3f" % time.time())
@@ -392,16 +518,30 @@ def main(argv=None):
     try:
         if a.no_sines and a.no_noise:
             fail("nothing to render (sines and noise are both off)")
+        if a.edits and len(a.edits) != len(a.ats):
+            fail("--edits must be given once for every file")
         files = [load_ats(p) for p in a.ats]
+        for k, f in enumerate(files):
+            f.edits = load_edits(a.edits[k]) if a.edits else None
+            if f.edits is not None and len(f.edits):
+                f.rows = max(f.partials, int(f.edits[:, 0].max()))
         first = files[0]
         for f in files[1:]:
             if f.frames != first.frames or abs(f.sr - first.sr) > 1e-6 or abs(f.frame_size - first.frame_size) > 1e-6:
                 fail("the channel files do not have the same frame grid")
         chans, t_start = [], 0.0
-        for k, f in enumerate(files):
-            out, t_start = render_channel(f, a.start, a.end, not a.no_sines, not a.no_noise, a.seed + k,
-                                          k / len(files), 1.0 / len(files), a.cache_dir)
-            chans.append(out)
+        jobs = choose_jobs(a.jobs, len(files))
+        if jobs > 1:
+            tasks = [{"k": k, "path": p, "start": a.start, "end": a.end, "sines": not a.no_sines, "noise": not a.no_noise,
+                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None}
+                     for k, p in enumerate(a.ats)]
+            done = run_parallel(tasks, jobs)
+            chans, t_start = [d[0] for d in done], done[0][1]
+        else:
+            for k, f in enumerate(files):
+                out, t_start = render_channel(f, a.start, a.end, not a.no_sines, not a.no_noise, a.seed + k,
+                                              k / len(files), 1.0 / len(files), a.cache_dir)
+                chans.append(out)
         if a.mixdown == "stereo":
             chans = mix_to_stereo(chans)
         write_wav(a.out, chans, first.sr)

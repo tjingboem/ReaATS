@@ -94,6 +94,8 @@ def build_parser():
     g.add_argument("--no-optimize", action="store_true", help="do not prune the tracks after tracking")
     g.add_argument("--optimize-amp-threshold-db", type=float, default=None, help="extra amplitude threshold in the pruning, dB")
     g = p.add_argument_group("output")
+    g.add_argument("--no-pack-rows", action="store_true",
+                   help="give every track a row of its own in the file (the original ATS way; the file of a long sound is then enormous)")
     g.add_argument("--no-phase", action="store_true", help="do not store the phase (file type 3 instead of 4)")
     g.add_argument("--no-noise", action="store_true", help="no residual and no noise bands (faster; file type 2 or 1)")
     g.add_argument("--residual-wav", default=None, help="also write the residual of each channel to this WAV (name_ch1.wav for several channels)")
@@ -121,19 +123,36 @@ def make_progress(result_file, count, index, parallel=False):
     in a worker it puts its own progress in the shared array (the parent writes the file). Both stop when the cancel
     file appears."""
     started, cancel = (result_file + ".started", result_file + ".cancel") if result_file else (None, None)
-    state = {"last": -1.0}
+    state = {"last": -1.0, "stage": None, "t0": time.time(), "times": {}}
+
+    def note_stage(p):
+        """Adds up how long each stage takes (reported in the result, so that slow steps can be found)."""
+        key = stage_key(p)
+        if key != state["stage"]:
+            now = time.time()
+            if state["stage"] is not None:
+                state["times"][state["stage"]] = state["times"].get(state["stage"], 0.0) + now - state["t0"]
+            state["stage"], state["t0"] = key, now
 
     def report(p):
         if cancel and os.path.exists(cancel):
             raise Cancelled()
         p = min(max(p, 0.0), 1.0)
+        note_stage(p)
         if parallel:
             _SHARED[index] = p
         elif started:
             overall = (index + p) / count
-            if overall - state["last"] >= 0.004:
+            if overall - state["last"] >= 0.004 or stage_label(p) != _BEAT["label"]:
                 state["last"] = overall
-                write_progress(started, overall)
+                write_progress(started, overall, ("channel %d: " % (index + 1) if count > 1 else "") + stage_label(p))
+
+    def timings():
+        times = dict(state["times"])
+        if state["stage"] is not None:
+            times[state["stage"]] = times.get(state["stage"], 0.0) + time.time() - state["t0"]
+        return {k: round(v, 1) for k, v in times.items()}
+    report.timings = timings
     return report
 
 
@@ -141,16 +160,22 @@ def analyse_channel(task):
     """Analyses one channel and writes its file (as path.part; the caller renames it when the whole set is done).
     Runs in the main process or in a worker. Returns the summary of the file."""
     kw = dict(task["kw"])
+    report = None
     if task["result_file"]:
-        kw["progress"] = make_progress(task["result_file"], task["count"], task["n"] - 1, task["parallel"])
+        report = make_progress(task["result_file"], task["count"], task["n"] - 1, task["parallel"])
+        kw["progress"] = report
     snd = tracker_array(np.ascontiguousarray(task["x"]), task["rate"], **kw)
+    if report:
+        report(0.995)                                                # the file is being written
     ats_save(snd, task["path"] + ".part", save_phase=task["save_phase"], save_noise=task["save_noise"])
+    timings = report.timings() if report else {}
     return {
         "file": task["path"], "channel": task["label"], "partials": int(snd.partials), "frames": int(snd.frames),
         "duration": float(snd.dur), "sample_rate": int(snd.sampling_rate),
         "frame_size": int(snd.frame_size), "window_size": int(snd.window_size),
         "noise_bands": int(len(snd.bands)) if task["save_noise"] else 0,
         "phase": task["save_phase"],
+        "timings": timings,
     }
 
 
@@ -175,13 +200,45 @@ class Cancelled(Exception):
 RESULT_FILE = None
 
 
-_BEAT = {"progress": 0.0, "stop": None}
+_BEAT = {"progress": 0.0, "label": "", "stop": None}
+
+# What the analysis is busy with, by how far it is (the tracker reports 0..1 over these steps). The editor shows the text, so that
+# a long step that moves the bar slowly (or not at all) is not mistaken for a program that has stopped.
+STAGES = [(0.80, "tracking", "finding the peaks and following them as tracks"),
+          (0.85, "pruning", "pruning and joining the tracks"),
+          (0.93, "rebuilding", "rebuilding the sound from the partials (to find the noise)"),
+          (0.99, "noise", "measuring the noise in 25 bands"),
+          (1.01, "writing", "writing the file")]
 
 
-def write_progress(path, progress):
-    """RESULT.started holds 'progress seconds-since-1970': the editor reads the time as a sign of life."""
+def stage_label(p):
+    for limit, _, text in STAGES:
+        if p < limit:
+            return text
+    return STAGES[-1][2]
+
+
+def stage_key(p):
+    for limit, key, _ in STAGES:
+        if p < limit:
+            return key
+    return STAGES[-1][1]
+
+
+def describe(values):
+    """The stage text for one or more channels' progress values: one text when they agree, else one per channel."""
+    labels = [stage_label(v) for v in values]
+    if len(values) == 1 or len(set(labels)) == 1:
+        return ("all channels: " if len(values) > 1 else "") + labels[0]
+    return "; ".join("channel %d: %s" % (i + 1, t) for i, t in enumerate(labels))
+
+
+def write_progress(path, progress, label=None):
+    """RESULT.started holds 'progress seconds-since-1970 text': the editor reads the time as a sign of life and shows the text."""
     _BEAT["progress"] = progress
-    write_text(path, "%.4f %.3f" % (progress, time.time()))
+    if label is not None:
+        _BEAT["label"] = label
+    write_text(path, "%.4f %.3f %s" % (progress, time.time(), _BEAT["label"]))
 
 
 def start_heartbeat(path):
@@ -249,9 +306,10 @@ def run_parallel(tasks, jobs):
                     r.get()
             if RESULT_FILE:
                 overall = sum(shared) / len(tasks)
-                if overall - last >= 0.004:
+                text = describe(list(shared))
+                if overall - last >= 0.004 or text != _BEAT["label"]:
                     last = overall
-                    write_progress(RESULT_FILE + ".started", overall)
+                    write_progress(RESULT_FILE + ".started", overall, text)
             if all(r.ready() for r in pending):
                 return [r.get() for r in pending]
             time.sleep(0.05)
@@ -307,7 +365,7 @@ def main(argv=None):
         last_peak_contribution=a.last_peak_contribution, SMR_continuity=a.smr_continuity,
         optimize=not a.no_optimize, force_M=a.window_length,
         window_alpha=a.window_alpha, window_beta=a.window_beta, verbose=a.verbose,
-        compute_noise=not a.no_noise,
+        compute_noise=not a.no_noise, pack_rows=not a.no_pack_rows,
     )
     if a.optimize_amp_threshold_db is not None:
         kw_common["optimize_amp_threshold"] = db_to_amp(a.optimize_amp_threshold_db)

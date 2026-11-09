@@ -70,13 +70,15 @@ local FIELDS = {
                           tip = "File type 4 (with noise) instead of 3." },
   store_noise         = { kind = "bool", label = "Store the noise bands", def = true, flag_off = "--no-noise",
                           tip = "The residual and its 25 bands. Off is faster." },
+  pack_rows           = { kind = "bool", label = "Share rows between tracks", def = true, flag_off = "--no-pack-rows",
+                          tip = "Tracks that do not overlap in time use the same partial row. The sound is the same; the file of a long sound is 20 to 100 times smaller. Off gives every track its own row (the original ATS way)." },
 }
 
 local LEFT = { "start", "duration", "channels", "mono_mix", "lowest_frequency", "highest_frequency", "window_cycles",
                "window_type", "window_alpha", "window_beta", "hop_size", "fft_size", "window_length", "jobs" }
 local RIGHT = { "amp_threshold_db", "frequency_deviation", "track_length", "min_segment_length", "min_gap_length",
                 "last_peak_contribution", "smr_continuity", "optimize", "optimize_threshold_db" }
-local OUTPUT = { "store_phase", "store_noise" }
+local OUTPUT = { "store_phase", "store_noise", "pack_rows" }
 local ORDER = {}
 for _, list in ipairs({ LEFT, RIGHT, OUTPUT }) do for _, k in ipairs(list) do ORDER[#ORDER + 1] = k end end
 M.FIELDS, M.WINDOW_TYPES = FIELDS, WINDOW_TYPES
@@ -98,6 +100,15 @@ function M.default_settings()
   local s = {}
   for key, f in pairs(FIELDS) do s[key] = f.def end
   return s
+end
+
+-- A length in seconds as minutes:seconds, for sounds of a minute or more ("8:56"); "" for shorter ones.
+function M.clock(seconds)
+  local total = math.floor((seconds or 0) + 0.5)
+  if total < 60 then return "" end
+  local h = total // 3600
+  if h > 0 then return string.format("%d:%02d:%02d", h, (total % 3600) // 60, total % 60) end
+  return string.format("%d:%02d", total // 60, total % 60)
 end
 
 -- The files the engine writes for `n` channels (the same naming as reaats_analyse.py).
@@ -518,8 +529,16 @@ function Page:handle_reply(reply, took)
   self:save_settings()
   local first = summary.files[1]
   local opened = self.env.on_open(first.file)
-  self:say(string.format("Analysed in %.1f s: %d file(s). %s", took, #summary.files,
-    opened and ("Channel 1 is open in the editor (" .. basename(first.file) .. ").") or "The first file could not be opened."), not opened)
+  local parts = {}                                              -- how long each step took (channel 1), to see where the time goes
+  if type(first.timings) == "table" then
+    for _, name in ipairs({ "tracking", "pruning", "rebuilding", "noise", "writing" }) do
+      local t = first.timings[name]
+      if t then parts[#parts + 1] = string.format("%s %.0f s", name, t) end
+    end
+  end
+  self:say(string.format("Analysed in %.1f s: %d file(s). %s%s", took, #summary.files,
+    opened and ("Channel 1 is open in the editor (" .. basename(first.file) .. ").") or "The first file could not be opened.",
+    #parts > 0 and ("  Steps: " .. table.concat(parts, ", ") .. ".") or ""), not opened)
   self.env.set_status(string.format("analysed %s: %d partials, %d frames (%.1f s)", basename(first.file), first.partials, first.frames, took))
 end
 
@@ -544,8 +563,9 @@ function Page:poll()
     return
   end
   local beat_text = read_all(job.started) or ""
-  local p, stamp = beat_text:match("^(%S+)%s+(%S+)")
+  local p, stamp, stage = beat_text:match("^(%S+)%s+(%S+)%s*(.-)%s*$")
   p, stamp = tonumber(p), tonumber(stamp)
+  if stage and stage ~= "" then job.stage = stage end                  -- what the program is busy with (its own words)
   if p then job.progress, job.seen_start = p, true end
   if stamp then job.beat = stamp end                          -- the program writes the time (seconds since 1970) every 2 s
   if job.cancelling and job.cancel_t and now - job.cancel_t > 8 then
@@ -683,7 +703,8 @@ function Page:draw(W, H, top)
   if self.wav then
     text(lx, ly, "File: " .. (basename(self.wav)), 0.9, 0.9, 0.9)
     local i = self.info
-    text(lx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds), 0.6, 0.63, 0.68)
+    text(lx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,
+      (i.seconds >= 59.5) and ("  (" .. M.clock(i.seconds) .. ")") or ""), 0.6, 0.63, 0.68)
   else
     text(lx, ly, "No sound chosen yet.", 0.95, 0.8, 0.5)
   end
@@ -750,7 +771,8 @@ function Page:draw(W, H, top)
   end
   if self.result then
     for _, f in ipairs(self.result.files) do
-      text(rx, ry, string.format("channel %s: %s  (%d partials, %d frames, %.2f s)", tostring(f.channel), basename(f.file), f.partials, f.frames, f.duration), 0.85, 0.87, 0.9)
+      text(rx, ry, string.format("channel %s: %s  (%d partials, %d frames, %.2f s%s)", tostring(f.channel), basename(f.file), f.partials, f.frames, f.duration,
+        (f.duration >= 59.5) and (", " .. M.clock(f.duration)) or ""), 0.85, 0.87, 0.9)
       local file = f.file
       self:button(rx + 400, ry - 3, 80, 20, "Open", { 0.2, 0.26, 0.4 }, function()
         if self.env.on_open(file) then self:say("Opened " .. basename(file) .. " in the editor.") else self:say("Could not open " .. basename(file), true) end
@@ -808,6 +830,8 @@ function Page:draw_busy(W, H, top)
   gfx.set(0.5, 0.53, 0.58, 1); gfx.rect(bx, by, bw, bh, 0)
   gfx.setfont(1, "Arial", 16)
   text(cx - 150, by + 34, string.format("%d %%   |   %d s", math.floor((job.progress or 0) * 100 + 0.5), math.floor(now - job.t0)), 0.85, 0.9, 0.95)
+  gfx.setfont(1, "Arial", 14)
+  if job.stage then text(bx, by - 22, job.stage, 0.65, 0.85, 0.7) end        -- e.g. "rebuilding the sound from the partials"
   gfx.setfont(1, "Arial", 13)
   text(cx - 150, by + 62, "You can leave this page (Esc): the analysis goes on and the result opens in the editor.", 0.6, 0.63, 0.68)
   self:button(cx - 50, by + 90, 100, 28, job.cancelling and "..." or "Cancel", { 0.5, 0.22, 0.2 }, function() self:cancel_job() end)

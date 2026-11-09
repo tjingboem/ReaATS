@@ -12,7 +12,7 @@ make:write(string.format([[
 import sys; sys.path.insert(0, "%s/python")
 import numpy as np
 from pyatsyn import wavio
-t = np.arange(88200) / 44100
+t = np.arange(44100 * 12) / 44100                    # 12 s: long enough that the page is seen at work
 wavio.write_wav("%s", np.stack([0.5*np.sin(2*np.pi*440*t), 0.5*np.sin(2*np.pi*660*t)], axis=1), 44100)
 ]], root, stereo))
 make:close()
@@ -134,12 +134,12 @@ print("page opens with Ctrl+A")
 -- 2. choose a stereo WAV, set 2 channels and lowest frequency 100, analyse
 chosen_file = stereo; strings = {}
 click(250, 140); strings = {}; frame()
-assert(saw("44100 Hz, 2 channel%(s%), 16 bit, 2%.00 s") or saw("44100 Hz, 2 channel%(s%), 32 bit float, 2%.00 s"), "the file info should show")
+assert(saw("44100 Hz, 2 channel%(s%), 16 bit, 12%.00 s") or saw("44100 Hz, 2 channel%(s%), 32 bit float, 12%.00 s"), "the file info should show")
 input_value = "2"; click(260, 285)
 input_value = "100"; click(260, 335)
 strings = {}; frame()
 assert(saw("^Window 1765 samples"), "the derived window should follow the lowest frequency: " .. tostring(saw("^Window")))
-click(600, 515)
+click(600, 540)
 -- while it runs: the big word, the blinking button, the progress, Cancel
 local colours, saw_big, saw_percent, saw_cancel = {}, false, false, false
 for i = 1, 400 do
@@ -153,7 +153,7 @@ for i = 1, 400 do
   if saw("^Analysed in") then break end
   os.execute("sleep 0.05")
 end
-assert(saw_big and saw_percent and saw_cancel, "while it runs the page should show ANALYZING..., a progress line and Cancel")
+assert(saw_big and saw_percent and saw_cancel, "while it runs the page should show ANALYZING..., a progress line and Cancel: " .. tostring(saw_big) .. tostring(saw_percent) .. tostring(saw_cancel) .. " | " .. table.concat(strings, " / ", 1, math.min(#strings, 12)))
 local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
 assert(n_colours >= 2, "the ANALYSE button should blink between two colours, saw " .. n_colours)
 print("while it runs: big word, blinking button, progress line, Cancel")
@@ -182,7 +182,7 @@ chosen_file = text_file; click(250, 140); strings = {}; frame()
 assert(saw("^Cannot use this file: not a WAV file"), "text file message: " .. tostring(saw("Cannot")))
 chosen_file = stereo; click(250, 140)
 input_value = "3"; click(260, 285)
-click(600, 515); strings = {}; frame()
+click(600, 540); strings = {}; frame()
 assert(saw("The file has 2 channel%(s%); 'Channels to analyse' is 3"), "too many channels: " .. tostring(saw("channel")))
 print("a non-WAV file and too many channels are refused")
 
@@ -202,19 +202,19 @@ click(100, 140); strings = {}; frame()
 assert(saw("^Item: the part of the file the item plays is analysed"), "item message: " .. tostring(saw("Item")))
 input_value = "1"; click(260, 285)
 input_value = "100"; click(260, 335)
-click(600, 515)
+click(600, 540)
 pump("^Analysed in")
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
 
 -- an item that runs past the end of its file (a few samples, or more) is analysed up to the end of the file
-selected_item = { file = stereo, offs = 0.5, len = 5.0 }
+selected_item = { file = stereo, offs = 0.5, len = 20.0 }
 click(100, 140)
 input_value = "1"; click(260, 285)
 input_value = "100"; click(260, 335)
-click(600, 515)
+click(600, 540)
 pump("^Analysed in")
-assert(saw("1%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. tostring(saw("^channel 1")))
+assert(saw("11%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. tostring(saw("^channel 1")))
 print("an item that runs past the end of the file is cut to the file")
 
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
@@ -223,7 +223,7 @@ local function start_long_job()
   chosen_file = long_wav; click(250, 140)
   input_value = "1"; click(260, 285)
   input_value = "100"; click(260, 335)
-  click(600, 515)
+  click(600, 540)
   pump("^ANALYZING%.%.%.$")
 end
 for _, f in ipairs({ "an_long.ats", "an_long_2.ats" }) do os.remove(scratch .. f) end
@@ -247,7 +247,7 @@ assert(not saw("^ANALYSIS: make"), "and return to the editor")
 print("Import .ats file opens a file and returns to the editor")
 skip_background = true                                              -- an engine that never starts
 start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
-chosen_file = long_wav; click(250, 140); click(600, 515)
+chosen_file = long_wav; click(250, 140); click(600, 540)
 fake_now = fake_now + 25
 strings = {}; frame(); strings = {}; frame()
 assert(saw("^The analysis program did not start"), "an engine that never starts: " .. tostring(saw("analysis") or saw("Analy")))
@@ -263,7 +263,7 @@ local function job_files()                                          -- the resul
 end
 skip_background = true
 start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
-chosen_file = long_wav; click(250, 140); click(600, 515)
+chosen_file = long_wav; click(250, 140); click(600, 540)
 local args1, result1 = job_files()
 assert(result1:match("reaats_%d+_%d+_result%.txt$") and args1:match("reaats_%d+_%d+_args%.txt$"), "files with an id of their own: " .. result1)
 -- a program that wrote a sign of life long ago and then died
@@ -272,7 +272,7 @@ strings = {}; frame(); strings = {}; frame()
 assert(saw("^Analysis failed") == nil and saw("stopped answering"), "a program that stopped answering is reported: " .. tostring(saw("answer") or saw("Analy")))
 assert(not reaper.file_exists(result1 .. ".started"), "and its files are removed")
 print("a dead program is noticed (no sign of life for 2 minutes)")
-click(600, 515)
+click(600, 540)
 local args2, result2 = job_files()
 assert(result2 ~= result1, "the next job has other files: " .. result2)
 print("every job has its own files")
@@ -297,7 +297,7 @@ local function popup_after_analyse()
   chosen_file = stereo; click(250, 140)
   for _, f in ipairs({ "an_stereo.ats", "an_stereo_2.ats", "an_stereo_ch1.ats", "an_stereo_ch2.ats" }) do os.remove(scratch .. f) end
   input_value = "1"; click(260, 285)
-  click(600, 515); strings = {}; frame()
+  click(600, 540); strings = {}; frame()
   return mb_log[#mb_log]
 end
 fake_check = ""                                                   -- nothing answers: no Python at all

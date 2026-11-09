@@ -15,7 +15,7 @@
 
 """
 
-from numpy import zeros, matmul, arange, cos, linspace, cumsum, sin, pi, real
+from numpy import zeros, matmul, arange, cos, linspace, cumsum, sin, pi, real, nonzero, ascontiguousarray
 from numpy.fft import fft, ifft
 from numpy.random import uniform
 from pyatsyn import wavio
@@ -29,7 +29,7 @@ from pyatsyn.ats_io import ats_load
 
 def synth(ats_snd, normalize=False, compute_phase=True, 
             export_file=None, sine_pct = 1.0, noise_pct = 0.0, noise_bands = None, 
-            normalize_sine = False, normalize_noise = False):    
+            normalize_sine = False, normalize_noise = False, progress = None):    
     """Function to synthesize audio from :obj:`~pyatsyn.ats_structure.AtsSound`
 
     Sine generator bank and band-limited noise synthesizer for .ats files. When
@@ -74,7 +74,9 @@ def synth(ats_snd, normalize=False, compute_phase=True,
         A 1D array of amplitudes representing the synthesized sound
     """
     sample_rate = ats_snd.sampling_rate
-    out_size = int(ats_snd.dur * sample_rate)
+    # ReaATS: rounded, not cut off. dur is samples / rate, and int(dur * rate) came out one sample short for some lengths (for
+    # example 25750302 samples at 48000 Hz), which made the residual fail with a 'could not be broadcast' error.
+    out_size = int(round(ats_snd.dur * sample_rate))
     frame_size = ats_snd.frame_size
     frames = ats_snd.frames
 
@@ -108,6 +110,7 @@ def synth(ats_snd, normalize=False, compute_phase=True,
         if not has_pha:
             prior_partial_phases = zeros(n_partials,"float64")
 
+        frq_by_frame = ascontiguousarray(ats_snd.frq.T)          # [frame][partial]: a frame's frequencies side by side in memory
         fil_ptr = 0
         for frame_n in range(frames):
             
@@ -115,9 +118,15 @@ def synth(ats_snd, normalize=False, compute_phase=True,
             if fil_ptr + frame_size_range > out_size:
                 frame_size_range = out_size - fil_ptr
             
-            for partial in range(n_partials):
-                if ats_snd.frq[partial][frame_n] == 0.0 and ats_snd.frq[partial][frame_n + 1] == 0.0:
-                    continue
+            if frame_n + 1 >= frames:                                  # (the last frame has no next frame to go to)
+                break
+            if progress is not None and frame_n % 100 == 0:           # ReaATS: how far the rebuilding is, 0..1
+                progress(frame_n / frames)
+            # ReaATS: only the partials that sound in this frame are visited (found with numpy on rows of the transposed
+            # frequencies), in the same order as before, so the result is bit for bit the same. The original looked at every
+            # partial in every frame with two array reads each: for a sound of minutes that is hundreds of millions of reads
+            # with a cache miss every time, and it was the slowest part of the analysis of a long sound.
+            for partial in nonzero((frq_by_frame[frame_n] != 0.0) | (frq_by_frame[frame_n + 1] != 0.0))[0]:
 
                 # get amp step
                 amp_0 = ats_snd.amp[partial][frame_n]

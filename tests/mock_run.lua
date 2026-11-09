@@ -205,6 +205,7 @@ do
   key_audition()                                                                -- A
   assert(#previews == 1, "audition did not start a preview; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
   local size = wav_info(previews[1])
+  first_sound_size = size                                                       -- (the file itself is removed later: only the last few are kept)
   assert(size and size > 300000, "rendered WAV missing or too short: " .. tostring(size))
   assert(saw("^auditioning from [%d%.]+ s, [%d%.]+ s long %(sines %+ noise, %a+ synthesis%)"), "status: " .. tostring(saw("auditioning") or saw("failed") or saw("preparing")))
   script.keys = { 112 }; frame()                                                -- P off: noise only
@@ -241,7 +242,7 @@ do
   key_audition()
   assert(#previews == before + 1, "audition should start from the playhead")
   assert(saw("^auditioning from 1%.0%d s"), "the status should say from 1.0 s: " .. tostring(saw("^auditioning")))
-  local full_size, part_size = wav_info(previews[1]), wav_info(previews[#previews])
+  local full_size, part_size = first_sound_size, wav_info(previews[#previews])
   assert(part_size < 0.7 * full_size, "the sound from 1.0 s is about half as long as the whole: " .. part_size .. " vs " .. full_size)
   clock_skew = clock_skew + 0.5; strings = {}; frame()
   assert(label_time() and label_time() > 1.3 and label_time() < 1.7, "the playhead moves while it plays, saw " .. tostring(label_time()))

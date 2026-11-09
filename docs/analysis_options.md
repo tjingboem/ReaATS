@@ -46,6 +46,7 @@ Csound's window types (-w): 0 Blackman, 1 Blackman-Harris (default), 2 Hamming, 
 | Window shape parameters | window_alpha, window_beta | 0.5, 1.0 | Parameters of the Tukey window (alpha) and of windows that take a beta. |
 | Optimise | optimize | on | Post-processing of the tracks (pruning quiet and short ones). |
 | Optimise threshold | optimize_amp_threshold | -60 dB | Extra amplitude threshold in that pruning. |
+| Share rows between tracks | pack_rows (--no-pack-rows) | on | ReaATS addition (10 Nov 2026): tracks that do not overlap in time (>= 2 frames apart) share one partial row. Same sound (phase-exact synthesis identical to 2e-16), file 20-100x smaller. |
 | Residual file | residual_file | none | Write the residual (what the sines do not explain) to a WAV; the noise bands are only calculated when this is given. |
 | Save phase, save noise | ats_save(save_phase, save_noise) | both on | Which data go into the .ats file (the same choice as Csound's -F). |
 

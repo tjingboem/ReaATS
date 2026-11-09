@@ -21,6 +21,7 @@ local sin, sqrt, floor, pi = math.sin, math.sqrt, math.floor, math.pi
 local TWO_PI = 2 * pi
 
 M.NOISE_VARIANCE = 0.04       -- the variance the ATS analysis assumes for the noise (a property of the format)
+M.NOISE_GAIN_CORRECTED = 0.20  -- with the bandwidth correction (the default): calibrated so that the noise has the power of the real residual
 M.NOISE_GAIN = 0.30           -- calibrated against Csound's atsaddnz on examples/sax.ats: noise level within 0.1 dB overall
 
 local EDGES = { 0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720,
@@ -136,12 +137,29 @@ end
 -- Adds the noise bands into out[1..n]. Only the stretches where a band sounds are made (a band's silent frames cost
 -- nothing); the filters start from rest at the beginning of each stretch, where the envelope is zero anyway. The four filter
 -- stages and the noise source are written out in the inner loop with local variables: it runs millions of times.
-local function add_noise(d, out, n, seed, k0)
+local function add_noise(d, out, n, seed, k0, shape)
   local fs = floor(d.frame_size + 0.5)
   local nyq = d.sr / 2
   local rs = seed or 12345                                          -- the state of make_rng's generator
-  local amp_scale = M.NOISE_GAIN / sqrt(d.window_size * M.NOISE_VARIANCE)
+  local corrected = (shape ~= "classic")
+  local amp_scale = (corrected and M.NOISE_GAIN_CORRECTED or M.NOISE_GAIN) / sqrt(d.window_size * M.NOISE_VARIANCE)
   local last = d.frames - 1
+  -- Bandwidth correction: the analysis stores for every band the AVERAGE squared magnitude of its FFT bins (equalised so that the bands
+  -- add up to the energy of the residual), not the energy of the band. Played as it is, the noise is too loud in the narrow low bands
+  -- and too soft in the wide high ones. Every band's power is multiplied by its width over the energy-weighted mean width of that
+  -- frame: the energy of a frame stays what it was and the bands get their right share of it.
+  local width, wbar = {}, {}
+  for b = 1, 25 do width[b] = math.max(math.min(EDGES[b + 1], nyq) - EDGES[b], 0) end
+  if corrected then
+    for k = k0, d.frames do
+      local se, sw = 0, 0
+      for b = 1, 25 do
+        local e = d.noise[b][k]
+        if e > 0 then se, sw = se + e, sw + e * width[b] end
+      end
+      wbar[k] = (se > 0) and (sw / se) or 1
+    end
+  end
   local c10, c11, c12, c13, c14, xa1, xb1, ya1, yb1
   local c20, c21, c22, c23, c24, xa2, xb2, ya2, yb2
   local c30, c31, c32, c33, c34, xa3, xb3, ya3, yb3
@@ -156,6 +174,7 @@ local function add_noise(d, out, n, seed, k0)
       c30, c31, c32, c33, c34 = table.unpack(stages[3], 1, 5)
       c40, c41, c42, c43, c44 = table.unpack(stages[4], 1, 5)
       local norm = band_norm(b, nyq, d.sr) * amp_scale
+      local wb = width[b]
       local k = k0
       while k <= last do
         if nb[k] > 0 or nb[k + 1] > 0 then
@@ -171,7 +190,12 @@ local function add_noise(d, out, n, seed, k0)
             if base >= n then break end
             local count = fs
             if base + count > n then count = n - base end
-            local a0, a1 = sqrt(nb[kk]) * norm, sqrt(nb[kk + 1]) * norm
+            local a0, a1
+            if corrected then
+              a0, a1 = sqrt(nb[kk] * wb / wbar[kk]) * norm, sqrt(nb[kk + 1] * wb / wbar[kk + 1]) * norm
+            else
+              a0, a1 = sqrt(nb[kk]) * norm, sqrt(nb[kk + 1]) * norm
+            end
             local a, da = a0, (a1 - a0) / fs
             for i = base + 1, base + count do
               rs = (rs * 1103515245 + 12345) % 2147483648
@@ -227,17 +251,18 @@ local function drop_old_caches(keep)
 end
 
 -- Returns the noise array and the offset to add to the index (sample i of the request is nz[off + i]).
-local function noise_signal(d, n, seed, k0)
+local function noise_signal(d, n, seed, k0, shape)
   local fs = floor(d.frame_size + 0.5)
   seed = seed or 12345
+  shape = shape or "corrected"
   local c = d.noise_cache
-  if c and c.seed == seed and c.k0 <= k0 and (k0 - c.k0) * fs + n <= c.n then
+  if c and c.seed == seed and c.shape == shape and c.k0 <= k0 and (k0 - c.k0) * fs + n <= c.n then
     return c.nz, (k0 - c.k0) * fs, true
   end
   local nz = {}
   for i = 1, n do nz[i] = 0 end
-  add_noise(d, nz, n, seed, k0)
-  local entry = { seed = seed, k0 = k0, n = n, nz = nz }
+  add_noise(d, nz, n, seed, k0, shape)
+  local entry = { seed = seed, shape = shape, k0 = k0, n = n, nz = nz }
   d.noise_cache = entry
   cache_log[#cache_log + 1] = { ref = setmetatable({ d }, { __mode = "v" }), entry = entry }
   drop_old_caches(entry)
@@ -268,7 +293,7 @@ function M.render(d, opts)
   if use_sines then base, span = 0, both and 0.15 or 1; add_sines(d, out, n, k0) end
   if use_noise then
     base, span = both and 0.15 or 0, both and 0.85 or 1
-    local nz, off = noise_signal(d, n, opts.seed, k0)
+    local nz, off = noise_signal(d, n, opts.seed, k0, opts.noise_shape)
     for i = 1, n do out[i] = out[i] + nz[off + i] end
     tick(1)
   end

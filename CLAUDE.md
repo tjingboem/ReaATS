@@ -307,6 +307,69 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   first / 0.9 s with the disk cache. Tests: tests/test_py_synth.lua (28), more in test_ats_synth.lua (66), mock_channels.lua; mock_run
   sets `no_py_synth` and a ticking os.clock for the step-wise tests. Possible later: Python channels in parallel, a persistent worker.
   MIDDLE STARTS (tjingboem, same day: "start Audition in the middle of the file without recalculating"): END mode with a sound <= 120 s renders the WHOLE sound (from=0) at the first AUDITION; `last_audition` = {state (data_rev|sines|noise|#chs), wav, s, e (samples), nch, sr}; any later request [s_r,e_r] inside [s,e] with the same state is `play_from_made`: the file itself when identical, else `wav_info.slice` cuts a new WAV (slice_history keeps 3). WINDOW/5 s/15 s render only their span. BUG FIXED same day: reaats_synth.py was started with `@"path"` (REAPER's ExecProcess keeps the quotes literally); now `--args-file PATH`, quoted only when the path has spaces. NOTE: the Analysis page still uses `@%s` with quoting only when needed, so it has the same latent problem for TMPDIR paths with spaces (Windows) -- not changed, tell tjingboem.
+  PARALLEL CHANNELS in reaats_synth.py (tjingboem: "Python in parallel"): `--jobs N` (0 = cores-2, >=1, <= channels), `run_parallel` with a
+  multiprocessing Pool, one `synth_task` per channel (each loads its own .ats), progress via a shared Array (`_SHARED`, workers never write files; the
+  parent writes R.started and notices R.cancel -> terminate), result identical to sequential (tested with cmp). Measured 30 s: 2 ch 5.1 -> 3.4 s,
+  4 ch 10.0 -> 5.9 s (1.5 s with the noise cache). Not parallel inside one channel.
+  CRASH FIXED (tjingboem 9 Nov: "audition crashes Reaper. It started 0%", a 90 s stereo analysis): the temp files in /tmp were 563 MB and
+  604 MB: every AUDITION wrote each channel's whole edited data to a temp .ats (Lua `ats.save` collected every frame string, then
+  table.concat = a second copy), then the Python program read both files whole, in several processes, so the machine ran out of memory
+  (oom_reaper) and the kernel killed REAPER. Now: (a) the editor writes NO .ats for a channel whose file is on disk (`c.current_file`): the
+  program gets that file plus an EDITS file (`--edits`, one per channel in order, '-' = none; records of 4 little-endian doubles
+  partial, frame, amplitude, frequency, 1-based = the cells in `edited_cells`, with their current values); (b) reaats_synth.py opens
+  .ats files as a memory map (`load_ats`, `chunk(a, p0, p1)` 256 partials at a time, edits applied per chunk) -- never whole in memory;
+  measured: 673 MB file (7000 partials, 4000 frames) 2 channels in parallel 26 s, parent 0.9 GB mostly shared file pages; (c) `ats.save`
+  streams in 4 MB blocks. A channel without a file still gets a temp .ats (streamed). Test: test_py_synth.lua "edits".
+  SECOND CRASH (tjingboem 9 Nov: "Reaper crashed again"; the kernel log showed `Out of memory: Killed process (reaper) anon-rss:12995200kB` -- REAPER itself,
+  not Python): measured with a 2-channel set of 635 MB files (20 s, 13215 partials): the Lua tables take ~2.1x the file size (3.4 GB RSS for the set), and
+  LOADING A SECOND SET while the first was still open peaked at 8 GB (both alive, the old one only freed by a later GC cycle, plus a whole-file string per
+  channel). Fix in `load_file`: (1) `ats.header` looks at headers/sizes/frame grid first; (2) a memory check on Linux (/proc/meminfo MemAvailable, plus what the open set
+  gives back) refuses a set that needs more than 85 % of it (needs = file bytes x MEMORY_FACTOR 2.1) with a message that says to analyse with a higher
+  threshold; (3) the open set is released (chs = {}, data = nil, pending/last_audition cleared, two full collectgarbage) BEFORE the next one is loaded;
+  (4) `ats.load` reads frame by frame, not the whole file as a string. Result: three loads in a row peak at 3.4 GB instead of 8.0 GB. Selection and edits cost little
+  (only ~1 % of the cells sound: 475k selected points cost ~20 MB). Still open: phase arrays are a third of the memory (could be left out of memory and rebuilt on save).
+  Stress script (not in the suite): scratchpad/stress_big.lua.
+  THE FILE SIZE PROBLEM (tjingboem 9 Nov 2026, 536 s stereo, -40 dB: "finished in 907 seconds" = "No space left on device", /home had 12 GB): the ATS analysis gives every
+  TRACK its own row, so rows grow with the length (1422 rows for 60 s -> 8894 rows for 240 s = 4.9 GB per channel; 536 s would be 25+ GB per channel). The time was
+  never the analysis (240 s: tracking 14 s, rebuilding 6 s, noise 11 s) but writing: pyatsyn's `ats_save` wrote every number with its own struct.pack and file write (now
+  numpy blocks, byte-identical), and `synth` (residual) looked at every row in every frame with a cache miss each (now `nonzero` on rows of the transposed frequencies, bit-identical).
+  FIX: `pack_track_rows` in vendored tracker.py (option pack_rows, CLI --no-pack-rows, page checkbox "Share rows between tracks", default ON): greedy interval scheduling
+  with a heap; a track may reuse a row when it starts >= 2 frames after the previous track on that row ended (one silent frame between, so fade-out/fade-in are as before). 60 s: 1422
+  rows -> 11, 206 MB -> 2.7 MB; phase-exact synthesis of packed and unpacked files differ by 2e-16; noise bands identical. Side effect: a row is no longer "one partial"
+  (the editor's plan_move logic already handles rows, but "select whole partial" would grab unrelated tracks). Also new: stage text in the progress file
+  ("progress epoch text", `STAGES` in reaats_analyse.py) shown by the page, and per-step timings in the result ("Steps: tracking .. s, ..."). Disk-full note: the engine deletes its .part files on failure.
+  COPY / CUT / PASTE (tjingboem 10 Nov 2026: "We need a copy and paste"): Ctrl+C / Ctrl+X / Ctrl+V (control chars 3 / 24 / 22; ReaMaskM also uses Ctrl+C/V). `clipboard.pieces[channel]` = points
+  {p, df, amp, frq} with df relative to the first copied frame over all channels (so channels keep their timing); paste at `frame_at(playhead)` into the SAME channel numbers that are on and
+  green; `edit.plan_paste` (lib/ats_edit.lua) is like plan_move without the source cells: runs of one source row keep their row if silent, else nearest silent row, else a new row; nothing is
+  overwritten; points past the end are dropped and counted; the pasted points become the selection; one undo group across channels. Bugs found while building it (both fixed, tested):
+  (1) an undo that removes rows left `edited_cells` entries for rows that no longer exist -> start_synth crashed writing the edits file (pruned in undo_single, and skipped in start_synth);
+  (2) edits that ADD ROWS (paste, or a move into new rows) were silently ignored by reaats_synth.py (it only knew the file's rows): `a.rows = max(partials, highest edited row)`, `chunk` makes the extra rows.
+  LASSO (tjingboem 10 Nov 2026: "can we make a lasso using Alt?"): Alt+drag (gfx cap bit 16) in a lane draws a freehand loop (`lasso.pts`, points >= 4 px apart, clamped to the lane); on release `select_poly` converts it to (time, log f) and `select_poly_single` tests every sounding point in the bounding box with the even-odd rule in each green channel (Shift+Alt adds; a click with Alt clears). RISK: many Linux window managers take Alt+drag to move the window; the manual says how to move that to Super. If tjingboem reports it does not arrive, switch the modifier.
+  NOISE TOO LOUD (tjingboem 10 Nov 2026: "the mix is not right of the sine/noise part. Noise is way too loud"): measured on MixPre-042 (20 s) and sax with --residual-wav: the
+  synthesized noise was +3.7 / +3.2 dB over the REAL residual, and spectrally tilted (+7 dB at 200-800 Hz, -5 dB above 4 kHz). Cause: ATS stores per band the AVERAGE |X|^2 per FFT bin
+  (`residual_compute_band_energy`: sum / number of bins), equalised so the bands add up to the time-domain energy, i.e. a PSD not the band energy; Csound's atsaddnz (and our classic
+  synth, calibrated to it) plays that as the band's power, so narrow low bands are too loud and wide high bands too soft. FIX (default, both synths): power_b = E_b * width_b / wbar(frame),
+  wbar = energy-weighted mean width of that frame (energy of the frame preserved), and the gain re-calibrated so the noise has the power of the real residual (NOISE_GAIN_CORRECTED 0.20;
+  classic 0.30 = Csound): synth/residual -0.14 dB (Lua) / +0.16 dB (Python) on MixPre, -0.30 dB on sax; band spread std 4.15 -> 1.84 dB. `--noise-shape classic|corrected`,
+  `opts.noise_shape`. The noise caches (memory: `c.shape`; disk: fingerprint with shape and gains, "v2") know the shape. The "Csound level within 0.1 dB" statements apply to `classic` only.
+  Measuring script idea: analyse with --residual-wav, synth with --no-sines, compare RMS and per-band power (rfft over the 25 band edges).
+  DISK FULL (tjingboem 10 Nov: "i am running out of disk space"; / was at 100 % with 74 MB free): ReaATS never deleted its AUDITION sounds from earlier sessions -- 48 files, 2.4 GB in /tmp
+  (a 536 s stereo sound is 200 MB) -- plus a 368 MB noise cache and my own test files. Now: `cleanup_session` (reaper.atexit) removes this editor's sounds and slices when it closes;
+  `remove_stale_temp_files` at the start removes AUDITION sounds and synthesis-job files whose name's time stamp is more than 6 hours old (REAPER.EnumerateFiles); the sound history keeps 2
+  (was 3). Tests: mock_channels 0 and 4a. Remember to delete my own big test files in the scratchpad (the scratchpad is under /tmp = the same small disk).
+  PLAYHEAD / PRINT (tjingboem 10 Nov: "PRINT starts at the playhead ... is that in the manual? ... i do not know how to get the playhead to the start"): it WAS in the PRINT chapter but easy to miss, and
+  there was no way to go to 0 except clicking the left end of the ruler. Now: Home = playhead to 0 (Home no longer fits the view: F and right-click do), End = to the end, a small
+  `|<` button under PRINT (`start_rect`) that shows the playhead time in amber when it is away from 0 and resets it, the print status says "FROM x s" when the playhead is not at 0,
+  and the manual says it in bold at the top of the PRINT chapter. NOTE: the main chunk of ATS_Editor.lua is AT LUA'S 200-LOCAL LIMIT (two locals were inlined to make room): put new
+  helpers in an existing table, or split the file, before adding more local functions.
   REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
   + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
   by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.
+- BROADCAST ERROR #2 (tjingboem 9 Nov 2026, 536 s stereo, -40 dB, 100 Hz-20 kHz: "operands could not be broadcast together with shapes (25750302,) (25750301,)"): NOT a
+  Start/Duration problem. pyatsyn's `synth` sized its output `int(dur * rate)` with dur = samples / rate, which floats to one sample short for some lengths
+  (int(25750302/48000*48000) = 25750301; 44109 samples at 44100 Hz reproduces it in a second). The residual (`signal - synthesis`) then failed at the END of the
+  analysis, after all the work. Fixed in vendored `ats_synth.py` (`int(round(...))`), test `test_a_length_that_is_not_exact_in_floating_point_analyses` (every
+  such length). The Lua and reaats_synth.py sides floor dur*sr too but only limit the length, so they are harmless.
+- AUDITION LENGTH BUTTON REMOVED (tjingboem 10 Nov 2026: "Remove the Plays: 5s button"): the END/WINDOW/5 s/15 s button and the L key are gone; AUDITION always plays from the playhead to the end (`to = nil`).
+  The engine/synth `to` option (`--to`, `opts.to`) stays (tested) but has no UI. HOME/END "did nothing" for tjingboem because the editor window was still the OLD script: a running Lua script keeps its
+  old code, so every change needs the editor to be CLOSED AND STARTED AGAIN. A `build DD Mon HH:MM` stamp is now drawn bottom right (update it at every install) to see which version runs.

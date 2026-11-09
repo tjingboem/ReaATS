@@ -133,17 +133,29 @@ def ats_save(sound, file, save_phase=True, save_noise=True):
         fil.write(pack('d',sound.dur))
         fil.write(pack('d',ats_type))
 
-        for frame_n in range(sound.frames):
-            fil.write(pack('d',sound.time[frame_n]))
-            for partial in range(sound.partials):
-                fil.write(pack('d',sound.amp[partial][frame_n]))
-                fil.write(pack('d',sound.frq[partial][frame_n]))
-                if has_pha:
-                    fil.write(pack('d',sound.pha[partial][frame_n]))
-            
+        # ReaATS: the frames are written in blocks with numpy. The original wrote every number with its own struct.pack and
+        # file write (25 million of them for 60 s of sound): that was two thirds of the whole analysis time. The bytes are the same.
+        import numpy as np
+        n_part, n_frames = sound.partials, sound.frames
+        n_band = len(sound.bands) if has_noi else 0
+        per = 3 if has_pha else 2
+        per_frame = 1 + per * n_part + n_band
+        times = np.asarray(sound.time, dtype=np.float64)
+        amp, frq = np.asarray(sound.amp, dtype=np.float64), np.asarray(sound.frq, dtype=np.float64)
+        pha = np.asarray(sound.pha, dtype=np.float64) if has_pha else None
+        noi = np.asarray(sound.band_energy, dtype=np.float64) if has_noi else None
+        block_frames = max(1, min(n_frames, 4000000 // per_frame))                        # about 32 MB at a time
+        for f0 in range(0, n_frames, block_frames):
+            f1 = min(n_frames, f0 + block_frames)
+            block = np.empty((f1 - f0, per_frame), dtype=np.float64)
+            block[:, 0] = times[f0:f1]
+            block[:, 1:1 + per * n_part:per] = amp[:, f0:f1].T
+            block[:, 2:2 + per * n_part:per] = frq[:, f0:f1].T
+            if has_pha:
+                block[:, 3:3 + per * n_part:per] = pha[:, f0:f1].T
             if has_noi:
-                for band in range(len(sound.bands)):
-                    fil.write(pack('d',sound.band_energy[band][frame_n]))                    
+                block[:, 1 + per * n_part:] = noi[:, f0:f1].T
+            fil.write(block.tobytes())
 
 
 def ats_load(   file, 
