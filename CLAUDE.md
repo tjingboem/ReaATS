@@ -385,6 +385,15 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   amp threshold -40 dB (my advice for the long recording!) and highest frequency 5000 Hz: everything quieter / higher became noise (sines -15.7 dB, noise -33 dB overall but the tail 1.4-9 dB under the noise).
   The synthesis was fine; the analysis settings were the cause. `M.noise_advice` shows an orange line on the page for sounds <= 2 min with threshold > -55 dB or highest frequency < 15 kHz. LESSON: settings persist between
   sounds; don't hand out settings advice without saying it is for long recordings only.
+  PRE-ANALYSIS + SUGGEST (tjingboem 10 Nov 2026: "maybe we can do a pre-analyze fase that shows the lowest and highest frequencies in a sound?" and "a Suggest button ... values come up in red outside the value window on the
+  right"): `python/reaats_prescan.py WAV [--start --duration]` (numpy only, ~0.9 s for 536 s: a long sound is sampled as 12 pieces of 5 s) prints `PRESCAN {lua table}`: average spectrum (8192 FFT, 160 log points
+  20 Hz..nyquist, max per step), loudness envelope (50 ms blocks, <=120 points), strong low partials (local maxima >= 12 dB over +-60 bins and within 25 dB of the strongest low peak, parabolic frequency, note
+  names), highest frequency with content (smoothed 1/6 octave curve, >= -75 dB), attack (steepest 20 ms rise starting above -45 dB) and `abrupt` (starts within 12 dB of full level) and `suggest` = lowest
+  frequency (0.8 x lowest strong partial, rounded 5/10/25 Hz), highest (content x 1.15 rounded, 4000..min(20000, 0.95 nyq)), threshold (-60 <=120 s, -50 <=600 s, -40 longer), hop 0.125 for a fast attack or an
+  abrupt start (<=120 s only) else 0.25, window cycles 4. Page: button "Look at the sound" (`Page:prescan`, synchronous ExecProcess, 60 s) opens `draw_pre` (spectrum, markers white = now / red = suggested, peaks, loudness, list with the
+  reasons, "Use all suggestions", Esc = back); the suggestions also stand in RED (`-> 210`) right of each field (`self.suggest[key]`, click = `apply_suggestion`, tooltip = the reason). A new sound clears them.
+  Verified on tjingboem's Piano (fundamental 254 Hz -> suggests 210 Hz / hop 0.125 / -60 dB, which is what the experiments found best: residual in the first 100 ms 6 dB lower than at 50 Hz). LESSON: "within 40 dB" took a
+  -30 dB rumble (97 Hz) for the lowest note; 25 dB fixed it; a floor-based threshold was wrong for a decaying note (removed).
   REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
   + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
   by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.

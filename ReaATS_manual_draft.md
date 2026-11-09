@@ -30,6 +30,13 @@ The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analys
 
 **Choosing the sound.** Select an audio item in REAPER and click Use selected item. Only the part of the file that the item plays is analysed, from its start offset for its length. Volume, fades, effects and pitch changes on the item are not applied, because the analysis reads the file itself. Or click Choose WAV file... and pick any WAV file. The sound must be a WAV file (PCM, 8 to 32 bit, or float). If the item's file is another format, render it to WAV first (Glue, or File, Render) and select the new item. The page shows the sample rate, the channels and the length of the sound, in seconds and, for a minute or more, also as minutes:seconds (536 seconds is 8:56).
 
+**Looking at the sound first.** The button Look at the sound, under the file name, takes a quick look at the sound before you analyse it (a second or so, however long the sound is; a long sound is sampled). It opens a view with:
+- the **average spectrum** on a log scale, with the **strong low partials** marked and named (for example "C4 261"), and the highest frequency that has content ("content up to 17331 Hz");
+- the **loudness over time**;
+- your current **lowest and highest frequency** drawn as white lines, and the **suggested** ones in red;
+- a list of **suggested settings**, each with the reason: the lowest frequency (just below the lowest strong partial, so that the window is short enough for the attack), the highest frequency (just above the content), the amplitude threshold (-60 dB for a short sound, higher for long ones), the hop size (shorter for a struck sound) and the window cycles.
+The button Use all suggestions uses them all. Back to the settings (or Esc) returns to the page, where the suggested values stand in **red** to the right of the fields they belong to, with an arrow, for example "-> 210". Point at a red value to read why; click it to use it. A red value disappears when you use it. The suggestions are a starting point, not a rule: the lowest strong partial is the lowest peak that stands out and is within 25 dB of the strongest low peak, so a note whose fundamental is very weak, or a sound with a loud low rumble, may need another value; the peaks the view names help you judge.
+
 **The options.** The page has every option of the analysis. Click a value to type a new one in the field itself: all of the old value is selected, so the first key you type replaces it. Enter accepts the value, Tab accepts it and goes on to the next number, Esc cancels, and a click anywhere else accepts it. Or point at a value and use the mouse wheel (Shift for finer steps). Point at an option to see a short explanation at the bottom. The line under the options shows what the settings mean for this sound: the window length in samples and milliseconds, the FFT size, the hop and the number of frames. It warns when the window is longer than the part that is analysed.
 
 | Option | What it sets | Default |
@@ -38,7 +45,7 @@ The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analys
 | Channels to analyse | How many channels are analysed, each into a file of its own (see below). When you choose a sound, this is set to all its channels. | all |
 | Mix all channels to mono first | Analyse the average of all channels as one sound. | off |
 | CPU cores | How many channels are analysed at the same time, one per core. 0 is automatic: all cores but two, so that REAPER keeps room to play, and at least one. Next to the box the page shows how many run at once. It does nothing for a single channel. | 0 |
-| Lowest frequency | The analysis window is four cycles of this frequency long, so a low value gives a long window: good frequency detail, but fast changes are smeared in time. Set it a little below the lowest note in the sound. | 20 Hz |
+| Lowest frequency | The analysis window is four cycles of this frequency long, so a low value gives a long window: good frequency detail, but fast changes are smeared in time. Set it a little below the lowest note in the sound (Look at the sound shows where that is). | 20 Hz |
 | Highest frequency | The highest frequency analysed. | 20000 Hz |
 | Window cycles | How many periods of the lowest frequency fit in the window. | 4 |
 | Window type, alpha, beta | The FFT window and its parameters. | blackman-harris-4-1 |

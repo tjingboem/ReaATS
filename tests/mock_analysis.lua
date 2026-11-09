@@ -149,6 +149,33 @@ enter(260, 285, "2")
 enter(260, 335, "100")
 strings = {}; frame()
 assert(saw("^Window 1765 samples"), "the derived window should follow the lowest frequency: " .. tostring(saw("^Window")))
+-- looking at the sound first: the view with the spectrum, suggestions in red next to the fields, click one to use it, "Use all suggestions"
+do
+  strings = {}; frame()
+  assert(saw("^Look at the sound$"), "the button to look at the sound is there")
+  click(460, 174)                                                 -- it runs the pre-scan program (a second or so)
+  strings = {}; frame()
+  assert(saw("^THE SOUND: an_stereo%.wav"), "the view of the sound opens: " .. table.concat(strings, " / ", 1, math.min(#strings, 12)))
+  assert(saw("^Use all suggestions$") and saw("^Back to the settings$"), "with its buttons")
+  assert(saw("^suggested %d+ Hz$"), "and the suggested frequencies on the spectrum")
+  assert(saw("^lowest now"), "next to what the settings are now")
+  local lowest_line = saw("^the lowest strong partial is at 4%d%d Hz") or saw("the lowest strong partial is at 4%d%d Hz")
+  assert(lowest_line, "the reason for the lowest frequency names the partial it found (440 Hz): " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  click(316, 615)                                                 -- Back to the settings: the suggestions stay, in red
+  strings = {}; frame()
+  assert(saw("^%-> %d+$"), "the suggestions stand in red next to the fields: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  click(400, 338)                                                 -- the red value of the lowest frequency: use it
+  strings = {}; frame()
+  assert(saw("^350$"), "a click on the red value uses it (0.8 x 440 Hz, rounded): " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  click(460, 174)
+  click(120, 615)                                                 -- Use all suggestions
+  script.keys = { 27 }; frame(); strings = {}; frame()            -- Esc closes the view, not the page
+  assert(saw("^ANALYSIS: make"), "Esc leaves the view of the sound and stays on the page")
+  enter(260, 335, "100")                                          -- back to the values the later tests expect
+  enter(260, 285, "2")
+  print("looking at the sound: the view, the red suggestions, click to use, use all")
+end
+
 -- a value is typed in the field itself: Esc cancels, Tab goes on to the next number, a click elsewhere accepts, bad text is refused
 do
   strings = {}; frame()

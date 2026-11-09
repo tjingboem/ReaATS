@@ -376,10 +376,51 @@ function Page:set_source(wav)
     return false
   end
   self.wav, self.info, self.result = wav, info, nil
+  self.pre, self.suggest, self.view = nil, nil, nil                 -- (what was seen of the previous sound)
   self.s.channels = info.channels                          -- a new sound: analyse all its channels (lower it by hand if you want fewer)
   if not self.out_custom then self.out = unique_out(wav) end
   self:say(nil)
   return true
+end
+
+-- ----------------------------------------------------------------- looking at the sound first
+-- python/reaats_prescan.py takes a second or two: the average spectrum, the lowest strong partial, the highest frequency with content, the
+-- loudness over time, and settings that suit the sound. The page shows them in a view of their own, and the suggested settings in red next
+-- to the fields they belong to (click one to use it).
+function Page:prescan()
+  if not self.wav then self:say("Choose a sound first.", true); return end
+  if not self:find_python() then self:say("Python is needed to look at the sound. See the message that opened.", true); self:python_popup(); return end
+  local script = self.env.script_dir .. "/python/reaats_prescan.py"
+  if not reaper.file_exists(script) then self:say("The program that looks at the sound is missing: " .. script, true); return end
+  local args = {}
+  if self.s.start > 0 then args[#args + 1] = string.format(" --start %.6f", self.s.start) end
+  if self.s.duration > 0 then args[#args + 1] = string.format(" --duration %.6f", self.s.duration) end
+  local reply = reaper.ExecProcess(string.format("%s %s %s%s", q(self.python.exe), q(script), q(self.wav), table.concat(args)), 60000) or ""
+  local body = reply:match("PRESCAN (%b{})")
+  local pre = body and self.env.serial.deserialize(body)
+  if type(pre) ~= "table" or type(pre.curve) ~= "table" then
+    self:say("Could not look at the sound: " .. ((reply:match("ERROR ([^\n]*)")) or (reply == "" and "no answer" or reply:gsub("%s+", " "):sub(1, 160))), true)
+    return
+  end
+  self.pre, self.suggest, self.view = pre, pre.suggest, "pre"
+  self:say(nil)
+end
+
+-- Uses a suggested setting (the red value of a field).
+function Page:apply_suggestion(key)
+  local sg, f = self.suggest and self.suggest[key], FIELDS[key]
+  if not sg or not f then return end
+  local v = clamp(sg.v, f.min or sg.v, f.max or sg.v)
+  if f.int then v = math.floor(v + 0.5) end
+  self.s[key] = v
+  self.suggest[key] = nil
+end
+
+local SUGGEST_ORDER = { "lowest_frequency", "highest_frequency", "amp_threshold_db", "hop_size", "window_cycles" }
+
+function Page:apply_all_suggestions()
+  for _, key in ipairs(SUGGEST_ORDER) do self:apply_suggestion(key) end
+  self:say("The suggested settings are used.")
 end
 
 function Page:use_selected_item()
@@ -464,6 +505,10 @@ end
 -- A typed character, from the editor's loop. Returns true when the page used it.
 function Page:key(ch)
   local e = self.edit
+  if not e and self.view == "pre" then                                 -- Esc closes the view of the sound (not the page)
+    if ch == 27 then self.view = nil; return true end
+    return false
+  end
   if not e then return false end
   if ch == 27 then self.edit = nil; return true end                    -- Esc: cancel (and stay on the page)
   if ch == 13 or ch == 10 then self:commit_edit(); return true end
@@ -720,6 +765,16 @@ function Page:field(x, y, key, label_w, box_w)
     gfx.set(1, 1, 1, 1); gfx.line(cx + 1, y + 3, cx + 1, y + 17, 1)
   end
   if f.kind == "num" and f.unit ~= "" then text(bx + box_w + 6, y + 3, f.unit, 0.55, 0.58, 0.63) end
+  local sg = self.suggest and self.suggest[key]
+  if sg and f.kind == "num" and not editing and math.abs(sg.v - v) > 1e-9 then              -- the suggestion, in red, outside the field
+    local sx = bx + box_w + 6 + ((f.unit ~= "") and (gfx.measurestr(f.unit) + 12) or 0)
+    local label = "-> " .. fmt_num(sg.v)                                                         -- an arrow and the value
+    gfx.set(1, 0.35, 0.3, 1)
+    gfx.x, gfx.y = sx, y + 3
+    gfx.drawstr(label)
+    self.hits[#self.hits + 1] = { x = sx - 2, y = y, w = gfx.measurestr(label) + 6, h = 20, tip = "Suggested: " .. sg.why .. "  (click to use it)", key = false,
+                                  click = function() self:apply_suggestion(key) end }
+  end
   if key == "jobs" and self.python and self.python.cores then
     text(bx + box_w + 6, y + 3, string.format("%d at once, of %d cores", M.workers(self.s, self.python.cores), self.python.cores), 0.55, 0.58, 0.63)
   end
@@ -740,8 +795,98 @@ function Page:heading(x, y, label)
   gfx.line(x, y + 19, x + 480, y + 19)
 end
 
+-- The view of the sound: the average spectrum on a log scale with the strong partials, the highest frequency with content and the
+-- settings (white = as they are now, red = suggested), the loudness over time, and what the analysis would do with it.
+function Page:draw_pre(W, H, top)
+  local pre = self.pre
+  gfx.set(0.09, 0.10, 0.12, 1)
+  gfx.rect(0, top, W, H - top, 1)
+  gfx.setfont(1, "Arial", 17)
+  text(24, top + 6, "THE SOUND: " .. basename(self.wav or ""), 1, 1, 1)
+  gfx.setfont(1, "Arial", 13)
+  text(24, top + 30, string.format("%.2f s%s   %d Hz   loudest %.1f dB   the quietest tenth is %.0f dB below   (a quick look: the average over the sound)",
+    pre.seconds, (pre.seconds >= 59.5) and ("  (" .. M.clock(pre.seconds) .. ")") or "", pre.rate, pre.peak_db, -pre.floor_db), 0.7, 0.74, 0.8)
+  -- the spectrum
+  local X0, Y0, PW, PH = 70, top + 70, W - 110, 250
+  local nyq = pre.rate / 2
+  local function fx(f) return X0 + math.log(math.max(f, 20) / 20) / math.log(nyq / 20) * PW end
+  local function dy(db) return Y0 + clamp(-db, 0, 90) / 90 * PH end
+  gfx.set(0.055, 0.065, 0.085, 1); gfx.rect(X0, Y0, PW, PH, 1)
+  gfx.setfont(1, "Arial", 12)
+  for _, db in ipairs({ -20, -40, -60, -80 }) do
+    gfx.set(1, 1, 1, 0.08); gfx.line(X0, dy(db), X0 + PW, dy(db))
+    text(X0 - 40, dy(db) - 6, string.format("%d dB", db), 0.55, 0.58, 0.63)
+  end
+  for _, f in ipairs({ 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 }) do
+    if f < nyq then
+      gfx.set(1, 1, 1, 0.08); gfx.line(fx(f), Y0, fx(f), Y0 + PH)
+      text(fx(f) - 12, Y0 + PH + 4, f >= 1000 and (tostring(f // 1000) .. "k") or tostring(f), 0.55, 0.58, 0.63)
+    end
+  end
+  text(X0, Y0 - 18, "average spectrum (0 dB = the strongest)", 0.6, 0.63, 0.68)
+  -- the settings: now (white) and suggested (red), for the lowest and the highest frequency
+  local function marker(f, label, r, g, b, row)
+    local x = fx(f)
+    gfx.set(r, g, b, 0.9); gfx.line(x, Y0, x, Y0 + PH)
+    text(x + 4, Y0 + 3 + row * 14, label, r, g, b)
+  end
+  marker(self.s.lowest_frequency, string.format("lowest now %s Hz", fmt_num(self.s.lowest_frequency)), 0.85, 0.85, 0.85, 0)
+  marker(self.s.highest_frequency, string.format("highest now %s Hz", fmt_num(self.s.highest_frequency)), 0.85, 0.85, 0.85, 0)
+  local sl, sh = self.suggest and self.suggest.lowest_frequency, self.suggest and self.suggest.highest_frequency
+  if sl then marker(sl.v, string.format("suggested %s Hz", fmt_num(sl.v)), 1, 0.35, 0.3, 1) end
+  if sh then marker(sh.v, string.format("suggested %s Hz", fmt_num(sh.v)), 1, 0.35, 0.3, 1) end
+  -- the curve
+  gfx.set(0.45, 0.8, 1, 1)
+  local n = #pre.curve
+  for i = 2, n do
+    gfx.line(X0 + (i - 1.5) / n * PW, dy(pre.curve[i - 1]), X0 + (i - 0.5) / n * PW, dy(pre.curve[i]))
+  end
+  -- the strong partials
+  for i, pk in ipairs(pre.peaks or {}) do
+    local x, y = fx(pk.f), dy(pk.db)
+    gfx.set(1, 0.9, 0.4, 1); gfx.circle(x, y, 3, 1)
+    text(x - 14, y - 20 + ((i % 2) * -10), string.format("%s %d", pk.note, math.floor(pk.f + 0.5)), 1, 0.9, 0.5)
+  end
+  if pre.highest and pre.highest > 0 then
+    gfx.set(0.4, 0.9, 0.5, 1)
+    text(fx(pre.highest) - 30, Y0 + PH - 16, string.format("content up to %d Hz", math.floor(pre.highest)), 0.45, 0.9, 0.55)
+  end
+  -- the loudness over time
+  local EY, EH = Y0 + PH + 40, 56
+  text(X0, EY - 16, "loudness over time", 0.6, 0.63, 0.68)
+  gfx.set(0.055, 0.065, 0.085, 1); gfx.rect(X0, EY, PW, EH, 1)
+  local env = pre.envelope or {}
+  gfx.set(0.9, 0.75, 0.4, 1)
+  for i = 2, #env do
+    local x0, x1 = X0 + (i - 2) / (#env - 1) * PW, X0 + (i - 1) / (#env - 1) * PW
+    gfx.line(x0, EY + clamp(-env[i - 1], 0, 60) / 60 * EH, x1, EY + clamp(-env[i], 0, 60) / 60 * EH)
+  end
+  text(X0, EY + EH + 3, "0 s", 0.55, 0.58, 0.63)
+  text(X0 + PW - 40, EY + EH + 3, string.format("%.1f s", pre.seconds), 0.55, 0.58, 0.63)
+  -- the suggestions, and buttons
+  local ty = EY + EH + 26
+  gfx.setfont(1, "Arial", 13)
+  for _, key in ipairs(SUGGEST_ORDER) do
+    local sg = self.suggest and self.suggest[key]
+    local f = FIELDS[key]
+    if sg and f then
+      text(24, ty, f.label .. ":", 0.8, 0.82, 0.86)
+      text(240, ty, fmt_num(self.s[key]), 0.85, 0.85, 0.85)
+      text(300, ty, "-> " .. fmt_num(sg.v), 1, 0.35, 0.3)
+      text(380, ty, sg.why, 0.65, 0.68, 0.72)
+      ty = ty + 17
+    end
+  end
+  local by = math.min(ty + 8, H - 36)
+  self:button(24, by, 200, 26, "Use all suggestions", { 0.5, 0.2, 0.18 }, function() self:apply_all_suggestions() end)
+  self:button(236, by, 160, 26, "Back to the settings", { 0.25, 0.27, 0.32 }, function() self.view = nil end)
+  gfx.setfont(1, "Arial", 13)
+  text(410, by + 6, "Esc: back.  The suggestions also stand in red next to the settings.", 0.55, 0.58, 0.63)
+end
+
 function Page:draw(W, H, top)
   self.hits = {}
+  if self.view == "pre" and self.pre then return self:draw_pre(W, H, top) end
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, top, W, H - top, 1)
   local colw = math.floor((W - 60) / 2)
@@ -773,6 +918,7 @@ function Page:draw(W, H, top)
   ly = ly + 32
   gfx.setfont(1, "Arial", 13)
   if self.wav then
+    self:button(lx + 360, ly, 160, 24, "Look at the sound", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
     text(lx, ly, "File: " .. (basename(self.wav)), 0.9, 0.9, 0.9)
     local i = self.info
     text(lx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,

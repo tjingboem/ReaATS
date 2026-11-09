@@ -496,6 +496,59 @@ class Engine(unittest.TestCase):
         self.assertLessEqual(n, 3)
         self.assertGreaterEqual(n, 3, "tracks 1, 2 and 3 are alive together at frame 5")
 
+    def test_prescan_finds_the_lowest_partial_and_suggests_settings(self):
+        import reaats_prescan
+        rate = 44100
+        t = np.arange(rate * 2) / rate
+        x = 0.4 * np.sin(2 * np.pi * 440 * t) + 0.25 * np.sin(2 * np.pi * 880 * t) + 0.12 * np.sin(2 * np.pi * 1320 * t)
+        x += 0.0005 * np.random.default_rng(1).standard_normal(len(t))                 # a faint noise floor
+        r = reaats_prescan.prescan(self.wav("pre.wav", [x]))
+        self.assertAlmostEqual(r["lowest"], 440, delta=3)
+        self.assertEqual(r["peaks"][0]["note"], "A4")
+        self.assertEqual(len(r["curve"]), 160)
+        self.assertGreater(r["highest"], 1000)
+        self.assertLess(r["highest"], 8000)
+        sg = r["suggest"]
+        self.assertEqual(sg["lowest_frequency"]["v"], 350)                              # 0.8 x 440, to 25 Hz
+        self.assertEqual(sg["amp_threshold_db"]["v"], -60)                              # a short sound
+        self.assertIn("440", sg["lowest_frequency"]["why"])
+        self.assertAlmostEqual(r["seconds"], 2.0, places=2)
+
+    def test_prescan_does_not_take_a_faint_rumble_for_the_lowest_note(self):
+        import reaats_prescan
+        rate = 44100
+        t = np.arange(rate * 2) / rate
+        x = 0.5 * np.sin(2 * np.pi * 260 * t) + 0.2 * np.sin(2 * np.pi * 520 * t) + 0.003 * np.sin(2 * np.pi * 95 * t)    # a rumble 44 dB down
+        r = reaats_prescan.prescan(self.wav("rumble.wav", [x]))
+        self.assertAlmostEqual(r["lowest"], 260, delta=3)
+
+    def test_prescan_suggests_a_shorter_hop_for_a_struck_sound_and_a_higher_threshold_for_a_long_one(self):
+        import reaats_prescan
+        rate = 44100
+        t = np.arange(rate * 2) / rate
+        struck = np.sin(2 * np.pi * 330 * t) * np.exp(-t * 4)                          # starts at full level, dies away
+        r = reaats_prescan.prescan(self.wav("struck.wav", [struck]))
+        self.assertEqual(r["suggest"]["hop_size"]["v"], 0.125)
+        slow = np.sin(2 * np.pi * 330 * t) * np.minimum(t / 0.5, 1.0)                  # a slow swell
+        r = reaats_prescan.prescan(self.wav("slow.wav", [slow]))
+        self.assertEqual(r["suggest"]["hop_size"]["v"], 0.25)
+        low_rate = 8000
+        tl = np.arange(low_rate * 130) / low_rate                                        # 130 seconds (at a low rate to keep it small)
+        long_x = 0.3 * np.sin(2 * np.pi * 200 * tl)
+        p = os.path.join(self.dir, "long.wav")
+        wavio.write_wav(p, long_x[:, None], low_rate)
+        r = reaats_prescan.prescan(p)
+        self.assertEqual(r["suggest"]["amp_threshold_db"]["v"], -50)
+
+    def test_prescan_command_line_prints_a_lua_table_and_errors(self):
+        w = self.wav("pre2.wav", [tone(440)])
+        proc = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "python", "reaats_prescan.py"), w], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(proc.stdout.startswith("PRESCAN {seconds="), proc.stdout[:60])
+        bad = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "python", "reaats_prescan.py"), os.path.join(self.dir, "nope.wav")], capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 2)
+        self.assertTrue(bad.stdout.startswith("ERROR"), bad.stdout)
+
     def test_a_start_past_the_end_says_so(self):
         w = self.wav("beyond.wav", [tone(440, seconds=1.0)])
         r = run_cli(w, os.path.join(self.dir, "b.ats"), "--start", "3")

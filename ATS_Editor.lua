@@ -2229,7 +2229,7 @@ local function draw_header(px, py, pw, ph, plain)
     0.5, 0.53, 0.58)
   text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
-  local build = "build 09 Nov 20:01"                                             -- (which version of the script is running)
+  local build = "build 09 Nov 20:19"                                             -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
