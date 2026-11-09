@@ -107,6 +107,52 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   page"): NOT built. `docs/analysis_options.md` lists every option of Csound's atsa and pyatsyn (flags, defaults,
   meaning, presets, what to show). Build it when tjingboem says so.
 
+- STEREO / MULTICHANNEL (tjingboem 9 Nov 2026, NOT built): see `docs/multichannel_design.md`. Analysis sets the number
+  of channels (one .ats per channel, same options, same duration); the editor loads them separately, switches
+  between them, individual edits per channel, one toggle button per channel (1 2 3 ...), selecting and editing apply to every channel that is on
+  (decided 9 Nov, replacing the LINK button idea; Shift keeps its existing uses); a slider per channel sets how visible
+  that channel is in the overlay (screen only: tjingboem's answer; no effect on edits or sound); a channel that is OFF is not drawn (0 %); a channel that is ON is drawn at 20-100 % by its slider, common edit window / duration. Python engine plan: pyatsyn vendored (BSD-3), WAV via
+  numpy only, any number of channels, writes one file per channel; called from the editor with `python3`.
+
+- PYTHON ANALYSIS ENGINE (9 Nov 2026, built, not yet called from the editor): `python/reaats_analyse.py` + vendored
+  `python/pyatsyn/` (BSD-3, licence kept, changes marked; see THIRD-PARTY-NOTICES.md). numpy only: `pyatsyn/wavio.py`
+  replaces `soundfile` (reads WAV PCM 8/16/24/32 + float 32/64, extensible, any channels; writes float WAV).
+  `tracker_array()` takes a sound array; noise bands are computed in memory (`compute_noise`). CLI options = the spec in
+  docs/analysis_options.md except Csound-only -T/-S; `--channels N` writes name_ch1.ats ... name_chN.ats (same options,
+  same frame grid/duration), `--mono-mix`, `--no-phase`, `--no-noise`, `--residual-wav`; last stdout line is a JSON summary;
+  problems go to stderr, exit code 2. Result is BYTE-IDENTICAL to the unmodified pyatsyn analysis of examples/sax.ats
+  (the file tjingboem listened to). 2.2 s sax: 0.55 s including Python start. Tests: `python3 python/tests/test_engine.py`
+  (21: wav formats, channels 1/2/3, file types, hop, start/duration, window types, errors, Lua reader cross-check).
+  SPEED: one change to the vendored code (marked in peak_tracking.update_track_averages): tracks asleep for more than
+  `track_length` frames are skipped, which cannot change the result (checked: byte-identical output on the sax example
+  and on 3 s vibrato signals, clean and noisy) but stops the cost growing with every track ever born (it was quadratic).
+  Measured: 2.2 s sax 0.55 s; 20 s harmonic voice with vibrato (105 partials, 2001 frames) 2.9 s mono, 5.7 s for 2
+  channels. WARNING for the Analysis page: sounds that break into thousands of tracks (noise above the amplitude
+  threshold, a badly modulated signal: my first test signal made 15,000 partials) are still slow (60 s for 20 s of
+  sound); raising --amp-threshold-db or the lowest frequency helps. (My first test signal was a wrong vibrato, a
+  growing chirp, not a real sound.)
+  ANALYSIS PAGE BUILT 9 Nov 2026 (not yet seen by tjingboem: "i can not reach the Analysis window"): ANALYSE button in the
+  header (left of EXPORT; also drawn when NO file is loaded) and Ctrl+A open `lib/analysis_page.lua` (immediate-mode page,
+  Esc/BACK returns): source = "Use selected item" (the take's WAV, start offset and item length; item volume/FX not applied;
+  non-WAV sources refused with advice) or "Choose WAV file..."; every engine option as a field (click = type a value via
+  GetUserInputs, wheel = step, Shift = finer, bool = checkbox, choice = menu), hover tip, derived line (window/FFT/hop/
+  frames, warning when the window is longer than the sound), Defaults / Csound defaults (only SMR contribution 0.5 differs),
+  output name (unique, Change... with confirm before replacing), settings remembered in ExtState `analysis_settings`.
+  ANALYSE writes an argument file (one argument per line, no quoting problems), runs
+  `python3 python/reaats_analyse.py @args` with `reaper.ExecProcess` (blocking, 10 min limit), reads the `RESULT {...}`
+  line (our serializer format) or the `ERROR ...` line (the engine prints errors on stdout too), opens channel 1 and lists
+  every channel file with an Open button. `lib/wav_info.lua` reads WAV headers. Tests: `tests/test_analysis_page.lua` (64:
+  every flag exists in the engine's --help, args, derived values), `tests/test_wav_info.lua`, `tests/mock_analysis.lua`
+  (real engine: stereo 440/660 Hz -> two files, item part only, settings remembered, errors, page reachable with no file).
+  NOT verified in real REAPER: `ExecProcess` quoting of paths with spaces (quoted only when needed), and how REAPER
+  reports a missing python3. Spatial output answer: the PARTIALS are divided over the outputs (docs/spatial_output.md).
+  NEXT (after tjingboem's test): editor channel buttons + visibility sliders (docs/multichannel_design.md); calling `python3 .../reaats_analyse.py`; editor channel
+  buttons + visibility sliders (docs/multichannel_design.md).
+
+- ON THE LIST (tjingboem 9 Nov 2026, not built): pseudo-stereo output and VBAP, as in SpectralTransfer ("dividing the
+  analysed channels over a stereo output"); see `docs/spatial_output.md` (what SpectralTransfer does, and the open
+  question whether the partials or the analysed channels are divided over the outputs).
+
 ## Next (not started, wait for tjingboem)
 1. Analysis (making .ats files) without Csound, ported to Lua from pyatsyn (BSD-3; keep its notice): peak
    detection with `reaper.new_array` FFTs, partial tracking, residual (synthesise the partials, subtract), 25-band

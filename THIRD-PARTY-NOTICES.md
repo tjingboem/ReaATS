@@ -55,6 +55,17 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## pyatsyn, included in python/pyatsyn/
+
+The folder `python/pyatsyn/` contains the code of pyatsyn 1.0.0 (BSD 3-clause, copyright 2023 Johnathan G Lyon, based on
+the ATS system of Di Liscia, Moss and Pampin), with its own licence text in `python/pyatsyn/LICENSE.rst`. It is used by
+`python/reaats_analyse.py`. Changes made for ReaATS (9 November 2026), each marked at the top of the file: the
+`soundfile` package is replaced by `wavio.py` (WAV reading and writing with numpy only, new file), the analysis can be
+called with a sound array (`tracker_array`) and computes the noise bands without writing a residual file, one speed-up (tracks that have been asleep for more than `track_length` frames are skipped when the running averages
+are updated; the result is identical, only the cost no longer grows with every track ever born), and one
+docstring was made a raw string. The analysis result is byte-identical to that of the unmodified package
+(`python/tests/test_engine.py` checks this on `examples/sax.ats`).
+
 ## Csound
 
 ReaATS does not contain Csound code and does not need Csound to run. Csound's own ATS opcodes (LGPL 2.1 or later,

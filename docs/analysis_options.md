@@ -57,6 +57,11 @@ pyatsyn window types: blackman-exact, blackman, blackman-harris-3-1, blackman-ha
 (default), blackman-harris-4-2, rectangular, parzen, welch, kaiser, gaussian, poisson, cauchy, connes, exponential,
 bartlett, riemann, tukey, hamming, hann, hann-poisson.
 
+## Channels (tjingboem, 9 Nov 2026)
+
+A setting for the number of channels to analyse. Each channel gets its own .ats file with the same options; see
+`multichannel_design.md`.
+
 ## Notes for building the page
 
 - One list of options, each marked with where it comes from. Presets: "Csound atsa defaults" and "pyatsyn defaults".

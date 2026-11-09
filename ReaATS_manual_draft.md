@@ -12,7 +12,7 @@ ReaATS is a Lua script that runs inside REAPER on Linux. It makes the sound itse
 
 - REAPER, with the script loaded from the action list.
 - The SWS extension, for AUDITION. PRINT does not need it.
-- An .ats file. A small example, sax.ats, comes with ReaATS in the examples folder. To make your own you need a program that analyses a sound into an .ats file, for example Csound, see Making an .ats file, below. Csound is not needed for anything else.
+- An .ats file. A small example, sax.ats, comes with ReaATS in the examples folder. To make your own you need Python 3 with numpy, for the analysis program that comes with ReaATS (see the Analysis page, below). Csound is not needed for anything.
 
 Only Linux has been tried. Temporary files go to the temporary folder (TMPDIR, or /tmp).
 
@@ -22,24 +22,43 @@ Put the ReaATS folder (ATS_Editor.lua and the lib folder next to it) in REAPER's
 
 The first time, ReaATS asks for an .ats file. After that it reopens the file you used last. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
 
-## Making an .ats file
+## Making an .ats file: the Analysis page
 
-Csound has the analysis program built in. From a terminal:
+The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analysis page. It is there even when no .ats file is open yet. The page analyses a sound into .ats files and opens the result in the editor. Esc, or the BACK button, returns to the editor.
 
-csound -U atsa sound.wav sound.ats -l 100
+**Choosing the sound.** Select an audio item in REAPER and click Use selected item. Only the part of the file that the item plays is analysed, from its start offset for its length. Volume, fades, effects and pitch changes on the item are not applied, because the analysis reads the file itself. Or click Choose WAV file... and pick any WAV file. The sound must be a WAV file (PCM, 8 to 32 bit, or float). If the item's file is another format, render it to WAV first (Glue, or File, Render) and select the new item. The page shows the sample rate, the channels and the length of the sound.
 
-Use a mono file. The settings that matter most:
+**The options.** The page has every option of the analysis. Click a value to type a new one, or point at it and use the mouse wheel (Shift for finer steps). Point at an option to see a short explanation at the bottom. The line under the options shows what the settings mean for this sound: the window length in samples and milliseconds, the FFT size, the hop and the number of frames. It warns when the window is longer than the part that is analysed.
 
-| Flag | What it sets | Default |
+| Option | What it sets | Default |
 |---|---|---|
-| -l | The lowest frequency to analyse. The analysis window is four cycles of this frequency long, so a low value gives a long window: good frequency detail, but fast changes are smeared in time. Set it a little below the lowest note in the sound. | 20 Hz |
-| -H | The highest frequency to analyse. | 20000 Hz |
-| -b and -e | Where to start and how long to analyse, in seconds. | whole file |
-| -h | The distance between frames, as a fraction of the window. | 0.25 |
-| -m | The quietest peak that counts, in dB. | -60 |
-| -F | The file type. 4 stores amplitude, frequency, phase and noise. 3 stores amplitude, frequency and noise. | 4 |
+| Start, Duration | Where to start and how long to analyse, in seconds. 0 means the whole sound. | 0 |
+| Channels to analyse | How many channels are analysed, each into a file of its own (see below). | 1 |
+| Mix all channels to mono first | Analyse the average of all channels as one sound. | off |
+| Lowest frequency | The analysis window is four cycles of this frequency long, so a low value gives a long window: good frequency detail, but fast changes are smeared in time. Set it a little below the lowest note in the sound. | 20 Hz |
+| Highest frequency | The highest frequency analysed. | 20000 Hz |
+| Window cycles | How many periods of the lowest frequency fit in the window. | 4 |
+| Window type, alpha, beta | The FFT window and its parameters. | blackman-harris-4-1 |
+| Hop size | The distance between frames, as a fraction of the window. | 0.25 |
+| FFT size, Window length | Force a value instead of the automatic one. | automatic |
+| Amplitude threshold | The quietest peak that counts. Raise it for noisy sounds. | -60 dB |
+| Frequency deviation | The largest relative frequency change between two frames when peaks are matched into a track. | 0.1 |
+| Track length, Minimum segment length, Minimum gap length | How tracks are smoothed, how short a piece may be, and how long a gap may be bridged, in frames. | 3 |
+| Last peak contribution, SMR contribution | How much the previous frame and the signal-to-mask ratio count when peaks are matched. | 0, 0 |
+| Optimise, Optimise threshold | Prune quiet and short tracks afterwards, with an extra threshold if wanted. | on |
+| Store the phase, Store the noise bands | What goes into the file. Without noise bands the analysis is faster. | both on |
 
-If the analysis sounds wrong, try a different -l first. For a sound whose lowest note is above 100 Hz, try -l 100. Other programs that write ATS files, such as ATSA and ATSH, or the Python package pyatsyn, make files ReaATS can open too. The analysis does not happen inside ReaATS yet. Everything else, including AUDITION and PRINT, works without Csound.
+The buttons Defaults and Csound defaults reset the options. Csound's analyser differs in one default only: the SMR contribution is 0.5. Your settings are remembered the next time. Csound's analyser has two options that this one has not: the SMR threshold and the minimum segment SMR.
+
+**Analysing.** Click ANALYSE. REAPER waits until the analysis is done, which takes a second or two for a short sound. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
+
+**Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The editor opens the first channel. The Open buttons on the page open the others, one at a time. Editing channels together is not built yet.
+
+**What it needs.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3 and numpy on your computer, and nothing else. If numpy is missing, the page says so. The program also works from a terminal, for scripts:
+
+python3 python/reaats_analyse.py sound.wav sound.ats --lowest-frequency 100
+
+python3 python/reaats_analyse.py --help lists all the options. The analysis is the one of the pyatsyn package. Csound's own analyser, csound -U atsa sound.wav sound.ats -l 100, makes files that ReaATS can open too, and so do ATSA and ATSH. If the analysis sounds wrong, try a different lowest frequency first. For a sound whose lowest note is above 100 Hz, try 100. A noisy sound with a low threshold can break into thousands of tracks and take a long time; raise the amplitude threshold then.
 
 ## The window
 
@@ -135,6 +154,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Ctrl+Z, Ctrl+Y | Undo, redo. |
 | Ctrl+S | Save as name_edit.ats. |
 | EXPORT .ats, Ctrl+Shift+S | Export an .ats file: choose the folder and the name. |
+| ANALYSE, Ctrl+A | Open the Analysis page. |
 | A, AUDITION | Play the edited sound. |
 | Space | Stop the sound. |
 | Ctrl+P, PRINT | Put the edited sound on a track. |

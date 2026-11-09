@@ -20,6 +20,7 @@
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
           A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
                         (partials / noise follow the P / N switches)
+          ANALYSE / Ctrl+A  the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
           Ctrl+P / PRINT render to a permanent WAV (unsaved edits are saved first) and put it on the selected
                         track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
@@ -32,6 +33,8 @@ local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*)[/\\]") or "
 local ats = dofile(script_dir .. "/lib/ats_file.lua")
 local edit = dofile(script_dir .. "/lib/ats_edit.lua")
 local synth = dofile(script_dir .. "/lib/ats_synth.lua")
+local wav_info = dofile(script_dir .. "/lib/wav_info.lua")
+local Analysis = dofile(script_dir .. "/lib/analysis_page.lua")
 local Serial = dofile(script_dir .. "/lib/reaats_serial.lua")     -- the tool's own save format (ReaSnap contract piece 1)
 
 -- ReaSnap Integration Contract, optional: pieces 2 and 5. The editor works exactly the same without ReaSnap;
@@ -77,6 +80,8 @@ local edited_cells = {}         -- edited_cells[p][f] = true for every cell an e
 local saved_depth = 0          -- undo depth at the last save/load: modified = (#undo_stack ~= saved_depth)
 local current_file = nil       -- the .ats file that holds the data as it is now (the opened file, or the last save)
 local status_msg, status_until = nil, 0
+local showing_analysis = false   -- the Analysis page is on screen instead of the picture
+local analysis = nil            -- the Analysis page object (made at the end of the file)
 local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lock }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
 local amp_thresh = 0
@@ -740,6 +745,25 @@ local function draw_export_button()
   gfx.drawstr(label)
 end
 
+local function analyse_rect()
+  local x, y, w, h = export_rect()
+  return x - 98, y, 88, h
+end
+
+local function draw_analyse_button()
+  local x, y, w, h = analyse_rect()
+  gfx.set(0.20, 0.36, 0.33, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.50, 0.85, 0.78, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 14)
+  local label = "ANALYSE"
+  gfx.set(0.93, 1, 0.98, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
 local function draw_print_button()
   local x, y, w, h = print_rect()
   gfx.set(0.22, 0.30, 0.46, 1)
@@ -804,10 +828,12 @@ function draw_note_scale(px, py, pw, ph)
   end
 end
 
-local function draw_header(px, py, pw, ph)
+local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 14)
   if not data then
-    text_at(px, 10, load_error and ("Could not read:\n" .. load_error) or "Press O to open a .ats file", 0.95, 0.85, 0.5)
+    text_at(px, 10, load_error and ("Could not read:\n" .. load_error) or "Press O to open a .ats file, or click ANALYSE to make one from a sound", 0.95, 0.85, 0.5)
+    if not plain then draw_analyse_button() end
+    if status_msg and reaper.time_precise() < status_until then text_at(px, 48, status_msg, 0.6, 0.95, 0.6) end
     return
   end
   local name = fname:match("([^/\\]+)$") or fname
@@ -816,13 +842,17 @@ local function draw_header(px, py, pw, ph)
     name, modified and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or "")
   text_at(px, 8, info)
-  draw_checkbox()
-  draw_audition_button()
-  draw_print_button()
-  draw_export_button()
+  if not plain then
+    draw_checkbox()
+    draw_audition_button()
+    draw_print_button()
+    draw_export_button()
+    draw_analyse_button()
+  end
   if status_msg and reaper.time_precise() < status_until then
     text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- third header row: what the last action did
   end
+  if plain then return end
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
       sel_info.points, sel_info.partials, sel_info.t0, sel_info.t1, fmt_freq(sel_info.f0), fmt_freq(sel_info.f1))
@@ -943,6 +973,8 @@ local function handle_input(px, py, pw, ph)
       print_to_track()
     elseif (function() local ex, ey, ew, eh = export_rect(); return mx >= ex and mx < ex + ew and my >= ey and my < ey + eh end)() then
       save_as()
+    elseif (function() local ax2, ay2, aw2, ah2 = analyse_rect(); return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2 end)() then
+      showing_analysis = true
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -998,6 +1030,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
   elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
+  elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
@@ -1010,29 +1043,55 @@ local function handle_input(px, py, pw, ph)
 end
 
 -- ---------------------------------------------------------------------- main
+-- ReaSnap "Close All" (piece 5): only for an instance ReaSnap launched (it knows its project then).
+local function close_signal_received()
+  if not reasnap_project_identity then return false end
+  local now = reaper.time_precise()
+  if now - closecheck_last < 0.25 then return false end
+  closecheck_last = now
+  local raw = reaper.GetExtState("ReaSculpt_Registry", "close_ReaATS_signal")
+  if raw == "" then return false end
+  local sig_project, sig_time = raw:match("^(.-)|([%d%.]+)$")
+  sig_time = tonumber(sig_time)
+  -- same project AND broadcast after this instance was born (a lingering signal must not kill a new window)
+  return sig_project == reasnap_project_identity and sig_time ~= nil and sig_time > reasnap_launch_time
+end
+
+local function draw_analysis_frame()
+  local px, py, pw, ph = plot_rect()
+  gfx.set(0.09, 0.10, 0.12, 1)
+  gfx.rect(0, 0, gfx.w, gfx.h, 1)
+  draw_header(px, py, pw, ph, true)
+  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T)
+end
+
 local function loop()
+  if showing_analysis then
+    local keep = true
+    analysis:mouse(gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap, gfx.mouse_wheel)
+    gfx.mouse_wheel = 0
+    local ch = gfx.getchar()
+    if ch < 0 then keep = false
+    elseif ch == 27 then showing_analysis = false; dirty = true end
+    if keep and close_signal_received() then keep = false end
+    if not keep then stop_audition() end
+    if showing_analysis or not keep then
+      draw_analysis_frame()
+      gfx.update()
+      if keep then reaper.defer(loop) end
+      return
+    end
+    -- left the page (Esc or BACK): carry on with the picture in this same frame
+  end
   local px, py, pw, ph = plot_rect()
   if math.floor(gfx.w) ~= last_w or math.floor(gfx.h) ~= last_h then
     last_w, last_h = math.floor(gfx.w), math.floor(gfx.h)
     dirty = true
   end
   local keep = handle_input(px, py, pw, ph)
-  -- ReaSnap "Close All" (piece 5): only for an instance ReaSnap launched (it knows its project then).
-  if keep and reasnap_project_identity then
-    local now = reaper.time_precise()
-    if now - closecheck_last >= 0.25 then
-      closecheck_last = now
-      local raw = reaper.GetExtState("ReaSculpt_Registry", "close_ReaATS_signal")
-      if raw ~= "" then
-        local sig_project, sig_time = raw:match("^(.-)|([%d%.]+)$")
-        sig_time = tonumber(sig_time)
-        -- same project AND broadcast after this instance was born (a lingering signal must not kill a new window)
-        if sig_project == reasnap_project_identity and sig_time and sig_time > reasnap_launch_time then
-          stop_audition()
-          keep = false
-        end
-      end
-    end
+  if keep and close_signal_received() then
+    stop_audition()
+    keep = false
   end
   if dirty then render_cache(pw, ph) end
 
@@ -1047,6 +1106,13 @@ local function loop()
 end
 
 gfx.init(TITLE, 1100, 640)
+analysis = Analysis.new({
+  serial = Serial, wav_info = wav_info, script_dir = script_dir, ext_section = EXT_SECTION,
+  on_open = function(path) return load_file(path) end,
+  set_status = set_status,
+  redraw = function() draw_analysis_frame(); gfx.update() end,
+  back = function() showing_analysis = false; dirty = true end,
+})
 -- Piece 4: settings ReaSnap left for this instance (restoring a snapshot). Checked after everything the
 -- apply touches exists (load_file, view, the switches). The snapshot names a file: if it has gone, say so.
 local applied = false
