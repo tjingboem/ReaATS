@@ -280,6 +280,11 @@ class Engine(unittest.TestCase):
         self.assertIn("partials=", last)
         self.assertTrue(os.path.exists(out), "a path with a space must work")
 
+    def test_check_says_whether_this_python_can_analyse(self):
+        r = run_cli("--check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout.strip(), r"^CHECK ok python=\d+\.\d+\.\d+ numpy=\S+$")
+
     def test_errors_are_also_printed_on_stdout(self):
         w = self.wav("er.wav", [tone(440, seconds=0.5)])
         r = run_cli(w, os.path.join(self.dir, "er.ats"), "--channels", 4)

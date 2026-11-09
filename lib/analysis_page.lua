@@ -146,12 +146,85 @@ function M.build_args(s, wav, out)
   return a
 end
 
-local function find_python()
-  for _, c in ipairs({ "/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3" }) do
-    if reaper.file_exists(c) then return c end
+-- ------------------------------------------------------------------ finding Python
+M.PYTHON_URL = "https://www.python.org/downloads/"
+M.MIN_PYTHON = "3.8"
+
+-- Where a Python program could be, best first: the one REAPER is set to use for ReaScript (Preferences > Plug-ins >
+-- ReaScript: reaper.ini has pythonlibpath64 and pythonlibdll64), then the usual places. `ini_text` is the text of
+-- reaper.ini, `os_name` what reaper.GetOS() says. Pure, so it can be tested.
+function M.python_candidates(ini_text, os_name, remembered)
+  local list, seen = {}, {}
+  local function add(path)
+    if path and path ~= "" and not seen[path] then seen[path] = true; list[#list + 1] = path end
   end
-  return "python3"
+  add(remembered)
+  local libpath = (ini_text or ""):match("\npythonlibpath64=([^\r\n]*)")
+  local libdll = (ini_text or ""):match("\npythonlibdll64=([^\r\n]*)")
+  local win = os_name and os_name:find("Win") ~= nil
+  local mac = os_name and os_name:find("OSX") ~= nil
+  local version = libdll and (libdll:match("python(%d+%.%d+)") or libdll:match("python(%d)(%d%d)")) or nil
+  if libdll and not libdll:match("python%d+%.%d+") then
+    local a, b = libdll:match("python(%d)(%d%d?)")      -- python312.dll -> 3.12
+    if a then version = a .. "." .. b end
+  end
+  if libpath and libpath ~= "" then
+    local dir = libpath:gsub("[/\\]+$", "")
+    local sep = win and "\\" or "/"
+    if win then
+      add(dir .. sep .. "python.exe")
+      add(dir .. sep .. ".." .. sep .. "python.exe")
+    else
+      if version then add(dir .. "/python" .. version) end
+      add(dir .. "/python3")
+      add(dir .. "/../bin/python3")
+      if version then add(dir .. "/../bin/python" .. version) end
+    end
+  end
+  if win then
+    add("python.exe"); add("python3.exe"); add("py.exe")
+  elseif mac then
+    add("/opt/homebrew/bin/python3"); add("/usr/local/bin/python3"); add("/usr/bin/python3"); add("python3")
+  else
+    if version then add("/usr/bin/python" .. version) end
+    add("/usr/bin/python3"); add("/usr/local/bin/python3"); add("python3")
+  end
+  return list
 end
+
+-- The text of the popup when no usable Python is found. `problem` is "none", "numpy" or "old"; `found` the Python seen.
+function M.python_help_text(problem, found)
+  local lines = {}
+  if problem == "numpy" then
+    lines[#lines + 1] = "ReaATS found Python" .. (found and (" (" .. found .. ")") or "") .. ", but it does not have the numpy package that the analysis needs."
+  elseif problem == "old" then
+    lines[#lines + 1] = "ReaATS found Python" .. (found and (" (" .. found .. ")") or "") .. ", but that version is too old."
+  else
+    lines[#lines + 1] = "ReaATS could not find Python. The analysis needs it."
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "What to do:"
+  lines[#lines + 1] = "1. Download Python " .. M.MIN_PYTHON .. " or newer (64-bit) from " .. M.PYTHON_URL .. " and install it."
+  lines[#lines + 1] = "    On Windows, tick 'Add python.exe to PATH' in the installer."
+  lines[#lines + 1] = "2. Install numpy: open a terminal and run   python3 -m pip install numpy   (on Windows: python -m pip install numpy)."
+  lines[#lines + 1] = "3. Tell REAPER where Python is: Options > Preferences > Plug-ins > ReaScript. Tick 'Enable Python for use with ReaScript'"
+  lines[#lines + 1] = "    and fill in the folder of the Python you installed (and the Python file in the field below it). ReaATS uses that setting"
+  lines[#lines + 1] = "    to find Python. Then restart REAPER."
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Open the download page now?"
+  return table.concat(lines, "\n")
+end
+
+local function open_url(url)
+  if reaper.CF_ShellExecute then reaper.CF_ShellExecute(url); return end
+  local os_name = reaper.GetOS and reaper.GetOS() or ""
+  if os_name:find("Win") then reaper.ExecProcess('cmd.exe /c start "" "' .. url .. '"', -1)
+  elseif os_name:find("OSX") then reaper.ExecProcess("open " .. url, -1)
+  else reaper.ExecProcess("xdg-open " .. url, -1) end
+end
+M.open_url = open_url
+
+local function q(path) return path:find("%s") and ('"' .. path .. '"') or path end      -- quote only when needed
 
 -- ------------------------------------------------------------------ the page
 local Page = {}
@@ -183,6 +256,47 @@ function M.new(env)
     end
   end
   return self
+end
+
+-- Finds a Python that can run the engine; remembers it. Returns true, or false after setting self.python_problem.
+function Page:find_python(force)
+  if self.python and not force then return true end
+  local engine = self.env.script_dir .. "/python/reaats_analyse.py"
+  local ini = ""
+  if reaper.get_ini_file then
+    local fh = io.open(reaper.get_ini_file(), "r")
+    if fh then ini = "\n" .. fh:read("a"); fh:close() end
+  end
+  local remembered = (not force) and reaper.GetExtState(self.env.ext_section, "python_exe") or nil
+  local problem, found = "none", nil
+  for _, exe in ipairs(M.python_candidates(ini, reaper.GetOS and reaper.GetOS() or "Linux64", remembered)) do
+    local absolute = exe:find("[/\\]") ~= nil
+    if not absolute or reaper.file_exists(exe) then
+      local reply = reaper.ExecProcess(string.format("%s %s --check", q(exe), q(engine)), 20000) or ""
+      local status, py, extra = reply:match("CHECK (%a+) ?(%S*) ?(%S*)")
+      local version = reply:match("python=(%S+)")
+      if status == "ok" then
+        self.python = { exe = exe, version = version, numpy = reply:match("numpy=(%S+)") }
+        self.python_problem = nil
+        reaper.SetExtState(self.env.ext_section, "python_exe", exe, true)
+        return true
+      elseif status == "missing" then
+        problem, found = "numpy", "Python " .. tostring(version)
+      elseif status == "old" and problem == "none" then
+        problem, found = "old", "Python " .. tostring(version)
+      end
+    end
+  end
+  self.python = nil
+  self.python_problem = { kind = problem, found = found }
+  return false
+end
+
+-- The popup: what is missing, what to install, and an offer to open the download page.
+function Page:python_popup()
+  local pr = self.python_problem or { kind = "none" }
+  local answer = reaper.MB(M.python_help_text(pr.kind, pr.found), "ReaATS: Python is needed for the analysis", 4)
+  if answer == 6 then open_url(M.PYTHON_URL) end
 end
 
 function Page:say(msg, bad) self.message, self.message_bad = msg, bad or false end
@@ -342,12 +456,16 @@ function Page:run()
   fh:close()
   local engine = self.env.script_dir .. "/python/reaats_analyse.py"
   if not reaper.file_exists(engine) then self:say("The analysis program is missing: " .. engine, true); return end
+  if not self:find_python() then
+    self:say("Python (" .. M.MIN_PYTHON .. " or newer, with numpy) is needed for the analysis. See the message that opened.", true)
+    self:python_popup()
+    return
+  end
   self.busy = true
   self:say("Analysing ... REAPER waits until it is done.")
   self.env.redraw()
   local t0 = reaper.time_precise()
-  local function q(path) return path:find("%s") and ('"' .. path .. '"') or path end      -- quote only when needed
-  local reply = reaper.ExecProcess(string.format("%s %s @%s", q(find_python()), q(engine), q(argsfile)), 600000)
+  local reply = reaper.ExecProcess(string.format("%s %s @%s", q(self.python.exe), q(engine), q(argsfile)), 600000)
   local took = reaper.time_precise() - t0
   self.busy = false
   os.remove(argsfile)
@@ -357,10 +475,8 @@ function Page:run()
   if type(summary) ~= "table" or type(summary.files) ~= "table" or #summary.files == 0 then
     local err = reply:match("ERROR ([^\n]*)")
     if not err then
-      if reply:find("No module named") then
-        err = "Python needs the numpy package (for example: python3 -m pip install numpy)."
-      elseif reply == "" then
-        err = "The analysis program did not answer. Is Python 3 installed?"
+      if reply == "" then
+        err = "The analysis program did not answer."
       else
         err = (reply:gsub("%s+", " "):sub(1, 220))
       end
@@ -444,6 +560,19 @@ function Page:draw(W, H, top)
   y = y + 28
 
   -- left column: source, then window and time
+  -- Python status, top right: which Python the analysis will use, or a red hint (click for the help)
+  if self.python == nil and self.python_problem == nil then self:find_python() end
+  gfx.setfont(1, "Arial", 13)
+  if self.python then
+    text(rx, top + 9, string.format("Python %s, numpy %s", tostring(self.python.version), tostring(self.python.numpy)), 0.55, 0.85, 0.65)
+    self:button(rx + 400, top + 5, 80, 20, "Check", { 0.25, 0.27, 0.32 }, function() self:find_python(true) end)
+  else
+    text(rx, top + 9, "Python not found (needed for the analysis)", 1, 0.6, 0.5)
+    self:button(rx + 330, top + 5, 70, 20, "Help", { 0.45, 0.25, 0.2 }, function() self:python_popup() end)
+    self:button(rx + 405, top + 5, 75, 20, "Check", { 0.25, 0.27, 0.32 }, function()
+      if self:find_python(true) then self:say("Python found.") else self:say("Python is still not found.", true) end
+    end)
+  end
   self:heading(lx, y, "SOURCE")
   local ly = y + 26
   self:button(lx, ly, 160, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)

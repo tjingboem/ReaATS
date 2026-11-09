@@ -24,6 +24,29 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+MIN_PYTHON = (3, 8)
+
+
+def check_environment():
+    """--check: says whether this Python can run the analysis (the ReaATS editor asks before it analyses).
+    Prints one line, CHECK ok|old|missing, and exits 0 only when everything is there. Runs before numpy is imported."""
+    v = sys.version_info
+    py = "%d.%d.%d" % (v[0], v[1], v[2])
+    if (v[0], v[1]) < MIN_PYTHON:
+        print("CHECK old python=%s needs=%d.%d" % (py, MIN_PYTHON[0], MIN_PYTHON[1]))
+        sys.exit(3)
+    try:
+        import numpy
+    except ImportError:
+        print("CHECK missing numpy python=%s" % py)
+        sys.exit(3)
+    print("CHECK ok python=%s numpy=%s" % (py, numpy.__version__))
+    sys.exit(0)
+
+
+if "--check" in sys.argv[1:]:
+    check_environment()
+
 import numpy as np                                        # noqa: E402
 from pyatsyn import wavio                                 # noqa: E402
 from pyatsyn.ats_io import ats_save                       # noqa: E402

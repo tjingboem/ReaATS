@@ -54,7 +54,11 @@ The buttons Defaults and Csound defaults reset the options. Csound's analyser di
 
 **Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The editor opens the first channel. The Open buttons on the page open the others, one at a time. Editing channels together is not built yet.
 
-**What it needs.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3 and numpy on your computer, and nothing else. If numpy is missing, the page says so. The program also works from a terminal, for scripts:
+**What it needs.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3.8 or newer and the numpy package on your computer, and nothing else. REAPER users usually have Python already. ReaATS looks for it in the place REAPER is set to use for ReaScript (Options, Preferences, Plug-ins, ReaScript), and then in the usual places. The top right of the Analysis page shows which Python it found and which numpy, and a Check button looks again.
+
+If ReaATS cannot find a Python that will do, a window opens when you click ANALYSE. It says what is missing: no Python, no numpy, or a Python that is too old. It tells you to download Python from python.org and install it, to install numpy (python3 -m pip install numpy) and to tell REAPER where Python is, in Options, Preferences, Plug-ins, ReaScript. It also offers to open the download page. After you have done this, click Check on the page, or restart REAPER, and try again. There is no analysis without Python.
+
+The program also works from a terminal, for scripts:
 
 python3 python/reaats_analyse.py sound.wav sound.ats --lowest-frequency 100
 

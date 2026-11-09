@@ -22,6 +22,7 @@ do local a = io.open(root .. "/examples/sax.ats", "rb"); local d = a:read("a"); 
 -- fakes
 local ext, strings, deferred = {}, {}, nil
 local chosen_file, input_value = stereo, ""
+local fake_check, mb_log, mb_answer, opened_url = nil, {}, 7, nil
 local selected_item = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
@@ -39,10 +40,12 @@ reaper = {
   file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
   GetUserFileNameForRead = function() if chosen_file then return true, chosen_file end return false, "" end,
   GetUserInputs = function() return true, input_value end,
-  MB = function() return 6 end,
+  MB = function(text, title, kind) mb_log[#mb_log + 1] = text; return mb_answer end,
   time_precise = function() return os.clock() end,
   defer = function(fn) deferred = fn end,
-  ExecProcess = function(cmd, timeout) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return "0\n" .. out end,
+  ExecProcess = function(cmd, timeout)
+    if fake_check ~= nil and cmd:find("--check", 1, true) then return "0\n" .. fake_check end
+    local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return "0\n" .. out end,
   GetSelectedMediaItem = function() return selected_item end,
   GetActiveTake = function(it) return it end,
   TakeIsMIDI = function() return false end,
@@ -145,6 +148,52 @@ click(600, 515); strings = {}; frame()
 assert(saw("^Analysed in"), "analysis of the item failed: " .. tostring(saw("failed") or saw("^Cannot")))
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
+
+-- 8. no usable Python: a popup says what to do, nothing is analysed
+local function fresh_page()
+  ext[key("tjingboem_ATSViewer", "python_exe")] = nil
+  start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+end
+local function popup_after_analyse()
+  mb_log = {}
+  chosen_file = stereo; click(250, 140)
+  for _, f in ipairs({ "an_stereo.ats", "an_stereo_2.ats", "an_stereo_ch1.ats", "an_stereo_ch2.ats" }) do os.remove(scratch .. f) end
+  input_value = "1"; click(260, 285)
+  click(600, 515); strings = {}; frame()
+  return mb_log[#mb_log]
+end
+fake_check = ""                                                   -- nothing answers: no Python at all
+fresh_page()
+assert(saw("^Python not found"), "the page should say that Python was not found")
+local text = popup_after_analyse()
+assert(text and text:find("could not find Python", 1, true) and text:find("python.org/downloads", 1, true), "popup: " .. tostring(text))
+assert(text:find("Options > Preferences > Plug%-ins > ReaScript") and text:find("numpy", 1, true), "popup should say how to tell REAPER and to install numpy")
+assert(saw("^Python %(3%.8 or newer, with numpy%) is needed"), "a red hint on the page")
+assert(not reaper.file_exists(scratch .. "an_stereo.ats"), "nothing may be analysed without Python")
+print("no Python: popup with the download page, numpy and the REAPER setting")
+fake_check = "CHECK missing numpy python=3.12.3\n"            -- Python found, numpy missing
+fresh_page()
+text = popup_after_analyse()
+assert(text and text:find("does not have the numpy package", 1, true) and text:find("Python 3.12.3", 1, true), "numpy popup: " .. tostring(text))
+fake_check = "CHECK old python=3.6.1 needs=3.8\n"             -- Python too old
+fresh_page()
+text = popup_after_analyse()
+assert(text and text:find("too old", 1, true) and text:find("Python 3.6.1", 1, true), "old popup: " .. tostring(text))
+print("numpy missing and Python too old are told apart")
+reaper.CF_ShellExecute = function(u) opened_url = u end         -- answering Yes opens the download page
+mb_answer = 6; fresh_page(); popup_after_analyse()
+assert(opened_url and opened_url:find("python.org/downloads", 1, true), "Yes should open the download page: " .. tostring(opened_url))
+mb_answer = 7; reaper.CF_ShellExecute = nil
+print("the popup can open the download page")
+fake_check = nil                                                 -- Python installed: the Check button finds it
+fresh_page()                                                     -- (the real check runs now, so this session already finds it)
+assert(saw("^Python 3%.") and saw("numpy"), "with a working Python the page shows its version")
+fake_check = ""; fresh_page()                                    -- no Python again ...
+assert(saw("^Python not found"))
+fake_check = nil
+click(990, 85); strings = {}; frame()                            -- ... then the Check button after installing
+assert(saw("^Python 3%."), "the Check button should find Python: " .. tostring(saw("Python")))
+print("the Check button finds Python after it was installed")
 
 for _, f in ipairs({ "an_stereo_ch1.ats", "an_stereo_ch2.ats", "an_stereo.ats", "an_stereo_2.ats", "an_stereo.wav", "an_notwav.txt", "an_sax.ats" }) do os.remove(scratch .. f) end
 print("analysis page OK")

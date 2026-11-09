@@ -153,10 +153,18 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   analysed channels over a stereo output"); see `docs/spatial_output.md` (what SpectralTransfer does, and the open
   question whether the partials or the analysed channels are divided over the outputs).
 
+- DECISION (tjingboem 9 Nov 2026): NO Lua version of the analysis will be made. Python (3.8+ with numpy) is required for
+  analysis. When it is missing, ANALYSE shows a popup: download Python from python.org, install numpy, add the Python
+  path in REAPER (Options > Preferences > Plug-ins > ReaScript), with an offer to open the download page. Built the same
+  day: `python3 reaats_analyse.py --check` (prints CHECK ok|old|missing before numpy is imported; MIN_PYTHON (3, 8),
+  not tested on other versions), `analysis_page.python_candidates()` (the Python REAPER is set to use first, read from
+  reaper.ini `pythonlibpath64`/`pythonlibdll64`; then the usual places; the one that worked is remembered in ExtState
+  `python_exe`), a Python status line + Check button on the page, the popup (`python_help_text`, separates "no Python",
+  "no numpy" and "too old"), 11 new pure tests + 4 mock scenarios. NOT verified in real REAPER: the reaper.ini lookup,
+  `reaper.get_ini_file`, the popup text layout in `reaper.MB`, `open_url`.
+
 ## Next (not started, wait for tjingboem)
-1. Analysis (making .ats files) without Csound, ported to Lua from pyatsyn (BSD-3; keep its notice): peak
-   detection with `reaper.new_array` FFTs, partial tracking, residual (synthesise the partials, subtract), 25-band
-   noise energy. Until then Csound's `atsa` (`csound -U atsa in.wav out.ats -l 100`) or pyatsyn make the files.
+1. (There is no Lua analysis: see DECISION above.)
 2. A LICENSE file (tjingboem chooses; recommended MIT or BSD-3).
 3. More edit operations (amplitude scale, frequency shift in Hz, copy/paste, stretch), audition of the selection only.
 
