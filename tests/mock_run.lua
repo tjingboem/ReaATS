@@ -14,7 +14,9 @@ gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
 local project, projext = { tracks = {} }, {}
 local previews = {}
+local clock_skew = 0
 local destroyed, stops = 0, 0
+local save_rv, save_choice, mb_calls, mb_answer = 1, nil, 0, 6
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
 local work = scratch .. "mock_sax.ats"                 -- the viewer edits a COPY, never examples/sax.ats
 do
@@ -23,7 +25,7 @@ do
   os.remove(scratch .. "mock_sax_edit.ats")
 end
 reaper = {
-  time_precise = function() return os.clock() end,
+  time_precise = function() return os.clock() + clock_skew end,
   ExecProcess = function(cmd, timeout) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
   PCM_Source_CreateFromFile = function(path) return { path = path } end,
   PCM_Source_Destroy = function() destroyed = destroyed + 1 end,
@@ -33,6 +35,9 @@ reaper = {
   GetExtState = function(sec, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
+  JS_Dialog_BrowseForSaveFile = function() return save_rv, save_choice end,
+  GetUserInputs = function() return save_rv == 1, save_choice end,
+  MB = function() mb_calls = mb_calls + 1; return mb_answer end,
   -- a tiny fake project for PRINT
   Undo_BeginBlock = function() end, Undo_EndBlock = function() end, UpdateArrange = function() end,
   CountTracks = function() return #project.tracks end,
@@ -116,7 +121,7 @@ print(summary)
 do
   local ats0 = dofile("lib/ats_file.lua")
   script.keys = { 114 }; frame(); script.keys = { 102 }; frame()               -- reload the copy, fit the view
-  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()                -- select the left part of the plot (t < ~1.2 s)
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()                -- select the left part of the plot (t < ~1.2 s)
   gfx.mouse_x, gfx.mouse_y = 600, 600; frame()
   gfx.mouse_cap = 0; frame(); frame()
   gfx.mouse_cap = 0
@@ -131,7 +136,7 @@ do
     if d0.amp[p][f] > thr and d0.frq[p][f] > 0 then
       fmin = math.min(fmin, d0.frq[p][f]); fmax = math.max(fmax, d0.frq[p][f]) end end end
   local f0, f1 = math.max(10, fmin / 1.4), math.min(40000, fmax * 1.4)
-  local px, py, pw, ph = 62, 52, 988, 534
+  local px, py, pw, ph = 62, 70, 988, 516
   local tmax = d0.times[d0.frames]
   local function screen(t, fr) return px + t / tmax * pw, py + ph * (1 - (math.log(fr) - math.log(f0)) / (math.log(f1) - math.log(f0))) end
   local x, y = screen(d0.times[101], d0.frq[1][101])
@@ -178,7 +183,7 @@ for p = 1, orig.partials do for f = 1, orig.frames do
   if orig.amp[p][f] > 0 and edited.amp[p][f] == 0 then zeros = zeros + 1 end
 end end
 assert(zeros > 1000, "deleted points should be silent in the saved file, got " .. zeros)
-assert(edited.type == 3 and not edited.has_phase, "edited file should be saved without phase")
+assert(edited.type == 4 and edited.has_phase, "edited file should be saved with phase (type 4)")
 print(string.format("edit round trip OK: %d points silenced in the saved file (type %d)", zeros, edited.type))
 -- audition: render with the real Csound and 'play' through the mocked preview
 do
@@ -205,7 +210,7 @@ do
   assert(destroyed == 0, "preview sources must never be destroyed from the script")
   assert(previews[1] ~= previews[2] and previews[2] ~= previews[3], "every render needs its own WAV name")
   assert(stops >= 1, "an audition during a running preview should stop it first")
-  print("audition OK: 3 renders with real Csound (sines+noise, noise, sines); stops=" .. stops .. ", destroyed=" .. destroyed)
+  print("audition OK: 3 renders with the Lua synthesis (sines+noise, noise, sines); stops=" .. stops .. ", destroyed=" .. destroyed)
   for _, w in ipairs(previews) do os.remove(w) end
   os.remove("/tmp/reaats_audition.ats"); os.remove("/tmp/reaats_audition.csd")
 end
@@ -214,7 +219,7 @@ do
   local ser = dofile("lib/reaats_serial.lua")
   -- an unsaved edit first: select the whole plot and delete it, so PRINT has to save the edit
   gfx.mouse_cap = 0
-  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()
+  gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()
   gfx.mouse_x, gfx.mouse_y = 1040, 540; frame()
   gfx.mouse_cap = 0; frame(); frame()
   script.keys = { 6579564 }; frame()                                           -- Delete: now modified
@@ -238,6 +243,40 @@ do
   for _, it in ipairs(project.tracks[1].items) do os.remove(it.src) end
   os.remove(st.file)
 end
+-- Save as (Ctrl+Shift+S): chosen name, .ats appended, overwrite asks, cancel does nothing, fallback box
+do
+  local ats3 = dofile("lib/ats_file.lua")
+  local target = scratch .. "saveas_test"
+  local function size(p) local f = io.open(p, "rb"); if not f then return nil end local n = f:seek("end"); f:close(); return n end
+  local function save_as_keys() gfx.mouse_cap = 8; script.keys = { 19 }; strings = {}; frame(); frame(); gfx.mouse_cap = 0 end
+  os.remove(target .. ".ats")
+  save_rv, save_choice = 1, target                                           -- no extension typed: .ats is added
+  save_as_keys()
+  assert(saw("^exported saveas_test%.ats %(with phase%)"), "export status missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
+  local saved = assert(ats3.load(target .. ".ats")); assert(saved.type == 4 and saved.has_phase, "save as: type 4 expected")
+  local first_size = size(target .. ".ats")
+  mb_calls, mb_answer = 0, 7                                                 -- the file exists: asks, answer no
+  save_as_keys()
+  assert(mb_calls == 1 and saw("^not exported"), "an existing file must be confirmed first")
+  assert(size(target .. ".ats") == first_size)
+  mb_calls, mb_answer = 0, 6                                                 -- answer yes: replaced
+  save_as_keys()
+  assert(mb_calls == 1 and saw("^exported saveas_test%.ats"), "yes should replace")
+  save_rv = 0; mb_calls = 0; clock_skew = clock_skew + 10                    -- cancel: nothing happens (old status has expired)
+  save_as_keys(); assert(not saw("^exported") and mb_calls == 0, "cancel must do nothing")
+  reaper.JS_Dialog_BrowseForSaveFile = nil                                   -- no JS extension: a typed path is used
+  save_rv, save_choice = 1, target .. "_typed.ats"; os.remove(target .. "_typed.ats")
+  save_as_keys()
+  assert(saw("^exported saveas_test_typed%.ats") and size(target .. "_typed.ats"), "typed-path fallback")
+  -- the EXPORT .ats button does the same as Ctrl+Shift+S
+  reaper.JS_Dialog_BrowseForSaveFile = function() return save_rv, save_choice end
+  save_rv, save_choice = 1, target .. "_button.ats"; os.remove(target .. "_button.ats")
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = gfx.w - 128 - 96 - 72 - 112 + 20, 16, 1; strings = {}; frame()
+  gfx.mouse_cap = 0; frame(); frame()
+  assert(saw("^exported saveas_test_button%.ats") and size(target .. "_button.ats"), "the EXPORT button should open the export")
+  os.remove(target .. ".ats"); os.remove(target .. "_typed.ats"); os.remove(target .. "_button.ats")
+  print("save as OK: dialog, .ats added, overwrite confirmed, cancel, typed-path fallback")
+end
 -- a plain click on empty space clears the selection
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 400; frame()
 gfx.mouse_cap = 0; strings = {}; frame(); frame()
@@ -246,7 +285,7 @@ local line_before = calls.line or 0
 script.keys = { 102 }; frame()                                              -- fit -> full re-render
 print(string.format("one full render: %d line calls, %d rect calls", (calls.line or 0) - line_before, calls.rect or 0))
 -- Esc: clears a selection first, then closes
-gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 55; frame()                -- whole plot (earlier box was deleted)
+gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()                -- whole plot (earlier box was deleted)
 gfx.mouse_x, gfx.mouse_y = 1040, 600; frame()
 gfx.mouse_cap = 0; frame(); strings = {}; frame()
 assert(saw("^selected:"), "selection expected before Esc")

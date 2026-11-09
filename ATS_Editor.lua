@@ -18,11 +18,12 @@
           Up / Down     transpose the selection (1 semitone; Shift 10 cents; Ctrl octave)
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
-          A or AUDITION render the edited data with Csound (atsadd/atsaddnz) and play it; Space stops
+          A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
                         (partials / noise follow the P / N switches)
           Ctrl+P / PRINT render to a permanent WAV (unsaved edits are saved first) and put it on the selected
                         track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
-          Ctrl+S        save as <name>_edit.ats (no phase; never overwrites)
+          Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
+          EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
           Esc           clear the selection, then close
 --------------------------------------------------------------------------------]]
@@ -30,6 +31,7 @@
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*)[/\\]") or "."
 local ats = dofile(script_dir .. "/lib/ats_file.lua")
 local edit = dofile(script_dir .. "/lib/ats_edit.lua")
+local synth = dofile(script_dir .. "/lib/ats_synth.lua")
 local Serial = dofile(script_dir .. "/lib/reaats_serial.lua")     -- the tool's own save format (ReaSnap contract piece 1)
 
 -- ReaSnap Integration Contract, optional: pieces 2 and 5. The editor works exactly the same without ReaSnap;
@@ -55,7 +57,7 @@ local closecheck_last = 0
 local TITLE = "ATS Editor" .. (reasnap_instance_number and (" #" .. reasnap_instance_number) or "")
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
-local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 52, 54
+local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 70, 54
 local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
 -- --------------------------------------------------------------------- state
@@ -71,6 +73,7 @@ local sel_info = nil           -- { points, partials, t0, t1, f0, f1 } of the se
 local clear_selection, update_sel_info   -- defined with the selection functions below
 local undo_stack, redo_stack = {}, {}   -- each entry: { name = ..., changes = { {p, f, oa, na, of, nf}, ... } }
 local modified = false
+local edited_cells = {}         -- edited_cells[p][f] = true for every cell an edit has touched (the phases of those runs are rebuilt on save)
 local saved_depth = 0          -- undo depth at the last save/load: modified = (#undo_stack ~= saved_depth)
 local current_file = nil       -- the .ats file that holds the data as it is now (the opened file, or the last save)
 local status_msg, status_until = nil, 0
@@ -167,7 +170,7 @@ local function load_file(path)
   end
   data, fname, load_error = d, path, nil
   clear_selection()
-  undo_stack, redo_stack, modified = {}, {}, false
+  undo_stack, redo_stack, modified, edited_cells = {}, {}, false, {}
   saved_depth, current_file = 0, path
   amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
@@ -247,6 +250,8 @@ local function apply_changes(changes, forward)
   for _, c in ipairs(changes) do
     data.amp[c.p][c.f] = forward and c.na or c.oa
     data.frq[c.p][c.f] = forward and c.nf or c.of
+    edited_cells[c.p] = edited_cells[c.p] or {}
+    edited_cells[c.p][c.f] = true
   end
   dirty = true
 end
@@ -331,9 +336,8 @@ local function move_selection(df, ratio)
 end
 
 -- ----------------------------------------------------------------- audition
--- Renders the current (edited) data with Csound's own ATS opcodes (atsadd = the sines, atsaddnz = the
--- noise bands) to a temporary WAV and plays it through REAPER's source preview, so the project is not
--- touched. What you see is what you hear: the P / N switches decide whether sines / noise are included.
+-- Renders the current (edited) data (sines and noise bands, in Lua) to a temporary WAV and plays it through
+-- REAPER's source preview, so the project is not touched. What you see is what you hear: the P / N switches decide whether sines / noise are included.
 -- Crash safety (a REAPER crash on the second audition, 9 Nov 2026): the preview sources are never
 -- destroyed from here (they were destroyed right after stopping, which is the one thing the second audition
 -- did that the first did not); every render gets its own WAV name, so a file REAPER may still hold open is
@@ -350,56 +354,16 @@ local function stop_audition()
   preview_until = 0
 end
 
-local function find_csound()
-  for _, c in ipairs({ "/usr/local/bin/csound", "/usr/bin/csound", "/opt/csound/bin/csound" }) do
-    if reaper.file_exists(c) then return c end
-  end
-  return "csound"            -- hope it is on REAPER's PATH
-end
-
--- Renders the current data to `wav` with Csound. Returns the duration and a label ("sines + noise", ...),
--- or nil plus a message.
+-- Renders the current data to `wav` (pure Lua, lib/ats_synth.lua; no other program needed). Returns the
+-- duration and a label ("sines + noise", ...), or nil plus a message.
 local function render_wav(wav)
   local use_sines = show_partials
   local use_noise = show_noise and data.has_noise
-  if not use_sines and not use_noise then return nil, "nothing to render (partials and noise are both off)" end
-  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
-  local base = dir .. "/reaats_audition"
-  local ok, err = ats.save(base .. ".ats", data)
-  if not ok then return nil, tostring(err) end
-  local dur = math.max(data.times[data.frames], data.dur) + 0.05
-  local lines = {
-    "<CsoundSynthesizer>", "<CsOptions>", "-d -m0 -W -f -o " .. wav, "</CsOptions>",
-    "<CsInstruments>", "sr = " .. math.floor(data.sr), "ksmps = 32", "nchnls = 1", "0dbfs = 1",
-    "instr 1", string.format("  ktime line 0, p3, %.6f", dur),
-  }
-  if use_sines then
-    lines[#lines + 1] = string.format('  asine atsadd ktime, 1, "%s.ats", 1, %d', base, data.partials)
-  else
-    lines[#lines + 1] = "  asine = 0"
-  end
-  if use_noise then
-    lines[#lines + 1] = string.format('  anz atsaddnz ktime, "%s.ats", %d', base, ats.NUM_NOISE_BANDS)
-  else
-    lines[#lines + 1] = "  anz = 0"
-  end
-  lines[#lines + 1] = "  out asine + anz"
-  lines[#lines + 1] = "endin"
-  lines[#lines + 1] = "</CsInstruments>"
-  lines[#lines + 1] = "<CsScore>"
-  lines[#lines + 1] = "f1 0 16384 10 1"
-  lines[#lines + 1] = string.format("i1 0 %.4f", dur)
-  lines[#lines + 1] = "</CsScore>"
-  lines[#lines + 1] = "</CsoundSynthesizer>"
-  local fh = io.open(base .. ".csd", "w")
-  if not fh then return nil, "cannot write " .. base .. ".csd" end
-  fh:write(table.concat(lines, "\n"), "\n")
-  fh:close()
-  local out = reaper.ExecProcess(find_csound() .. " " .. base .. ".csd", 60000)
-  if not reaper.file_exists(wav) then
-    return nil, "Csound produced no sound (" .. ((out or ""):gsub("%s+", " "):sub(1, 120)) .. ")"
-  end
-  return dur, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
+  local samples, sr = synth.render(data, { sines = use_sines, noise = use_noise })
+  if not samples then return nil, sr end                      -- sr is the message when samples is nil
+  local ok, err = synth.write_wav(wav, samples, sr)
+  if not ok then return nil, err end
+  return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
 end
 
 local function audition()
@@ -422,7 +386,22 @@ local function audition()
   end
 end
 
--- Saves next to the original as <name>_edit.ats (never overwrites; numbers further copies).
+-- Writes the current data to `path` as a Csound-compatible .ats file, WITH phase (the phases of edited runs are
+-- rebuilt from their frequencies first). Returns the path, or nil after a status message.
+local function write_ats(path, verb)
+  ats.update_phases(data, edited_cells)
+  edited_cells = {}
+  local ok, err = ats.save(path, data, { phase = true })
+  if ok then
+    modified = false
+    saved_depth, current_file = #undo_stack, path
+    set_status((verb or "saved") .. " " .. (path:match("([^/\\]+)$") or path) .. " (with phase)")
+    return path
+  end
+  set_status("save failed: " .. tostring(err))
+end
+
+-- Ctrl+S: saves next to the original as <name>_edit.ats (never overwrites; numbers further copies).
 local function save_file()
   if not data or not fname then return end
   local base, ext = fname:match("^(.*)(%.[^./\\]+)$")
@@ -434,14 +413,36 @@ local function save_file()
     path = base .. "_edit" .. n .. ext
     n = n + 1
   end
-  local ok, err = ats.save(path, data)
-  if ok then
-    modified = false
-    saved_depth, current_file = #undo_stack, path
-    set_status("saved " .. (path:match("([^/\\]+)$") or path) .. " (no phase)")
-    return path
+  return write_ats(path)
+end
+
+-- EXPORT .ats button / Ctrl+Shift+S: the same, but you choose the folder and the name (the JS_ReaScriptAPI file dialog if that
+-- extension is installed, otherwise a box to type the path). An existing file is only replaced after a yes.
+local function save_as()
+  if not data or not fname then return end
+  local here = current_file or fname
+  local dir = reaper.GetExtState(EXT_SECTION, "save_dir")
+  if dir == "" then dir = here:match("^(.*)[/\\]") or "" end
+  local stem = (here:match("([^/\\]+)$") or "sound.ats"):gsub("%.[^.]*$", ""):gsub("_edit%d*$", "")
+  local suggested = stem .. "_edit.ats"
+  local path
+  if reaper.JS_Dialog_BrowseForSaveFile then
+    local rv, chosen = reaper.JS_Dialog_BrowseForSaveFile("Export .ats file (Csound compatible)", dir, suggested,
+      "ATS files (*.ats)\0*.ats\0All files (*.*)\0*.*\0\0")
+    if rv ~= 1 or not chosen or chosen == "" then return end
+    path = chosen
   else
-    set_status("save failed: " .. tostring(err))
+    local ok, text = reaper.GetUserInputs("Export .ats file", 1, "full path,extrawidth=420", dir .. "/" .. suggested)
+    if not ok or text == "" then return end
+    path = text
+  end
+  if not path:lower():match("%.ats$") then path = path .. ".ats" end
+  if reaper.file_exists(path) and reaper.MB("Replace this file?\n\n" .. path, "ReaATS: export .ats file", 4) ~= 6 then
+    set_status("not exported (the file was kept)")
+    return
+  end
+  if write_ats(path, "exported") then
+    reaper.SetExtState(EXT_SECTION, "save_dir", path:match("^(.*)[/\\]") or "", true)
   end
 end
 
@@ -720,6 +721,25 @@ local function print_rect()
   return x - 72, y, 62, h
 end
 
+local function export_rect()
+  local x, y, w, h = print_rect()
+  return x - 112, y, 102, h
+end
+
+local function draw_export_button()
+  local x, y, w, h = export_rect()
+  gfx.set(0.36, 0.27, 0.16, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.90, 0.72, 0.45, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 14)
+  local label = "EXPORT .ats"
+  gfx.set(1, 0.96, 0.90, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
 local function draw_print_button()
   local x, y, w, h = print_rect()
   gfx.set(0.22, 0.30, 0.46, 1)
@@ -792,14 +812,16 @@ local function draw_header(px, py, pw, ph)
   end
   local name = fname:match("([^/\\]+)$") or fname
   local hop_ms = data.frame_size / data.sr * 1000
-  text_at(px, 8, string.format("%s%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
+  local info = string.format("%s%s   |   %d partials   %d frames   %.2f s   %d Hz   hop %.1f ms   type %d%s%s",
     name, modified and " *" or "", data.partials, data.frames, data.dur, data.sr, hop_ms, data.type,
-    data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or ""))
+    data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or "")
+  text_at(px, 8, info)
   draw_checkbox()
   draw_audition_button()
   draw_print_button()
+  draw_export_button()
   if status_msg and reaper.time_precise() < status_until then
-    text_at(math.floor(gfx.w) - 128 - 96 - 72 - 14 - gfx.measurestr(status_msg), 8, status_msg, 0.6, 0.95, 0.6)
+    text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- third header row: what the last action did
   end
   if sel_info then
     local msg = string.format("selected: %d points in %d partials   %.3f-%.3f s   %s - %s",
@@ -840,7 +862,7 @@ local function draw_header(px, py, pw, ph)
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move in time   Ctrl+Z undo   Ctrl+Y redo   Ctrl+S save   A audition (Space stops)   Ctrl+P print to track   Esc clear/close",
+  text_at(px, gfx.h - 18, "Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -919,6 +941,8 @@ local function handle_input(px, py, pw, ph)
       audition()
     elseif (function() local rx, ry, rw, rh = print_rect(); return mx >= rx and mx < rx + rw and my >= ry and my < ry + rh end)() then
       print_to_track()
+    elseif (function() local ex, ey, ew, eh = export_rect(); return mx >= ex and mx < ex + ew and my >= ey and my < ey + eh end)() then
+      save_as()
     elseif data and inside then
       if sel_info and hit_selected(px, py, pw, ph, mx, my) then
         mover = { x0 = mx, y0 = my, x = mx, y = my, shift = (cap & 8) ~= 0, active = false }
@@ -973,7 +997,7 @@ local function handle_input(px, py, pw, ph)
     move_selection(ch == 1919379572 and frames or -frames, 1)
   elseif ch == 26 then if shift then redo() else undo() end     -- Ctrl+Z (Shift = redo)
   elseif ch == 25 then redo()                                   -- Ctrl+Y
-  elseif ch == 19 then save_file()                              -- Ctrl+S
+  elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
   elseif ch == 32 then stop_audition(); set_status("audition stopped")

@@ -104,6 +104,54 @@ function M.load(path)
   return d
 end
 
+-- Makes the phase data agree with the (edited) frequencies, so the file can be saved WITH phase.
+-- A run is a stretch of consecutive sounding frames (amplitude > 0) of one partial. In a real analysis the phase
+-- advances from one frame to the next by the mean frequency times the frame size,
+--   pha[k+1] = pha[k] + (w[k] + w[k+1]) / 2 * frame_size,   w = 2 pi f / sr
+-- (checked on a real analysis: median error 0.01 rad). Runs that were not touched keep their stored phase; a
+-- run with any edited cell (dirty[p][f]) is given new phases by that rule, starting from the stored phase of its
+-- first cell. Without stored phase at all (types 1 and 3) every run is built that way, starting at 0.
+-- Afterwards d.has_phase is true and d.pha holds a value for every cell.
+function M.update_phases(d, dirty)
+  local P, NF = d.partials, d.frames
+  local all = not d.has_phase
+  d.pha = d.pha or {}
+  for p = 1, P do
+    if not d.pha[p] then
+      d.pha[p] = {}
+      for f = 1, NF do d.pha[p][f] = 0 end
+    end
+  end
+  d.has_phase = true
+  local pi2 = 2 * math.pi
+  local k = d.frame_size / d.sr * math.pi            -- (w0 + w1) / 2 * frame_size = (f0 + f1) * pi * frame_size / sr
+  for p = 1, P do
+    local amp, frq, pha, dp = d.amp[p], d.frq[p], d.pha[p], dirty and dirty[p]
+    local f = 1
+    while f <= NF do
+      if amp[f] > 0 then
+        local f0, touched = f, false
+        while f <= NF and amp[f] > 0 do
+          if all or (dp and dp[f]) then touched = true end
+          f = f + 1
+        end
+        local f1 = f - 1
+        if touched then
+          local ph = all and 0 or pha[f0]
+          pha[f0] = ph
+          for i = f0 + 1, f1 do
+            ph = ph + (frq[i - 1] + frq[i]) * k
+            ph = (ph + math.pi) % pi2 - math.pi
+            pha[i] = ph
+          end
+        end
+      else
+        f = f + 1
+      end
+    end
+  end
+end
+
 -- Writes `d` (as returned by M.load, possibly edited) to `path` in little-endian ATS format.
 -- opts.phase = true keeps the phase data (only if d has it); the default drops it, because
 -- edits make the stored phases wrong. Noise bands are kept when d has them.

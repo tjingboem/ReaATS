@@ -6,14 +6,13 @@ ReaATS is a partial editor for REAPER, in the spirit of SPEAR. It opens ATS anal
 
 An ATS file is not a recording. A sound is analysed into partials, the sine waves that make up its pitched part, and a residual, the rest, stored as the energy in 25 bands. ATS can build the sound back from these two things. Because every partial is a separate line, you can change one harmonic of a saxophone and leave the rest alone, which you cannot do in an ordinary waveform.
 
-ReaATS is a Lua script that runs inside REAPER on Linux. The sound is made by Csound.
+ReaATS is a Lua script that runs inside REAPER on Linux. It makes the sound itself, so it does not need any other program to play or print an edited sound.
 
 ## What you need
 
 - REAPER, with the script loaded from the action list.
 - The SWS extension, for AUDITION. PRINT does not need it.
-- Csound, for AUDITION and PRINT. It was tried with Csound 7.0. ReaATS looks for it at /usr/local/bin/csound, /usr/bin/csound and /opt/csound/bin/csound, and otherwise expects it on the path.
-- An .ats file. Csound can make one itself, see Making an .ats file, below. A small example, sax.ats, comes with ReaATS in the examples folder.
+- An .ats file. A small example, sax.ats, comes with ReaATS in the examples folder. To make your own you need a program that analyses a sound into an .ats file, for example Csound, see Making an .ats file, below. Csound is not needed for anything else.
 
 Only Linux has been tried. Temporary files go to the temporary folder (TMPDIR, or /tmp).
 
@@ -40,7 +39,7 @@ Use a mono file. The settings that matter most:
 | -m | The quietest peak that counts, in dB. | -60 |
 | -F | The file type. 4 stores amplitude, frequency, phase and noise. 3 stores amplitude, frequency and noise. | 4 |
 
-If the analysis sounds wrong, try a different -l first. For a sound whose lowest note is above 100 Hz, try -l 100. Other programs that write ATS files, such as ATSA and ATSH, or the Python package pyatsyn, make files ReaATS can open too. The analysis does not happen inside ReaATS yet.
+If the analysis sounds wrong, try a different -l first. For a sound whose lowest note is above 100 Hz, try -l 100. Other programs that write ATS files, such as ATSA and ATSH, or the Python package pyatsyn, make files ReaATS can open too. The analysis does not happen inside ReaATS yet. Everything else, including AUDITION and PRINT, works without Csound.
 
 ## The window
 
@@ -51,7 +50,7 @@ The picture is time from left to right and frequency from bottom to top, on a lo
 - The line at the top gives the file name, the number of partials and frames, the length, the sample rate and the distance between frames. A star after the name means there are changes that have not been saved.
 - Moving the mouse over the picture shows the time, the frequency and the note name. When the mouse is close to a partial, that partial turns white and its number, frequency and level are shown.
 - Selected points are pink.
-- A green message at the top right reports what the last action did.
+- A green message on the third line at the top reports what the last action did. The buttons AUDITION, PRINT and EXPORT .ats and the Noise layer checkbox are at the top right.
 
 ## Looking around
 
@@ -89,17 +88,21 @@ After a move or a transposition the selection stays with the points, so you can 
 
 Ctrl+S saves the changes next to the original as a new file, name_edit.ats. If that file exists, the next one is name_edit2.ats, and so on. The original is never overwritten.
 
-The saved file has no phase information (file type 3). The stored phases belong to the original sound and are wrong once the partials are changed, and Csound's own ATS opcodes ignore phase anyway. The largest amplitude and frequency in the file header are recalculated from the edited data.
+The saved file keeps the phase information (file type 4 when the file has noise bands). Pieces of partials that you did not touch keep the phase of the original. A piece that you changed gets new phases that follow its new frequencies, so the file stays consistent: programs that use the phase, such as pyatsyn, play the edited partials correctly, and Csound reads the file as well. If the opened file had no phase, phases are made for every partial. The largest amplitude and frequency in the file header are recalculated from the edited data.
+
+The EXPORT .ats button, at the top right, or Ctrl+Shift+S, lets you choose the folder and the name of the .ats file. It uses a file dialog (this needs the JS_ReaScriptAPI extension, which most REAPER installations with ReaPack have) or, without it, a box in which you type the full path. The ending .ats is added if you leave it out, and ReaATS asks before it replaces a file that already exists. Use it to export a file for Csound or another program, and to put the file where you want it. Like Ctrl+S, it keeps the phase.
+
+The saved files are standard ATS files. Csound reads them with its ATS opcodes, and so do other ATS programs. Opening works the other way round: O opens any ATS file, including the files Csound's own analyser makes.
 
 O opens another file. R loads the file you opened again from disk and drops all changes since.
 
 ## Listening: AUDITION
 
-The AUDITION button, or the A key, plays the edited sound. ReaATS writes the current data to a temporary .ats file, lets Csound make a WAV from it (atsadd for the sines and atsaddnz for the noise bands) and plays the WAV through REAPER's preview. Your project is not touched. For a sound of two seconds this takes about a tenth of a second, and REAPER waits for it. Space stops the sound.
+The AUDITION button, or the A key, plays the edited sound. ReaATS builds the sound from the current data, the sines from the partials and the noise from the 25 noise bands, writes it to a temporary WAV file and plays that through REAPER's preview. Your project is not touched. REAPER waits while the sound is made: for two seconds of sound it takes about a tenth of a second for the sines and about a second more for the noise bands, and longer sounds take proportionally longer. Space stops the sound.
 
 What you hear follows what you see. With P off you hear only the noise, with N off only the sines, and with both off nothing is played. This lets you listen to the two parts of a sound separately.
 
-The sines come out at the level of the original. The noise bands are about 30 dB quieter, as they were in the analysis. AUDITION needs the SWS extension. If it is missing, the status message says so, and the WAV is still made.
+The sines come out at the level of the original. The noise bands are about 30 dB quieter, as they were in the analysis. The sound was checked against Csound's own ATS resynthesis of the example file: the level is the same, within a tenth of a dB, for the sines, the noise and the two together. The noise bands are made with filtered noise, so a band is slightly softer at its edges than in the original program and sounds a little different, but its level follows the file. AUDITION needs the SWS extension. If it is missing, the status message says so, and the WAV is still made.
 
 ## Putting the result in the project: PRINT
 
@@ -131,6 +134,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Left and Right | Move one frame in time. Ctrl: ten frames. |
 | Ctrl+Z, Ctrl+Y | Undo, redo. |
 | Ctrl+S | Save as name_edit.ats. |
+| EXPORT .ats, Ctrl+Shift+S | Export an .ats file: choose the folder and the name. |
 | A, AUDITION | Play the edited sound. |
 | Space | Stop the sound. |
 | Ctrl+P, PRINT | Put the edited sound on a track. |
@@ -143,6 +147,6 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 
 - The file stores one value per frame, and the frames are evenly spaced. In the example file they are 10 ms apart. Moves in time snap to whole frames.
 - ReaATS never overwrites the original .ats file. Saved changes always go to a new file.
-- Temporary files, the audition .ats, .csd and the numbered WAV files, are kept in the temporary folder. The older WAV files are deleted after four auditions.
+- The temporary WAV files of AUDITION are kept in the temporary folder, numbered. The older ones are deleted after four auditions.
 - Not built yet: analysis straight from an item in REAPER, playing only the selection, changing amplitudes, copy and paste, and stretching in time.
-- Keep the original .ats file. Saved files have no phase.
+- Keep the original .ats file. A saved file is a new file, but the phases of changed partials are calculated and not measured.

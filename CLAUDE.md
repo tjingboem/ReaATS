@@ -2,9 +2,10 @@
 
 A SPEAR-like editor for Csound/ATS analysis files, inside REAPER. Started 8 Nov 2026.
 Decisions (tjingboem): files stay standard Csound `.ats` (type 4 = amp/freq/phase + 25 noise
-bands); the editor is Lua `gfx`; analysis/resynthesis happen offline outside REAPER (Python +
-numpy/scipy, REAPER is already set to libpython3.12.so); sound = an AUDITION button that renders
-the edited file to a WAV (no real-time sound while dragging, not wanted).
+bands); the editor is Lua `gfx`; sound = an AUDITION button that renders the edited file to a WAV (no
+real-time sound while dragging, not wanted). 9 Nov 2026: ReaATS must be INDEPENDENT OF CSOUND so that other
+people can use it: synthesis is now pure Lua (`lib/ats_synth.lua`); analysis (making .ats files) still needs
+Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 
 ## Built
 - `lib/ats_file.lua` -- reader written from the published layout (no ported code). 22 tests
@@ -25,8 +26,14 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   Ctrl octave), Ctrl+Z undo, Ctrl+Y redo (Ctrl+Shift+Z too), Ctrl+S saves NEXT to the original as
   `<name>_edit.ats` (`_edit2`, ... never overwrites). Edits are point-level (a partial at a frame),
   so transposing part of a partial makes a frequency jump at the selection edge (SPEAR does the same).
-  The edited file is saved WITHOUT phase (type 3): edits make the stored phases wrong, and Csound's
-  ATS opcodes ignore phase anyway (checked: `atsinfo`, `atsadd`, `atsaddnz` read the saved file).
+  SAVE KEEPS THE PHASE (changed 9 Nov 2026, tjingboem: "i want to keep the phase"): `ats_file.update_phases(d, edited_cells)`
+  rebuilds the phases of every run (consecutive sounding frames of one partial) that has an edited cell with the rule
+  pha[k+1] = pha[k] + (w[k]+w[k+1])/2 * frame_size (checked on a real analysis: median error 0.01 rad), starting from
+  the run's stored first phase; untouched runs keep theirs; a file without phase gets phases for all runs (start 0).
+  The edited file is type 4 (type 2 without noise). Verified: pyatsyn loads it and synthesises with its cubic phase
+  interpolation at the same level as phaseless, the transposed fundamental really is at the new pitch (392.3 Hz
+  after +7 semitones from 261.8 Hz), Csound `atsinfo`/`atsadd` read it without errors. Phase values are not MOVED by
+  move/transpose (ats_edit does not carry `pha`), they are rebuilt from the frequencies on save.
   `ats_file.save()` recomputes ampmax/frqmax; 35 reader/writer tests, mock run covers the editing.
   Key codes (gfx.getchar): Delete 6579564, Up 30064, Down 1685026670, Ctrl+Z 26, Ctrl+Y 25, Ctrl+S 19
   -- from memory, not yet confirmed on this REAPER.
@@ -40,7 +47,7 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   leaves the file. Phase values are not moved (the saved file has no phase anyway).
   Two partials CAN overlap in time and frequency (different rows); a row holds one value per frame.
 
-- Audition (9 Nov 2026, not yet heard by tjingboem): button "AUDITION" top right, or key A; Space stops.
+- Audition (9 Nov 2026; the render part below was REPLACED by the Lua synthesis, see "Csound-free synthesis"; the preview/crash notes still hold): button "AUDITION" top right, or key A; Space stops.
   Saves the current data to `$TMPDIR/reaats_audition.ats` (type 3), writes a small .csd, runs the real
   Csound (`/usr/local/bin/csound`, needs Csound installed; ~0.1 s for 2 s of sound) with `atsadd` (sines)
   and `atsaddnz` (noise bands), and plays the WAV through `Xen_StartSourcePreview` (REAPER's source
@@ -70,10 +77,42 @@ the edited file to a WAV (no real-time sound while dragging, not wanted).
   current data. Tests: `lua5.4 tests/mock_run.lua`, `tests/mock_snap.lua` (restore, Close All, missing file),
   `tests/test_ats_edit.lua`, `tests/test_ats_file.lua`.
 
+- Csound-free synthesis (9 Nov 2026, not yet heard by tjingboem; replaces the Csound render of Audition and
+  PRINT): `lib/ats_synth.lua` renders sines (one oscillator per partial, linear amplitude and frequency between
+  frames, stored phase NOT used) and noise (white noise, 4th-order Butterworth band-pass per critical band, unit
+  RMS, times sqrt(energy/(window_size*0.04)) times NOISE_GAIN 0.30) and writes a 32-bit float mono WAV.
+  Checked against Csound (`python3 tests/compare_with_csound.py`) on examples/sax.ats: overall level difference
+  0.0 dB for sines, noise and both; envelope correlation 0.97 / 0.92; per-band noise level within about 2 dB
+  (a few bands up to 7 dB). NOISE_GAIN was calibrated to that (Lua noise was +10.4 dB before). Speed: 2.2 s of
+  sound with 69 partials: 0.14 s sines, +0.9 s noise; REAPER waits while it renders. Tests:
+  `lua5.4 tests/test_ats_synth.lua` (20). Method follows pyatsyn's phase-less sine path (BSD-3): see
+  THIRD-PARTY-NOTICES.md (the pyatsyn licence text is kept there). No Csound source was copied; reading
+  Csound's ugnorman.c only gave the unit of the noise energy (amplitude = sqrt(E/(winsz*0.04)), a property of the
+  format). ReaATS has NO LICENSE file yet: tjingboem decides (recommended MIT or BSD-3, compatible with pyatsyn).
+  Licences checked 9 Nov 2026: Csound's ATS opcodes (ugnorman.c) and atsa.c are LGPL 2.1+ (copying them would
+  make the ported files LGPL); pyatsyn is BSD-3 (translation allowed with its notice kept).
+
+- Import/export (tjingboem, 9 Nov 2026: "import and export of Csound compatible .ats files"): ALREADY possible:
+  O (or the dialog) opens any Csound/ATS file (types 1-4, little or big endian; Csound's own `atsa` output opened);
+  Ctrl+S exports a Csound-compatible file. Verified 9 Nov: Csound's atsa output read and re-saved as type 4 is
+  byte-identical after the header (only the header's frqmax differs: ours is recomputed from the sounding points,
+  7581.5 Hz vs 7600.6 Hz); Csound `atsinfo` reads our type 3 and 4 files. EXPORT BUTTON (tjingboem 9 Nov 2026: "i prefer a button that says: export .ats file"): the button "EXPORT .ats" (header, left of PRINT) and
+  Ctrl+Shift+S call `save_as()` (status says "exported"). Header now has three rows (MARGIN_T 70): info + buttons, hover /
+  selection summary, status. (Before, the status shared row 1 and was hidden by the long file info.) Built as Save as:
+    (`JS_Dialog_BrowseForSaveFile` if the JS_ReaScriptAPI extension is there, else `GetUserInputs` to type the path; adds
+  .ats; asks `MB` before replacing a file; remembers the folder in ExtState `save_dir`); Ctrl+S stays the quick,
+  never-overwrite save. `write_ats(path)` is the shared writer (rebuilds phases, saves type 4). Tested with fake dialogs
+  (dialog, extension added, overwrite no/yes, cancel, fallback); the real JS dialog has not been tried by tjingboem.
+- ANALYSIS PAGE (tjingboem, 9 Nov 2026: "all options as we find for analysis must be used in a yet to make Analyses
+  page"): NOT built. `docs/analysis_options.md` lists every option of Csound's atsa and pyatsyn (flags, defaults,
+  meaning, presets, what to show). Build it when tjingboem says so.
+
 ## Next (not started, wait for tjingboem)
-More edit operations (delete, transpose, shift, scale, move, copy,
-stretch), undo, a writer (`ats_file.save`), the Python helper for analysis from an item and for
-Audition, then the Audition button.
+1. Analysis (making .ats files) without Csound, ported to Lua from pyatsyn (BSD-3; keep its notice): peak
+   detection with `reaper.new_array` FFTs, partial tracking, residual (synthesise the partials, subtract), 25-band
+   noise energy. Until then Csound's `atsa` (`csound -U atsa in.wav out.ats -l 100`) or pyatsyn make the files.
+2. A LICENSE file (tjingboem chooses; recommended MIT or BSD-3).
+3. More edit operations (amplitude scale, frequency shift in Hz, copy/paste, stretch), audition of the selection only.
 
 ## Facts
 - Csound 7 opcode names are lowercase (`atsinfo`, `atsadd`); `atsadd` ignores the stored phase

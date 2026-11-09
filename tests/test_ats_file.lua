@@ -67,5 +67,50 @@ local r5 = ats.load(tmp)
 check("edit survives", r5.amp[1][101] == 0)
 check("ampmax recomputed", r5.ampmax <= d.ampmax + 1e-12)
 d.amp[1][101] = saved_amp
+-- update_phases: edited runs get phases that follow the frequencies, untouched ones keep theirs
+do
+  local pi2 = 2 * math.pi
+  local function wrap(x) return (x + math.pi) % pi2 - math.pi end
+  local function rule_error(dd, p, f0, f1)                  -- largest deviation from the phase rule inside a run
+    local worst = 0
+    for f = f0 + 1, f1 do
+      local pred = (dd.frq[p][f - 1] + dd.frq[p][f]) * math.pi * dd.frame_size / dd.sr
+      worst = math.max(worst, math.abs(wrap(dd.pha[p][f] - dd.pha[p][f - 1] - pred)))
+    end
+    return worst
+  end
+  local e = assert(ats.load("examples/sax.ats"))
+  -- find a long run in partial 1 (the fundamental)
+  local f0, f1 = nil, nil
+  for f = 1, e.frames do
+    if e.amp[1][f] > 0 then f0 = f0 or f; f1 = f elseif f0 and f1 - f0 > 40 then break elseif f0 then f0, f1 = nil, nil end
+  end
+  check("found a long run to edit", f0 and f1 - f0 > 40, tostring(f0) .. "-" .. tostring(f1))
+  local before = {}
+  for p = 1, e.partials do before[p] = {}; for f = 1, e.frames do before[p][f] = e.pha[p][f] end end
+  ats.update_phases(e, {})
+  local same = true
+  for p = 1, e.partials do for f = 1, e.frames do if e.pha[p][f] ~= before[p][f] then same = false end end end
+  check("nothing edited: every phase kept", same)
+  for f = f0, f1 do e.frq[1][f] = e.frq[1][f] * 2 end           -- transpose the run an octave up
+  local dirty = { [1] = {} }
+  for f = f0 + 5, f0 + 8 do dirty[1][f] = true end              -- only a few cells are marked: the whole run is rebuilt
+  ats.update_phases(e, dirty)
+  check("edited run follows the phase rule", rule_error(e, 1, f0, f1) < 1e-9, rule_error(e, 1, f0, f1))
+  check("edited run keeps its first phase", e.pha[1][f0] == before[1][f0])
+  local rest = true
+  for p = 2, e.partials do for f = 1, e.frames do if e.pha[p][f] ~= before[p][f] then rest = false end end end
+  check("other partials untouched", rest)
+  check("save with phase", ats.save(tmp, e, { phase = true }))
+  local r = ats.load(tmp)
+  check("reloads as type 4", r and r.type == 4 and r.has_phase)
+  check("the rule still holds after the round trip", rule_error(r, 1, f0, f1) < 1e-9)
+  -- data without phase (type 3): phases are built for every run, the file becomes type 4
+  local n3 = assert(ats.load(tmp)); n3.has_phase = false; n3.pha = nil
+  ats.update_phases(n3, nil)
+  check("phases created for a file without phase", n3.has_phase and #n3.pha == n3.partials)
+  check("created phases follow the rule", rule_error(n3, 1, f0, f1) < 1e-9)
+  check("created phases start at 0", math.abs(n3.pha[1][f0]) < 1e-12)
+end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)
