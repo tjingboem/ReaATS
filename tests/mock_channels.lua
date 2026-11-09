@@ -33,10 +33,11 @@ local project, projext = { tracks = {} }, {}
 local previews = {}
 local clock_skew = 0
 local chosen_save, mb_answer = nil, 6
+local break_py = false
 local open_choice = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "line", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "set", "rect", "line", "circle", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
 local blits = {}
 gfx.blit = function(src, _, _, _, _, _, h, _, dy) blits[#blits + 1] = { src = src, y = dy, h = h }; return 0 end
 gfx.measurestr = function(s) return #s * 7, 14 end
@@ -54,6 +55,20 @@ reaper = {
   GetUserFileNameForRead = function() if open_choice then return true, open_choice end return false, "" end,
   JS_Dialog_BrowseForSaveFile = function() if chosen_save then return 1, chosen_save end return 0, "" end,
   MB = function() return mb_answer end,
+  ExecProcess = function(cmd, timeout)
+    if timeout == -1 then                                          -- in the background, as in REAPER
+      if break_py and cmd:find("reaats_synth", 1, true) then       -- a synthesis program that fails: it answers with an error
+        local argsfile = cmd:match("%-%-args%-file (%S+)")
+        local fh = io.open(argsfile, "r"); local args = fh:read("a"); fh:close()
+        local result = args:match("%-%-result%-file\n([^\n]+)")
+        local rf = io.open(result, "w"); rf:write("ERROR boom\n"); rf:close()
+        return ""
+      end
+      os.execute(cmd .. " >/dev/null 2>&1 &")
+      return ""
+    end
+    local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out
+  end,
   PCM_Source_CreateFromFile = function(path) return { path = path } end,
   Xen_StartSourcePreview = function(src) previews[#previews + 1] = src.path; return true end,
   Xen_StopSourcePreview = function() end,
@@ -91,14 +106,15 @@ local function start(last)                                      -- the window st
   open_choice = nil
 end
 local function until_done(done, max_frames)
-  for _ = 1, max_frames or 4000 do clock_skew = clock_skew + 0.05; strings = {}; frame(); if done() then return true end end
+  for _ = 1, max_frames or 4000 do clock_skew = clock_skew + 0.05; strings = {}; frame(); if done() then return true end; os.execute('sleep 0.02') end
   error("it never finished; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 25)))
 end
 local ats = dofile("lib/ats_file.lua")
 local wavinfo = dofile("lib/wav_info.lua")
-local function button(i) return 62 + (i - 1) * 104 + 15, 77 end          -- the centre of channel button i (the header has the extra row)
-local function slider(i, frac) return 62 + (i - 1) * 104 + 34 + math.floor(62 * frac), 77 end   -- a point on channel i's slider
-local MODE = { 62 + 3 * 104 + 4 + 50, 77 }                                 -- the STACK / OVERLAY button
+local function button(i) return 62 + (i - 1) * 104 + 15, 87 end          -- the centre of channel button i (the header has the extra row)
+local function slider(i, frac) return 62 + (i - 1) * 104 + 34 + math.floor(62 * frac), 87 end   -- a point on channel i's slider
+local function led(i) return 62 + (i - 1) * 104 + 15, 74 end                -- the LED above button i
+local MODE = { 62 + 3 * 104 + 4 + 50, 87 }                                 -- the STACK / OVERLAY button
 local function lanes_now() blits = {}; strings = {}; frame(); return blits end
 local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame()
@@ -120,7 +136,7 @@ assert(#b == 2 and b[1].h > 200, "channel 3 off: two taller lanes (" .. #b .. ")
 click(button(3)); b = lanes_now()
 assert(#b == 3, "channel 3 on again")
 click(button(1)); click(button(2)); b = lanes_now()
-assert(#b == 1 and b[1].h == 496, "only channel 3 is on: a single full lane")
+assert(#b == 1 and b[1].h == 486, "only channel 3 is on: a single full lane")
 click(button(3)); strings = {}; frame()
 assert(saw("at least one channel stays on"), "the last channel cannot be switched off")
 click(button(1)); click(button(2))
@@ -131,7 +147,7 @@ assert(#b == 1, "Tab twice more: only channel 3")
 press(9); b = lanes_now()
 assert(#b == 3, "Tab after the last channel: all again")
 click(MODE[1], MODE[2]); b = lanes_now()
-assert(#b == 1 and b[1].h == 496 and saw("^OVERLAY$"), "OVERLAY: all channels in one lane")
+assert(#b == 1 and b[1].h == 486 and saw("^OVERLAY$"), "OVERLAY: all channels in one lane")
 press(118); b = lanes_now()
 assert(#b == 3 and saw("^STACK$"), "V goes back to the stack")
 print("channel buttons switch ON/OFF (one stays on), Tab solos, STACK/OVERLAY")
@@ -149,7 +165,7 @@ print("visibility sliders give 20 % to 100 %")
 -- 4. a region selects and every edit applies to every ON channel, as ONE undo step
 press(102)                                                                    -- fit
 local lane1 = lanes_now()[1]
-sweep(65, 95, 1040, 90 + lane1.h - 5)
+sweep(65, 105, 1040, 100 + lane1.h - 5)
 strings = {}; frame()
 assert(saw("%(3 channels%)"), "the selection covers all three channels: " .. tostring(saw("selected") or "(no selection text)"))
 press(6579564)
@@ -163,11 +179,26 @@ press(26, 4)
 -- with channel 2 off, only 1 and 3 are edited
 click(button(2)); press(102)
 lane1 = lanes_now()[1]
-sweep(65, 95, 1040, 90 + lane1.h - 5)
+sweep(65, 105, 1040, 100 + lane1.h - 5)
 press(6579564); strings = {}; frame()
 assert(saw("^1%*$") and saw("^3%*$") and not saw("^2%*$"), "channel 2 is off: it is not edited")
 press(26, 4); click(button(2))
 print("a region and every edit apply to all ON channels; one undo step")
+
+-- 4b. the LEDs: green = editable, red = left alone (and the channel stays visible)
+click(led(2)); strings = {}; frame()
+assert(saw("channel 2 is not editable"), "LED 2 turns red: " .. tostring(saw("channel 2") or "(no status)"))
+assert(#lanes_now() == 3, "a red channel is still shown")
+lane1 = lanes_now()[1]
+sweep(65, 105, 1040, 100 + lane1.h - 5)
+assert(saw("%(2 channels%)"), "the selection covers only the green channels: " .. tostring(saw("selected") or "(none)"))
+press(6579564); strings = {}; frame()
+assert(saw("^1%*$") and saw("^3%*$") and not saw("^2%*$"), "a red channel is not edited")
+press(26, 4)
+click(led(1)); click(led(3)); click(led(1)); click(led(3)); strings = {}; frame()
+click(led(2)); strings = {}; frame()
+assert(saw("channel 2 is editable"), "LED 2 turns green again")
+print("LEDs: green = edited together, red = left alone")
 
 -- 4. AUDITION plays all channels
 local n_prev = #previews
@@ -176,7 +207,77 @@ until_done(function() return #previews > n_prev end)
 local info = wavinfo.read(previews[#previews])
 assert(info and info.channels == 2 and info.float and info.frames > 80000, "the audition sound is mixed down to stereo: " .. tostring(info and info.channels))
 assert(saw("3 channels mixed down to stereo"), "the status says so: " .. tostring(saw("auditioning")))
+assert(saw("Python synthesis"), "the sound was made by the Python program: " .. tostring(saw("auditioning")))
 print("AUDITION: 3 channels mixed down to a stereo sound of " .. info.frames .. " samples")
+
+-- 4b. how much AUDITION plays (button and L), and the fallback when the Python program fails
+do
+  press(108); strings = {}; frame()
+  assert(saw("as much as the window shows"), "L: the window length: " .. tostring(saw("AUDITION")))
+  assert(saw("^plays: WINDOW$"), "the button says so")
+  press(102)
+  for _ = 1, 4 do gfx.mouse_wheel = 120; strings = {}; frame() end                 -- zoom in on time: a short window
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+  local n_prev = #previews
+  press(97)
+  until_done(function() return #previews > n_prev end)
+  local info = wavinfo.read(previews[#previews])
+  assert(info.frames < 60000, "only the window is played: " .. info.frames .. " samples")
+  press(108); press(108); press(108)                                                 -- 5 s, 15 s, END
+  do local l1 = lanes_now()[1]; press(102); sweep(65, 105, 1040, 100 + l1.h - 5); press(6579564) end          -- (an edit: else the sound made before is used)
+  break_py = true
+  n_prev = #previews
+  press(97)
+  until_done(function() return #previews > n_prev end)
+  assert(saw("Lua synthesis") and saw("Python failed with: boom"), "the failure is told and the built-in synthesis took over: " .. tostring(saw("auditioning")))
+  break_py = false
+  print("AUDITION length (button/L) and the fall back on Lua when the Python program fails")
+end
+
+-- 4c. nothing changed since the sound was made: AUDITION plays it again, or starts in the middle of it, without making it again
+do
+  press(102)
+  press(108); press(108)                                                           -- length back to END (it was WINDOW, then 5 s, 15 s)
+  press(108); press(108); strings = {}; frame()
+  local function audition_now()                                                    -- plays at once when it can; else waits for the sound
+    local n0 = #previews
+    press(97)
+    until_done(function() return #previews > n0 end)
+    return previews[#previews]
+  end
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+  -- the playhead at the start: makes the whole sound (a new data revision first: an edit and its undo)
+  local lane1 = lanes_now()[1]
+  sweep(65, 105, 1040, 100 + lane1.h - 5); press(6579564); press(26, 4)
+  local ruler_y = 100 + 486 + 6
+  local function ruler(frac) gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 62 + 988 * frac, ruler_y, 1; frame(); gfx.mouse_cap = 0; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5 end
+  ruler(0)
+  local w1 = audition_now()
+  local full = wavinfo.read(w1).frames
+  assert(full > 80000, "the first AUDITION made the whole sound: " .. full)
+  -- the same again: the same file
+  local n0 = #previews
+  press(97); strings = {}; frame()
+  assert(#previews == n0 + 1 and previews[#previews] == w1 and saw("replayed"), "the same file again: " .. tostring(saw("auditioning")))
+  -- the middle of the sound: a piece cut out, no new rendering (it starts at once)
+  ruler(0.5)
+  n0 = #previews
+  press(97); strings = {}; frame()
+  assert(#previews == n0 + 1, "it starts at once, in the next frame")
+  local w2 = previews[#previews]
+  assert(w2 ~= w1 and saw("from the sound already made"), "a piece of the sound: " .. tostring(saw("auditioning")))
+  local half = wavinfo.read(w2).frames
+  assert(half > full * 0.4 and half < full * 0.6, "about half of it: " .. half .. " of " .. full)
+  assert(saw("auditioning from 1%.0%d s") or saw("auditioning from 0%.9%d s") or saw("auditioning from 1%.1%d s"), "from the middle: " .. tostring(saw("auditioning")))
+  -- an edit makes a new sound
+  sweep(65, 105, 1040, 100 + lane1.h - 5); press(6579564)
+  local w3 = audition_now()
+  assert(w3 ~= w1 and w3 ~= w2 and not saw("replayed") and not saw("already made"), "after an edit a new sound is made: " .. tostring(saw("auditioning")))
+  press(26, 4)                                                                       -- undo: the data changes again
+  local w4 = audition_now()
+  assert(not saw("already made"), "undo is a change too")
+  print("AUDITION replays the sound, or starts in its middle, while nothing has changed")
+end
 
 -- 5. PRINT makes a multichannel item and the track gets room for it
 press(16)
@@ -192,7 +293,7 @@ print("PRINT: a 3-channel WAV, the track has " .. project.tracks[1].nchan .. " c
 -- 6. Ctrl+S saves the whole set; it opens as a set again
 press(102)
 lane1 = lanes_now()[1]
-sweep(65, 95, 1040, 90 + lane1.h - 5)
+sweep(65, 105, 1040, 100 + lane1.h - 5)
 press(6579564)
 press(19, 4); strings = {}; frame()
 for k = 1, 3 do assert(reaper.file_exists(scratch .. "mc_edit_ch" .. k .. ".ats"), "mc_edit_ch" .. k .. ".ats should exist") end

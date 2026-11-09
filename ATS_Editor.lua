@@ -37,6 +37,7 @@ local edit = dofile(script_dir .. "/lib/ats_edit.lua")
 local synth = dofile(script_dir .. "/lib/ats_synth.lua")
 local wav_info = dofile(script_dir .. "/lib/wav_info.lua")
 local Analysis = dofile(script_dir .. "/lib/analysis_page.lua")
+local py_synth = dofile(script_dir .. "/lib/py_synth.lua")
 local Serial = dofile(script_dir .. "/lib/reaats_serial.lua")     -- the tool's own save format (ReaSnap contract piece 1)
 
 -- ReaSnap Integration Contract, optional: pieces 2 and 5. The editor works exactly the same without ReaSnap;
@@ -63,6 +64,7 @@ local TITLE = "ATS Editor" .. (reasnap_instance_number and (" #" .. reasnap_inst
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
 local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 70, 54
+local CHAN_ROW = 30                 -- the extra header height with several channels: LEDs above, buttons and sliders below
 local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
 -- --------------------------------------------------------------------- state
@@ -158,7 +160,7 @@ end
 -- ------------------------------------------------------------------ geometry
 local function plot_rect()
   local w, h = math.floor(gfx.w), math.floor(gfx.h)
-  local top = MARGIN_T + ((#chs > 1) and 20 or 0)            -- an extra row for the channel buttons
+  local top = MARGIN_T + ((#chs > 1) and CHAN_ROW or 0)            -- an extra row for the channel LEDs, buttons and sliders
   return MARGIN_L, top, math.max(w - MARGIN_L - MARGIN_R, 10), math.max(h - top - MARGIN_B, 10)
 end
 
@@ -265,11 +267,11 @@ local function switch_channel(i)
   restore_channel(i)
 end
 
--- The channels that are switched on, in order. (capture_channel first, so that the bundles are current.)
+-- The channels that are shown AND editable (green LED), in order: selecting and every edit go to these. (capture_channel first, so that the bundles are current.)
 local function on_channels()
   capture_channel()
   local list = {}
-  for i, c in ipairs(chs) do if c.on then list[#list + 1] = i end end
+  for i, c in ipairs(chs) do if c.on and c.edit then list[#list + 1] = i end end
   return list
 end
 
@@ -297,7 +299,9 @@ local function find_set(path)
   return files, which
 end
 
+local data_rev = 0               -- counts every change of the sound data (an edit, undo, redo, a file loaded): AUDITION replays its last sound while it is unchanged
 local function load_file(path)
+  data_rev = data_rev + 1
   local files, which = find_set(path)
   local loaded, note = {}, nil
   for i, f in ipairs(files) do
@@ -330,7 +334,8 @@ local function load_file(path)
   for i, d in ipairs(loaded) do
     chs[i] = { data = d, fname = files[i], current_file = files[i], undo_stack = {}, redo_stack = {}, modified = false,
                saved_depth = 0, edited_cells = {}, sel = {}, sel_info = nil, amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20),
-               on = true,                     -- shown and edited (switched off = not drawn, not edited)
+               on = true,                     -- shown (switched off = not drawn)
+               edit = true,                   -- editable (the LED above the button: green = edited together with the others, red = left alone)
                vis = 1.0 }                    -- how strongly it is drawn in the overlay: 0.2 .. 1
   end
   restore_channel(which)
@@ -391,6 +396,7 @@ end
 local function select_box(ta, tb, fa, fb, add)
   if not data then return end
   if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
+  if #on_channels() == 0 then set_status("no channel is editable: click an LED to make it green"); return end
   for _, i in ipairs(on_channels()) do
     with_channel(i, function() select_box_single(ta, tb, fa, fb, add) end)
   end
@@ -422,6 +428,7 @@ function set_status(msg)
 end
 
 local function apply_changes(changes, forward)
+  data_rev = data_rev + 1
   if pending then pending.job.cancel(); pending = nil; set_status("audition cancelled: the data changed") end
   for _, c in ipairs(changes) do
     data.amp[c.p][c.f] = forward and c.na or c.oa
@@ -571,6 +578,7 @@ local function move_selection(df, ratio) edit_on_channels(function() move_single
 -- preview can still be playing.
 local preview_until = 0        -- time_precise() at which the running preview ends
 local audition_count = 0
+local last_audition, start_preview, play_from_made   -- (defined below, used by audition)
 math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))
 local session_id = string.format("%d_%d", os.time(), math.random(100000, 999999))   -- makes the temporary file names this editor's own
 local wav_history = {}
@@ -596,8 +604,57 @@ local function render_wav(wav, from)
   return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise"), t_start
 end
 
--- AUDITION prepares the sound in small steps, a few milliseconds per frame, so that the window keeps drawing and the
--- AUDITION button can blink while it works; advance_pending() (called every frame) finishes the job and starts the sound.
+-- How much AUDITION plays from the playhead (button next to it, key L): to the end, as much as the window shows, or 5 / 15 s.
+local AUDITION_LENS = { { "END" }, { "WINDOW" }, { "5 s", 5 }, { "15 s", 15 } }
+local audition_len = 1
+local function audition_end()                                  -- the time where AUDITION stops, or nil for the end of the sound
+  local m = AUDITION_LENS[audition_len]
+  if m[1] == "END" then return nil end
+  return playhead + ((m[1] == "WINDOW") and (view.t1 - view.t0) or m[2])
+end
+local function cycle_audition_len()
+  audition_len = audition_len % #AUDITION_LENS + 1
+  set_status("AUDITION plays " .. (AUDITION_LENS[audition_len][1] == "END" and "from the playhead to the end"
+    or AUDITION_LENS[audition_len][1] == "WINDOW" and "as much as the window shows, from the playhead"
+    or (AUDITION_LENS[audition_len][1] .. " from the playhead")))
+end
+
+local function tmp_dir() return (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "") end
+local synth_count = 0
+local python_missing = false                   -- no Python was found for the synthesis (the Analysis page may find one later)
+
+-- Starts the synthesis of every channel into `wav`. With Python (numpy) it runs in a program in the background, much faster;
+-- without it, or if that cannot start, the built-in Lua synthesis runs in small steps. o: sines, noise, from, to, mixdown.
+-- Returns the job, the engine's name and the request (to fall back on Lua if the Python run fails).
+local function start_synth(wav, o)
+  capture_channel()
+  local list = {}
+  for i, c in ipairs(chs) do list[i] = c.data end
+  local req = { list = list, o = o }
+  local function lua_job() return synth.render_multi_job(list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to }), "Lua", req end
+  local script = script_dir .. "/python/reaats_synth.py"
+  if not (reaper.ExecProcess and reaper.file_exists(script) and analysis) then return lua_job() end
+  if not analysis.python then                                  -- look for Python once; if there is none, stay with Lua
+    if python_missing or not analysis:find_python() then python_missing = true; return lua_job() end
+  end
+  synth_count = synth_count + 1
+  local id = string.format("%s_s%d", session_id, synth_count)
+  local dir, files = tmp_dir(), {}
+  for i, d in ipairs(list) do
+    files[i] = string.format("%s/reaats_%s_ch%d.ats", dir, id, i)
+    local ok = ats.save(files[i], d, { phase = false })       -- (the edited data as it is now; the phase is not needed to listen)
+    if not ok then for _, f in ipairs(files) do os.remove(f) end; return lua_job() end
+  end
+  local job = py_synth.start({ exe = analysis.python.exe, script = script, files = files, temp = files, wav = wav, dir = dir, id = id,
+                               from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown,
+                               cache_dir = dir .. "/reaats_noise_cache" })
+  if not job then for _, f in ipairs(files) do os.remove(f) end; return lua_job() end
+  return job, "Python", req
+end
+
+-- AUDITION prepares the sound in the background (Python) or in small steps, a few milliseconds per frame (Lua), so that the
+-- window keeps drawing and the AUDITION button can blink while it works; advance_pending() (called every frame) finishes the
+-- job and starts the sound.
 local function audition()
   if not data then return end
   if pending and pending.kind == "print" then set_status("wait: the print is being prepared"); return end
@@ -606,49 +663,116 @@ local function audition()
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to audition (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  capture_channel()
-  local list = {}
-  for i, c in ipairs(chs) do list[i] = c.data end
-  pending = { kind = "audition", mode = mode, channels = #list,
-              job = synth.render_multi_job(list, { sines = use_sines, noise = use_noise, from = playhead }) }
+  local to = audition_end()
+  local d1 = chs[1].data
+  local fs, sr = math.floor(d1.frame_size + 0.5), d1.sr
+  local n_total = math.min(math.floor(d1.dur * sr), (d1.frames - 1) * fs)
+  local k0 = math.min(1 + math.floor(playhead * sr / fs + 1e-6), d1.frames - 1)
+  local s_r = (k0 - 1) * fs                                        -- the part asked for, in samples of the sound
+  local e_r = to and math.min(n_total, math.floor(to * sr)) or n_total
+  if e_r - s_r < 1 then set_status("nothing to play after this point"); return end
+  local state = string.format("%d|%s|%s|%d", data_rev, tostring(use_sines), tostring(use_noise), #chs)
+  local la = last_audition
+  if la and la.state == state and la.s <= s_r and e_r <= la.e and reaper.file_exists(la.wav) then
+    -- nothing has changed since a sound was made that holds this part: play it (or a piece of it) without making it again
+    play_from_made(la, s_r, e_r, { mode = la.mode, channels = la.channels, engine = la.engine })
+    return
+  end
+  audition_count = audition_count + 1
+  local wav = string.format("%s/reaats_audition_%s_%d.wav", tmp_dir(), session_id, audition_count)
+  -- From the playhead to the end the WHOLE sound is made (when it is not very long): every later start in the middle is then free.
+  local from = playhead
+  if not to and d1.dur <= 120 then from = 0 end
+  local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = from, to = to,
+                                              mixdown = (#chs > 2) and "stereo" or nil })
+  pending = { kind = "audition", mode = mode, channels = #chs, wav = wav, engine = engine, req = req, job = job, state = state,
+              span_s = s_r, span_e = e_r }
   set_status("preparing the sound ... 0 %")
 end
 
+-- Plays the sound in `wav` through REAPER's preview, and remembers it: while nothing changes, the next AUDITION plays this
+-- file again (replay) instead of making the sound once more.
+last_audition = nil                -- the last sound that was made: { state, wav, s, e (first and last+1 sample in the sound), nch, sr, ... }
+local slice_history = {}           -- pieces cut out of it (kept briefly, then deleted)
+-- Starts the preview of `wav`. how: nil = a sound that was just made, "replayed" = the same file again, "cut" = a piece cut out
+-- of the sound that was made before.
+function start_preview(p, wav, dur, t_start, how)
+  local src = reaper.PCM_Source_CreateFromFile(wav)
+  if src and reaper.Xen_StartSourcePreview then
+    reaper.Xen_StartSourcePreview(src, 1.0, false)
+    preview_until = reaper.time_precise() + dur
+    play = { start = t_start or 0, t0 = reaper.time_precise(), dur = dur }
+    local chan_note = ""
+    if (p.channels or 1) > 2 then chan_note = ", " .. p.channels .. " channels mixed down to stereo"
+    elseif (p.channels or 1) == 2 then chan_note = ", stereo" end
+    local engine_note = (how == "replayed") and ", replayed: nothing has changed since it was made"
+      or (how == "cut") and ", from the sound already made: nothing has changed"
+      or (p.note and (", " .. p.engine .. " synthesis: Python failed with: " .. p.note) or (", " .. p.engine .. " synthesis"))
+    set_status(string.format("auditioning from %.2f s, %.1f s long (%s%s%s)  Space stops", t_start or 0, dur, p.mode, chan_note, engine_note))
+  else
+    set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
+  end
+end
+
+-- Plays the part s_r .. e_r (samples in the sound) of the sound made before (m): the file itself when it is exactly that part,
+-- otherwise a piece cut out of it. Returns false after a status message if that fails.
+function play_from_made(m, s_r, e_r, p, fresh)
+  local dur = (e_r - s_r) / m.sr
+  if m.s == s_r and m.e == e_r then
+    start_preview(p, m.wav, dur, s_r / m.sr, (not fresh) and "replayed" or nil)
+    return true
+  end
+  audition_count = audition_count + 1
+  local piece = string.format("%s/reaats_audition_%s_%d.wav", (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", ""), session_id, audition_count)
+  local ok, err = wav_info.slice(m.wav, piece, s_r - m.s, e_r - s_r)
+  if not ok then set_status("audition failed: " .. tostring(err)); return false end
+  slice_history[#slice_history + 1] = piece
+  if #slice_history > 3 then os.remove(table.remove(slice_history, 1)) end
+  start_preview(p, piece, dur, s_r / m.sr, (not fresh) and "cut" or nil)
+  return true
+end
+
 local function advance_pending()
+  py_synth.sweep()
   local p = pending
   if not p then return end
   if not p.job.step(0.03) then
     set_status(string.format("preparing the %s ... %d %%", p.kind == "print" and "print" or "sound", math.floor(p.job.progress * 100)))
     return
   end
-  pending = nil
   local job = p.job
-  if job.cancelled then return end
-  if p.kind == "print" then finish_print(p, job); return end
-  if not job.samples then set_status("audition failed: " .. tostring(job.error)); return end
-  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
-  audition_count = audition_count + 1
-  local wav = string.format("%s/reaats_audition_%s_%d.wav", dir, session_id, audition_count)
-  local ok, err
-  local chans = job.channels
-  if #chans > 2 then chans = synth.mix_to_stereo(chans) end      -- REAPER's preview is stereo: more channels are mixed down
-  if #chans > 1 then ok, err = synth.write_wav_channels(wav, chans, job.sr) else ok, err = synth.write_wav(wav, job.samples, job.sr) end
-  if not ok then set_status("audition failed: " .. tostring(err)); return end
-  local dur = #job.samples / job.sr
-  local src = reaper.PCM_Source_CreateFromFile(wav)
-  if src and reaper.Xen_StartSourcePreview then
-    reaper.Xen_StartSourcePreview(src, 1.0, false)
-    preview_until = reaper.time_precise() + dur
-    play = { start = job.t_start or 0, t0 = reaper.time_precise(), dur = dur }
-    wav_history[#wav_history + 1] = wav
-    if #wav_history > 4 then os.remove(table.remove(wav_history, 1)) end
-    local chan_note = ""
-    if (p.channels or 1) > 2 then chan_note = ", " .. p.channels .. " channels mixed down to stereo"
-    elseif (p.channels or 1) == 2 then chan_note = ", stereo" end
-    set_status(string.format("auditioning from %.2f s, %.1f s long (%s%s)  Space stops", job.t_start or 0, dur, p.mode, chan_note))
-  else
-    set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
+  if job.cancelled then pending = nil; return end
+  if p.engine == "Python" and job.error then                   -- the Python run failed: say so, then do it with the built-in synthesis
+    local o = p.req.o
+    p.note = job.error
+    p.job = synth.render_multi_job(p.req.list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to })
+    p.engine = "Lua"
+    set_status("Python synthesis failed (" .. job.error .. "): using the built-in synthesis")
+    return
   end
+  pending = nil
+  if p.kind == "print" then finish_print(p, job); return end
+  local wav, dur, t_start = p.wav, nil, job.t_start
+  if p.engine == "Python" then
+    dur = job.dur
+  else
+    if not job.samples then set_status("audition failed: " .. tostring(job.error)); return end
+    local ok, err
+    local chans = job.channels
+    if #chans > 2 then chans = synth.mix_to_stereo(chans) end    -- REAPER's preview is stereo: more channels are mixed down
+    if #chans > 1 then ok, err = synth.write_wav_channels(wav, chans, job.sr) else ok, err = synth.write_wav(wav, job.samples, job.sr) end
+    if not ok then set_status("audition failed: " .. tostring(err)); return end
+    dur = #job.samples / job.sr
+  end
+  -- this sound is now "the sound made before": AUDITION cuts its starts from it while nothing changes
+  local sr = job.sr
+  local s0 = math.floor((t_start or 0) * sr + 0.5)
+  local nch = (p.engine == "Python") and job.nchan or math.min(#job.channels, 2)
+  wav_history[#wav_history + 1] = wav
+  if #wav_history > 3 then os.remove(table.remove(wav_history, 1)) end
+  last_audition = { state = p.state, wav = wav, s = s0, e = s0 + math.floor(dur * sr + 0.5), nch = nch, sr = sr,
+                    mode = p.mode, channels = p.channels, engine = p.engine, note = p.note }
+  play_from_made(last_audition, p.span_s, p.span_e, p, true)
 end
 
 -- Writes the current data to `path` as a Csound-compatible .ats file, WITH phase (the phases of edited runs are
@@ -797,21 +921,25 @@ local function print_to_track()
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to print (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  local list = {}
-  for i, c in ipairs(chs) do list[i] = c.data end
-  pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path, files = files, channels = #list,
-              job = synth.render_multi_job(list, { sines = use_sines, noise = use_noise, from = playhead }) }   -- from the playhead
+  local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = playhead })           -- from the playhead
+  pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path, files = files, channels = #chs,
+              engine = engine, req = req, job = job }
   set_status("preparing the print ... 0 %   (Esc cancels)")
 end
 
 -- The sound is ready (see advance_pending): write the WAV, put it on the track and remember the settings under the item.
 finish_print = function(p, job)
-  if not job.samples then set_status("print failed: " .. tostring(job.error)); return end
+  local nch, dur
   local wav, ats_path, mode = p.wav, p.ats_path, p.mode
-  local ok_w, err_w
-  if #job.channels > 1 then ok_w, err_w = synth.write_wav_channels(wav, job.channels, job.sr) else ok_w, err_w = synth.write_wav(wav, job.samples, job.sr) end
-  if not ok_w then set_status("print failed: " .. tostring(err_w)); return end
-  local dur = #job.samples / job.sr
+  if p.engine == "Python" then                                 -- the program has written the WAV already
+    nch, dur = job.nchan, job.dur
+  else
+    if not job.samples then set_status("print failed: " .. tostring(job.error)); return end
+    local ok_w, err_w
+    if #job.channels > 1 then ok_w, err_w = synth.write_wav_channels(wav, job.channels, job.sr) else ok_w, err_w = synth.write_wav(wav, job.samples, job.sr) end
+    if not ok_w then set_status("print failed: " .. tostring(err_w)); return end
+    nch, dur = #job.channels, #job.samples / job.sr
+  end
 
   reaper.Undo_BeginBlock()
   local track = reaper.GetSelectedTrack(0, 0)
@@ -821,8 +949,8 @@ finish_print = function(p, job)
     reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS", true)
   end
   reaper.SetOnlyTrackSelected(track)
-  if #job.channels > 1 then                                    -- the track needs room for every channel (an even number)
-    local need = #job.channels + (#job.channels % 2)
+  if nch > 1 then                                    -- the track needs room for every channel (an even number)
+    local need = nch + (nch % 2)
     if (reaper.GetMediaTrackInfo_Value(track, "I_NCHAN") or 2) < need then reaper.SetMediaTrackInfo_Value(track, "I_NCHAN", need) end
   end
   reaper.InsertMedia(wav, 0)
@@ -844,8 +972,8 @@ finish_print = function(p, job)
   end
   reaper.Undo_EndBlock("ReaATS print", -1)
   reaper.UpdateArrange()
-  set_status(item and string.format("printed %.1f s from %.2f s (%s%s) to the track", dur, job.t_start or 0, mode,
-                                    #job.channels > 1 and (", " .. #job.channels .. " channels") or "")
+  set_status(item and string.format("printed %.1f s from %.2f s (%s%s, %s synthesis) to the track", dur, job.t_start or 0, mode,
+                                    nch > 1 and (", " .. nch .. " channels") or "", p.engine or "Lua")
                   or "printed, but the new item was not found on the track")
 end
 
@@ -1143,6 +1271,11 @@ local function audition_rect()
   return x - 96, y - 2, 86, 20
 end
 
+local function len_rect()                                      -- under AUDITION: how much it plays
+  local x, y, w, h = audition_rect()
+  return x, y + 26, w, 16
+end
+
 local function print_rect()
   local x, y, w, h = audition_rect()
   return x - 72, y, 62, h
@@ -1226,14 +1359,18 @@ local function chan_pitch()
   return math.max(math.min(104, math.floor((gfx.w - MARGIN_L - 130) / math.max(#chs, 1))), 44)
 end
 local function channel_button_rect(i)
-  return MARGIN_L + (i - 1) * chan_pitch(), MARGIN_T - 2, 30, 18
+  return MARGIN_L + (i - 1) * chan_pitch(), MARGIN_T + 8, 30, 18
 end
 local function slider_rect(i)
   local pitch = chan_pitch()
-  return MARGIN_L + (i - 1) * pitch + 34, MARGIN_T + 2, pitch - 42, 10
+  return MARGIN_L + (i - 1) * pitch + 34, MARGIN_T + 12, pitch - 42, 10
+end
+local function led_rect(i)
+  local bx, by, bw = channel_button_rect(i)
+  return bx + (bw - 10) // 2, MARGIN_T - 1, 10
 end
 local function mode_rect()
-  return MARGIN_L + #chs * chan_pitch() + 4, MARGIN_T - 2, 100, 18
+  return MARGIN_L + #chs * chan_pitch() + 4, MARGIN_T + 8, 100, 18
 end
 
 local function draw_channel_buttons()
@@ -1252,6 +1389,13 @@ local function draw_channel_buttons()
     gfx.x = x + (w - gfx.measurestr(label)) / 2
     gfx.y = y + 2
     gfx.drawstr(label)
+    -- the LED above the button: green = editable, red = not editable (dim when the channel is off)
+    local lx, ly, lw = led_rect(i)
+    local dim = c.on and 1 or 0.35
+    if c.edit then gfx.set(0.15 * dim, 0.95 * dim, 0.30 * dim, 1) else gfx.set(0.95 * dim, 0.12 * dim, 0.12 * dim, 1) end
+    gfx.circle(lx + lw // 2, ly + lw // 2, lw // 2, 1)
+    gfx.set(0, 0, 0, 0.6)
+    gfx.circle(lx + lw // 2, ly + lw // 2, lw // 2, 0)
     -- the visibility slider
     local sx, sy, sw, sh = slider_rect(i)
     gfx.set(0.16, 0.18, 0.22, 1)
@@ -1294,6 +1438,16 @@ local function toggle_channel(i)
   dirty = true
 end
 
+-- Click on an LED: editable (green) or not (red). A channel that is not editable loses its selection.
+local function toggle_edit(i)
+  capture_channel()
+  local c = chs[i]
+  c.edit = not c.edit
+  if not c.edit then c.sel, c.sel_info = {}, nil; if i == cur then sel, sel_info = c.sel, nil end end
+  dirty = true
+  set_status(string.format("channel %d %s", i, c.edit and "is editable (green)" or "is not editable (red)"))
+end
+
 -- Tab: solo the next channel; after the last one, all channels again.
 local function solo_next()
   local on = on_list()
@@ -1329,6 +1483,8 @@ end
 local function channel_row_click(mx, my)
   if #chs < 2 then return false end
   for i = 1, #chs do
+    local lx, ly, lw = led_rect(i)
+    if mx >= lx - 6 and mx < lx + lw + 6 and my >= ly - 3 and my < ly + lw + 3 then toggle_edit(i); return true end
     local bx, by, bw, bh = channel_button_rect(i)
     if mx >= bx and mx < bx + bw and my >= by and my < by + bh then toggle_channel(i); return true end
     local sx, sy, sw, sh = slider_rect(i)
@@ -1359,6 +1515,21 @@ local function draw_audition_button()
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
+end
+
+local function draw_len_button()
+  local x, y, w, h = len_rect()
+  gfx.set(0.14, 0.22, 0.19, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.35, 0.60, 0.48, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 12)
+  local label = "plays: " .. AUDITION_LENS[audition_len][1]
+  gfx.set(0.75, 0.92, 0.82, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 1
+  gfx.drawstr(label)
+  gfx.setfont(1, "Arial", 14)
 end
 
 -- The sine layer checkbox sits under the noise layer checkbox.
@@ -1439,6 +1610,7 @@ local function draw_header(px, py, pw, ph, plain)
     draw_checkbox()
     draw_sine_checkbox()
     draw_audition_button()
+    draw_len_button()
     draw_print_button()
     draw_export_button()
     draw_analyse_button()
@@ -1512,7 +1684,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   text_at(px, gfx.h - 34, "drag select (Shift adds)   drag a selected point = move (Shift locks axis)   right-drag pan   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
     0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
+  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   L audition length   Del delete   Up/Down transpose   Left/Right move   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
     0.5, 0.53, 0.58)
 end
 
@@ -1593,6 +1765,8 @@ local function handle_input(px, py, pw, ph)
       dirty = true
     elseif mx >= ax and mx < ax + aw and my >= ay and my < ay + ah then
       audition()
+    elseif (function() local lx, ly, lw, lh = len_rect(); return mx >= lx and mx < lx + lw and my >= ly and my < ly + lh end)() then
+      cycle_audition_len()
     elseif (function() local rx, ry, rw, rh = print_rect(); return mx >= rx and mx < rx + rw and my >= ry and my < ry + rh end)() then
       print_to_track()
     elseif (function() local ex, ey, ew, eh = export_rect(); return mx >= ex and mx < ex + ew and my >= ey and my < ey + eh end)() then
@@ -1676,6 +1850,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
+  elseif ch == 108 or ch == 76 then cycle_audition_len()         -- L: how much AUDITION plays
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
@@ -1705,7 +1880,7 @@ local function draw_analysis_frame()
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   draw_header(px, py, pw, ph, true)
-  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T + ((#chs > 1) and 20 or 0))
+  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T + ((#chs > 1) and CHAN_ROW or 0))
 end
 
 local function loop()

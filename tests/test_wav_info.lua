@@ -35,5 +35,24 @@ local bad, err = wav.read(tmp)
 check("rejects other files", bad == nil and err:find("not a WAV"), err)
 check("missing file", wav.read("/nonexistent/x.wav") == nil)
 os.remove(tmp)
+-- slice: a piece cut out of a 2-channel float WAV
+do
+  local synth = dofile("lib/ats_synth.lua")
+  local l, r = {}, {}
+  for i = 1, 1000 do l[i] = i / 1000; r[i] = -i / 1000 end
+  local src, dst = tmp .. ".src.wav", tmp .. ".dst.wav"
+  assert(synth.write_wav_channels(src, { l, r }, 44100))
+  check("slice: ok", wav.slice(src, dst, 100, 300) == true)
+  local i2 = wav.read(dst)
+  check("slice: 300 frames, 2 channels, float, same rate", i2 and i2.frames == 300 and i2.channels == 2 and i2.float and i2.rate == 44100)
+  local fh = io.open(dst, "rb"); local data = fh:read("a"); fh:close()
+  local first_l, first_r = string.unpack("<ff", data, 45)
+  check("slice: starts at frame 101", math.abs(first_l - 0.101) < 1e-6 and math.abs(first_r + 0.101) < 1e-6, first_l)
+  local last_l = string.unpack("<f", data, 45 + 299 * 8)
+  check("slice: ends at frame 400", math.abs(last_l - 0.400) < 1e-6, last_l)
+  check("slice: a piece beyond the end is refused", wav.slice(src, dst, 900, 300) == nil)
+  check("slice: a file that is not ReaATS's WAV is refused", wav.slice(tmp, dst, 0, 1) == nil)
+  os.remove(src); os.remove(dst)
+end
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

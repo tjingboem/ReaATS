@@ -1,3 +1,4 @@
+no_py_synth = false
 -- Run: lua5.4 tests/mock_run.lua   (from the ATSEditor folder)
 -- Runs ATS_Editor.lua against a fake `gfx` and `reaper` with scripted input, to catch
 -- runtime errors (nothing is drawn). Also counts the draw calls of one cache render.
@@ -56,7 +57,9 @@ reaper = {
   GetSetMediaItemTakeInfo_String = function(take, what, val, set) if set then take.name = val end return true, take.name end,
   SetProjExtState = function(_, sec, key, val) projext[sec .. "|" .. key] = val; return 1 end,
   GetProjExtState = function(_, sec, key) return 1, projext[sec .. "|" .. key] or "" end,
-  file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
+  file_exists = function(p)
+    if no_py_synth and p:find("reaats_synth.py", 1, true) then return false end         -- (tests of the built-in synthesis)
+    local f = io.open(p, "rb"); if f then f:close() return true end return false end,
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
@@ -203,13 +206,13 @@ do
   assert(#previews == 1, "audition did not start a preview; strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
   local size = wav_info(previews[1])
   assert(size and size > 300000, "rendered WAV missing or too short: " .. tostring(size))
-  assert(saw("^auditioning from [%d%.]+ s, [%d%.]+ s long %(sines %+ noise%)"), "status should say sines + noise")
+  assert(saw("^auditioning from [%d%.]+ s, [%d%.]+ s long %(sines %+ noise, %a+ synthesis%)"), "status: " .. tostring(saw("auditioning") or saw("failed") or saw("preparing")))
   script.keys = { 112 }; frame()                                                -- P off: noise only
   key_audition()
-  assert(#previews == 2 and saw("%(noise%)"), "noise-only audition expected")
+  assert(#previews == 2 and saw("%(noise, %a+ synthesis%)"), "noise-only audition expected")
   script.keys = { 112 }; frame(); script.keys = { 110 }; frame()                -- P on, N off: sines only
   key_audition()
-  assert(#previews == 3 and saw("%(sines%)"), "sines-only audition expected")
+  assert(#previews == 3 and saw("%(sines, %a+ synthesis%)"), "sines-only audition expected")
   script.keys = { 112 }; frame(); script.keys = { 112 }; frame()                -- P off, then on again
   script.keys = { 110 }; frame()                                                -- N on again
   script.keys = { 32 }; strings = {}; frame(); frame()                          -- Space stops
@@ -261,6 +264,8 @@ do
   assert(not saw("^selected:"), "and clears the selection")
   script.keys = { 110 }; frame()                                -- N on again for the tests that follow
   print("playhead OK: set on the ruler, audition from it, moves while playing, returns, scrubs")
+  do local t = os.clock(); os.clock = function() t = t + 0.002; return t end end        -- a clock that ticks per call: a render step does a fixed amount of work
+  no_py_synth = true                                                              -- the rest tests the built-in (Lua) synthesis: it works in steps
   -- while the sound is prepared: the AUDITION button blinks, the status shows the progress, Space or an edit cancels it
   do
     ruler_click(0)
@@ -289,7 +294,14 @@ do
     assert(#previews == n_before + 1, "the sound starts when it is ready")
     -- Space while preparing: nothing is played
     local count = #previews
-    script.keys = { 97 }; frame(); frame()
+    do                                                                         -- a change of the data (an edit and its undo): else the last sound would be played again
+      script.keys = { 102 }; frame()
+      gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()
+      gfx.mouse_x, gfx.mouse_y = 600, 560; frame(); gfx.mouse_cap = 0; frame(); frame()
+      script.keys = { 6579564 }; frame()
+      script.keys = { 26 }; gfx.mouse_cap = 4; frame(); gfx.mouse_cap = 0; frame()
+    end
+    script.keys = { 97 }; frame()                                              -- (the noise is cached now: a render is quick)
     script.keys = { 32 }; strings = {}; frame()
     for _ = 1, 400 do frame() end
     assert(#previews == count, "Space while the sound is prepared must cancel it")

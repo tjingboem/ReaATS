@@ -236,5 +236,51 @@ do
   check("the sides are about equally loud", math.abs(10 * math.log(pl4 / pr4, 10)) < 0.5, 10 * math.log(pl4 / pr4, 10))
 end
 
+
+-- ------------------------------------------------------------ speed-ups: window, noise cache, silent stretches
+do
+  local ats2 = dofile("lib/ats_file.lua")
+  local sx = assert(ats2.load("examples/sax.ats"))
+  local function rms(a) local s = 0; for i = 1, #a do s = s + a[i] * a[i] end; return math.sqrt(s / #a) end
+  -- `to`: stop at a time
+  local full = synth.render(sx, { sines = true, noise = false })
+  local part = synth.render(sx, { sines = true, noise = false, from = 0.5, to = 1.0 })
+  check("to: a window of 0.5 s is 22050 samples", #part == 22050, "got " .. #part)
+  local ratio_w = rms(part) / rms({ table.unpack(full, off_samples or math.floor(0.5 * sx.sr / math.floor(sx.frame_size + 0.5)) * math.floor(sx.frame_size + 0.5) + 1, 22050 + math.floor(0.5 * sx.sr / math.floor(sx.frame_size + 0.5)) * math.floor(sx.frame_size + 0.5)) })
+  check("to: the window has the level of that part of the full render (ratio " .. string.format("%.3f", ratio_w) .. ")", ratio_w > 0.97 and ratio_w < 1.03)
+  -- the noise cache: the same noise again, quickly; a request inside a cached stretch reuses it
+  sx.noise_cache = nil
+  local t0 = os.clock(); local a1 = synth.render(sx, { sines = false }); local first = os.clock() - t0
+  check("the render left a cache", sx.noise_cache ~= nil and sx.noise_cache.n == #a1)
+  t0 = os.clock(); local a2 = synth.render(sx, { sines = false }); local again = os.clock() - t0
+  local ident = true
+  for i = 1, #a1 do if a1[i] ~= a2[i] then ident = false; break end end
+  check("cached noise is exactly the same", ident)
+  check("cached noise is much quicker (" .. string.format("%.2f s then %.2f s", first, again) .. ")", again < first / 3)
+  local cache_before = sx.noise_cache
+  local w = synth.render(sx, { sines = false, from = 1.0, to = 1.5 })
+  check("a window inside the cache reuses it", sx.noise_cache == cache_before and #w == 22050)
+  local fs = math.floor(sx.frame_size + 0.5)
+  local k0 = 1 + math.floor(1.0 * sx.sr / fs + 1e-6)
+  local match = true
+  for i = 1, 100 do if w[i] ~= a1[(k0 - 1) * fs + i] then match = false end end
+  check("and it is the same noise as in the full render", match)
+  -- editing the partials does not touch the noise: sines change, noise stays
+  local keep = sx.amp[5][10]
+  sx.amp[5][10] = 0
+  local b = synth.render(sx, { sines = false })
+  check("noise does not change when partials are edited", b[1000] == a1[1000] and sx.noise_cache == cache_before)
+  sx.amp[5][10] = keep
+  -- silent stretches: a band with no energy for a while costs nothing and the level stays right
+  local gap = assert(ats2.load("examples/sax.ats"))
+  for bnd = 1, 25 do for f = 60, 150 do gap.noise[bnd][f] = 0 end end
+  local g = synth.render(gap, { sines = false })
+  local silent = true
+  for i = 60 * fs + 1, 148 * fs do if g[i] ~= 0 then silent = false; break end end
+  check("a stretch without noise energy is silent", silent)
+  local ratio = rms({ table.unpack(g, 1, 50 * fs) }) / rms({ table.unpack(a1, 1, 50 * fs) })
+  check("the noise before the gap has the same level (ratio " .. string.format("%.2f", ratio) .. ")", ratio > 0.75 and ratio < 1.33)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

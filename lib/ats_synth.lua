@@ -86,59 +86,117 @@ local function make_rng(seed)
   end
 end
 
--- Adds the noise bands into out[1..n].
+-- The filters of band b: high-pass at its lower edge (not for the first band) then low-pass at its upper edge, each 2nd order,
+-- twice (a 4th-order Butterworth band-pass). Each stage keeps its own state.
+local function band_stages(b, nyq, sr)
+  local lo, hi = EDGES[b], math.min(EDGES[b + 1], nyq * 0.98)
+  local stages = {}
+  if lo > 0 then
+    local b0, b1, b2, a1, a2 = biquad("hp", lo, sr)
+    stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
+    stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
+  end
+  local b0, b1, b2, a1, a2 = biquad("lp", hi, sr)
+  stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
+  stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
+  return stages
+end
+
+-- The factor that makes band b's filtered noise have unit RMS. It only depends on the filter and the noise source, so it
+-- is worked out once per sample rate: the output power of white noise through the filters is the variance of the source
+-- times the sum of the squares of the filters' impulse response.
+local band_norms = {}
+local rng_variance = nil
+local function band_norm(b, nyq, sr)
+  local per_rate = band_norms[sr]
+  if not per_rate then per_rate = {}; band_norms[sr] = per_rate end
+  if per_rate[b] then return per_rate[b] end
+  if not rng_variance then
+    local rng, acc, N = make_rng(777), 0, 200000
+    for _ = 1, N do local r = rng(); acc = acc + r * r end
+    rng_variance = acc / N
+  end
+  local stages = band_stages(b, nyq, sr)
+  local power = 0
+  for i = 1, 16384 do
+    local x = (i == 1) and 1 or 0
+    for s = 1, #stages do
+      local st = stages[s]
+      local y = st[1] * x + st[2] * st[6] + st[3] * st[7] - st[4] * st[8] - st[5] * st[9]
+      st[7], st[6] = st[6], x
+      st[9], st[8] = st[8], y
+      x = y
+    end
+    power = power + x * x
+  end
+  per_rate[b] = 1 / sqrt(power * rng_variance)
+  return per_rate[b]
+end
+
+-- Adds the noise bands into out[1..n]. Only the stretches where a band sounds are made (a band's silent frames cost
+-- nothing); the filters start from rest at the beginning of each stretch, where the envelope is zero anyway. The four filter
+-- stages and the noise source are written out in the inner loop with local variables: it runs millions of times.
 local function add_noise(d, out, n, seed, k0)
   local fs = floor(d.frame_size + 0.5)
   local nyq = d.sr / 2
-  local rng = make_rng(seed)
+  local rs = seed or 12345                                          -- the state of make_rng's generator
   local amp_scale = M.NOISE_GAIN / sqrt(d.window_size * M.NOISE_VARIANCE)
+  local last = d.frames - 1
+  local c10, c11, c12, c13, c14, xa1, xb1, ya1, yb1
+  local c20, c21, c22, c23, c24, xa2, xb2, ya2, yb2
+  local c30, c31, c32, c33, c34, xa3, xb3, ya3, yb3
+  local c40, c41, c42, c43, c44, xa4, xb4, ya4, yb4
   for b = 1, 25 do
     local nb = d.noise[b]
-    local any = false
-    for f = k0, d.frames do if nb[f] > 0 then any = true; break end end
-    local lo, hi = EDGES[b], EDGES[b + 1]
-    if any and lo < nyq * 0.98 then
-      hi = math.min(hi, nyq * 0.98)
-      -- band-limited noise: high-pass at lo (not for the first band) then low-pass at hi, each 2nd order, twice
-      local stages = {}
-      if lo > 0 then
-        local b0, b1, b2, a1, a2 = biquad("hp", lo, d.sr)
-        stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
-        stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
-      end
-      do
-        local b0, b1, b2, a1, a2 = biquad("lp", hi, d.sr)
-        stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
-        stages[#stages + 1] = { b0, b1, b2, a1, a2, 0, 0, 0, 0 }
-      end
-      local noise, sumsq = {}, 0
-      for i = 1, n do
-        if i % 16384 == 0 then tick((b - 1 + i / n * 0.8) / 25) end
-        local x = rng()
-        for s = 1, #stages do
-          local st = stages[s]
-          local y = st[1] * x + st[2] * st[6] + st[3] * st[7] - st[4] * st[8] - st[5] * st[9]
-          st[7], st[6] = st[6], x
-          st[9], st[8] = st[8], y
-          x = y
-        end
-        noise[i] = x
-        sumsq = sumsq + x * x
-      end
-      local norm = (sumsq > 0) and (1 / sqrt(sumsq / n)) or 0          -- unit RMS
-      for k = k0, d.frames - 1 do
-        local base = (k - k0) * fs
-        if base >= n then break end
-        local e0, e1 = nb[k], nb[k + 1]
-        if e0 > 0 or e1 > 0 then
-          local count = fs
-          if base + count > n then count = n - base end
-          local a0, a1 = sqrt(e0) * amp_scale * norm, sqrt(e1) * amp_scale * norm
-          local a, da = a0, (a1 - a0) / fs
-          for i = base + 1, base + count do
-            out[i] = out[i] + a * noise[i]
-            a = a + da
+    if EDGES[b] < nyq * 0.98 then
+      local stages = band_stages(b, nyq, d.sr)
+      while #stages < 4 do table.insert(stages, 1, { 1, 0, 0, 0, 0, 0, 0, 0, 0 }) end     -- the first band has no high-pass: pass-through stages
+      c10, c11, c12, c13, c14 = table.unpack(stages[1], 1, 5)
+      c20, c21, c22, c23, c24 = table.unpack(stages[2], 1, 5)
+      c30, c31, c32, c33, c34 = table.unpack(stages[3], 1, 5)
+      c40, c41, c42, c43, c44 = table.unpack(stages[4], 1, 5)
+      local norm = band_norm(b, nyq, d.sr) * amp_scale
+      local k = k0
+      while k <= last do
+        if nb[k] > 0 or nb[k + 1] > 0 then
+          local k_end = k                                        -- the run of sounding segments k .. k_end
+          while k_end + 1 <= last and (nb[k_end + 1] > 0 or nb[k_end + 2] > 0) do k_end = k_end + 1 end
+          if (k - k0) * fs >= n then break end
+          xa1, xb1, ya1, yb1 = 0, 0, 0, 0
+          xa2, xb2, ya2, yb2 = 0, 0, 0, 0
+          xa3, xb3, ya3, yb3 = 0, 0, 0, 0
+          xa4, xb4, ya4, yb4 = 0, 0, 0, 0
+          for kk = k, k_end do
+            local base = (kk - k0) * fs
+            if base >= n then break end
+            local count = fs
+            if base + count > n then count = n - base end
+            local a0, a1 = sqrt(nb[kk]) * norm, sqrt(nb[kk + 1]) * norm
+            local a, da = a0, (a1 - a0) / fs
+            for i = base + 1, base + count do
+              rs = (rs * 1103515245 + 12345) % 2147483648
+              local x = rs / 1073741824 - 1
+              local y
+              y = c10 * x + c11 * xa1 + c12 * xb1 - c13 * ya1 - c14 * yb1
+              xb1, xa1, yb1, ya1 = xa1, x, ya1, y
+              x = y
+              y = c20 * x + c21 * xa2 + c22 * xb2 - c23 * ya2 - c24 * yb2
+              xb2, xa2, yb2, ya2 = xa2, x, ya2, y
+              x = y
+              y = c30 * x + c31 * xa3 + c32 * xb3 - c33 * ya3 - c34 * yb3
+              xb3, xa3, yb3, ya3 = xa3, x, ya3, y
+              x = y
+              y = c40 * x + c41 * xa4 + c42 * xb4 - c43 * ya4 - c44 * yb4
+              xb4, xa4, yb4, ya4 = xa4, x, ya4, y
+              x = y
+              out[i] = out[i] + a * x
+              a = a + da
+            end
+            if kk % 16 == 0 then tick((b - 1 + (kk - k0) / math.max(last - k0 + 1, 1)) / 25) end
           end
+          k = k_end + 1
+        else
+          k = k + 1
         end
       end
     end
@@ -146,8 +204,48 @@ local function add_noise(d, out, n, seed, k0)
   end
 end
 
+-- The noise does not depend on the partials, so it is made once and kept (in the data table, d.noise_cache) while you edit
+-- and audition again. A cached stretch is reused when the new request lies inside it. ANYTHING THAT CHANGES d.noise MUST SET
+-- d.noise_cache = nil. A global limit keeps the memory in check: the oldest caches are dropped first.
+local CACHE_LIMIT = 12000000                      -- samples in all caches together (a Lua number takes 16 bytes)
+local cache_log = {}
+local function drop_old_caches(keep)
+  local total = 0
+  local alive = {}
+  for _, e in ipairs(cache_log) do
+    local d = e.ref[1]
+    if d and d.noise_cache == e.entry then alive[#alive + 1] = e; total = total + e.entry.n end
+  end
+  while total > CACHE_LIMIT and #alive > 1 do
+    local e = table.remove(alive, 1)
+    if e.entry ~= keep then
+      if e.ref[1] then e.ref[1].noise_cache = nil end
+      total = total - e.entry.n
+    end
+  end
+  cache_log = alive
+end
+
+-- Returns the noise array and the offset to add to the index (sample i of the request is nz[off + i]).
+local function noise_signal(d, n, seed, k0)
+  local fs = floor(d.frame_size + 0.5)
+  seed = seed or 12345
+  local c = d.noise_cache
+  if c and c.seed == seed and c.k0 <= k0 and (k0 - c.k0) * fs + n <= c.n then
+    return c.nz, (k0 - c.k0) * fs, true
+  end
+  local nz = {}
+  for i = 1, n do nz[i] = 0 end
+  add_noise(d, nz, n, seed, k0)
+  local entry = { seed = seed, k0 = k0, n = n, nz = nz }
+  d.noise_cache = entry
+  cache_log[#cache_log + 1] = { ref = setmetatable({ d }, { __mode = "v" }), entry = entry }
+  drop_old_caches(entry)
+  return nz, 0, false
+end
+
 -- Renders d. opts: sines (default true), noise (default true; needs noise data), seed, from (seconds: start there; the start
--- is moved back to the beginning of its frame). Returns samples (a 1-based Lua array), the sample rate and the time in the
+-- is moved back to the beginning of its frame; to: stop at this time). Returns samples (a 1-based Lua array), the sample rate and the time in the
 -- sound at which the samples start, or nil plus a message.
 function M.render(d, opts)
   opts = opts or {}
@@ -162,12 +260,18 @@ function M.render(d, opts)
   local k0 = 1
   if opts.from and opts.from > 0 then k0 = math.min(1 + floor(opts.from * d.sr / fs + 1e-6), d.frames - 1) end
   local n = n_total - (k0 - 1) * fs
+  if opts.to and opts.to > 0 then n = math.min(n, floor(opts.to * d.sr) - (k0 - 1) * fs) end       -- stop at `to` seconds
   if n < 1 then return nil, "nothing to play after this point" end
   local out = {}
   for i = 1, n do out[i] = 0 end
   local both = use_sines and use_noise
   if use_sines then base, span = 0, both and 0.15 or 1; add_sines(d, out, n, k0) end
-  if use_noise then base, span = both and 0.15 or 0, both and 0.85 or 1; add_noise(d, out, n, opts.seed, k0) end
+  if use_noise then
+    base, span = both and 0.15 or 0, both and 0.85 or 1
+    local nz, off = noise_signal(d, n, opts.seed, k0)
+    for i = 1, n do out[i] = out[i] + nz[off + i] end
+    tick(1)
+  end
   base, span = 0, 1
   return out, d.sr, (k0 - 1) * fs / d.sr
 end

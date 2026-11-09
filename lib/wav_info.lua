@@ -39,4 +39,30 @@ function M.read(path)
   return { rate = rate, channels = channels, bits = bits, frames = frames, seconds = frames / rate, float = (tag == 3), tag = tag }
 end
 
+-- Cuts `count` frames, starting `offset` frames into the sound, out of a 32-bit float WAV as written by ReaATS (a 44-byte
+-- header) into a new WAV file `dst`. Returns true, or nil plus a message. Used to start AUDITION in the middle of a sound that
+-- has been made already, without making it again.
+function M.slice(src, dst, offset, count)
+  local fh, err = io.open(src, "rb")
+  if not fh then return nil, "cannot open " .. tostring(src) .. ": " .. tostring(err) end
+  local head = fh:read(44)
+  if not head or #head < 44 or head:sub(1, 4) ~= "RIFF" or head:sub(9, 16) ~= "WAVEfmt " or head:sub(37, 40) ~= "data" then
+    fh:close()
+    return nil, "not a WAV file written by ReaATS"
+  end
+  local tag, nch, rate, _, align, bits = string.unpack("<I2I2I4I4I2I2", head, 21)
+  if tag ~= 3 or bits ~= 32 then fh:close(); return nil, "only 32-bit float WAV files can be cut" end
+  fh:seek("set", 44 + offset * align)
+  local body = fh:read(count * align)
+  fh:close()
+  if not body or #body < count * align then return nil, "the piece lies outside the sound" end
+  local out, err2 = io.open(dst, "wb")
+  if not out then return nil, "cannot write " .. tostring(dst) .. ": " .. tostring(err2) end
+  out:write("RIFF", string.pack("<I4", 36 + #body), "WAVE")
+  out:write("fmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, nch, rate, rate * align, align, 32))
+  out:write("data", string.pack("<I4", #body), body)
+  out:close()
+  return true
+end
+
 return M

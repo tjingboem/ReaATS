@@ -40,7 +40,7 @@ local rects, cur_color = {}, { 0, 0, 0, 1 }    -- what was drawn: filled rectang
 local selected_item = nil
 local function key(sec, k) return sec .. "|" .. k end
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "line", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "line", "circle", "blit", "setimgdim", "setfont", "update", "init" }) do gfx[n] = function() return 0 end end
 gfx.set = function(r, g, b, a) cur_color = { r, g, b, a or 1 } end
 gfx.rect = function(x, y, w, h, filled) rects[#rects + 1] = { x = x, y = y, w = w, h = h, filled = filled, color = cur_color } end
 gfx.measurestr = function(s) return #s * 7, 14 end

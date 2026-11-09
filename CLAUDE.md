@@ -225,7 +225,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   channels play as they are) while PRINT stays multichannel ("I do think Printing can be multichannel though"; REAPER must
   be set up for multichannel use); PRINT raises the track to an even number
   of channels >= N (`I_NCHAN`) and the item state lists every file (`files`, `channel`). Ctrl+S saves the whole set as
-  name_edit[N]_ch1.ats ... ; EXPORT writes name_ch1.ats ... from the chosen name (asks before replacing any). STACK / OVERLAY
+  name_edit[N]_ch1.ats ... ; EXPORT writes name_ch1.ats ... from the chosen name (asks before replacing any). EDIT LEDs (tjingboem 9 Nov: "an indicator of which channels will be edited at the same time ... green led when editable, clicking makes it red"): `chs[i].edit` (default true), LED above each button (`led_rect`, `toggle_edit`), `on_channels()` = shown AND editable; the channel row is CHAN_ROW=30 px (plot top 100 with 2+ channels). STACK / OVERLAY
   + CHANNEL SELECTORS + SLIDERS (BUILT 9 Nov 2026, tjingboem: "see both channels separate under each other ... an option to see all
   channels in one window but with channel selectors, and the 20%-100% visible sliders"): the channel buttons are now ON/OFF toggles
   (`chs[i].on`, at least one stays on, an OFF channel keeps no selection); each channel has a slider `chs[i].vis` 0.2..1 (screen only);
@@ -288,3 +288,25 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   manual examples, `lowest_frequency=100`.
 - Licences: pyatsyn BSD-3; Csound ATS opcodes LGPL 2.1+; the original ATSA licence file itself
   has not been read.
+
+- SPEED OF AUDITION/PRINT (tjingboem 9 Nov 2026: "is there something we can do to speed up the auditioning?" -> "all of them"): measured first: on sax.ats
+  the noise was 1.19 s of a 1.36 s render (25 bands x 4 biquad stages x every sample). Built: (1) NOISE CACHE in `ats_synth.lua`: the noise
+  is independent of the partials, so `d.noise_cache` ({seed,k0,n,nz}) holds it; a request inside the cached stretch reuses it;
+  global limit 12M samples, oldest dropped; ANYTHING THAT EDITS d.noise MUST SET d.noise_cache = nil (no noise editing exists yet).
+  (2) add_noise skips silent stretches per band (filters restart from rest at the start of a run), the 4 filter stages and the LCG are
+  written out with locals in the inner loop (1.58 s -> 0.96 s), and the unit-RMS norm per band is computed once from the impulse
+  response (`band_norm`), not from the realisation. (3) `opts.to` in synth.render; the editor's AUDITION length button (`len_rect`,
+  AUDITION_LENS END / WINDOW / 5 s / 15 s, key L, not persisted). (4) `python/reaats_synth.py` (numpy only): same method as the Lua
+  (sines identical, corr 1.0000; noise level within ~0.4 dB, Gaussian carriers made by FFT with a 4th-order Butterworth magnitude),
+  reads the .ats files the editor writes to TMPDIR (`ats.save(..., {phase=false})` of the EDITED data), `--from --to --mixdown stereo`
+  (same mix as Lua), a noise cache on disk (`--cache-dir`, fingerprint = sha1 of noise data + grid + part + seed; 40 files / 400 MB),
+  result protocol like the analysis (R.started heartbeat, R "OK t_start dur sr nch" or "ERROR msg", R.cancel). `lib/py_synth.lua`
+  runs it with ExecProcess(-1) and polls (job.step/progress/cancel/wav, sweep() of cancelled jobs' files). The editor's `start_synth`
+  uses it when Python is found (`analysis:find_python()` once; `python_missing` remembers a failure), else the Lua job; a failed Python
+  run falls back to Lua with the error in the status. Measured on 30 s (69 partials): Lua 9.0 s first / 1.6 s cached, Python 2.7 s
+  first / 0.9 s with the disk cache. Tests: tests/test_py_synth.lua (28), more in test_ats_synth.lua (66), mock_channels.lua; mock_run
+  sets `no_py_synth` and a ticking os.clock for the step-wise tests. Possible later: Python channels in parallel, a persistent worker.
+  MIDDLE STARTS (tjingboem, same day: "start Audition in the middle of the file without recalculating"): END mode with a sound <= 120 s renders the WHOLE sound (from=0) at the first AUDITION; `last_audition` = {state (data_rev|sines|noise|#chs), wav, s, e (samples), nch, sr}; any later request [s_r,e_r] inside [s,e] with the same state is `play_from_made`: the file itself when identical, else `wav_info.slice` cuts a new WAV (slice_history keeps 3). WINDOW/5 s/15 s render only their span. BUG FIXED same day: reaats_synth.py was started with `@"path"` (REAPER's ExecProcess keeps the quotes literally); now `--args-file PATH`, quoted only when the path has spaces. NOTE: the Analysis page still uses `@%s` with quoting only when needed, so it has the same latent problem for TMPDIR paths with spaces (Windows) -- not changed, tell tjingboem.
+  REPLAY (tjingboem, same day: "if nothing has changed ... play the file directly from memory"): `data_rev` (bumped in apply_changes and load_file)
+  + switches + playhead + audition end + channel count = the key of `last_audition`; an identical key with the WAV still on disk is played again
+  by `start_preview(..., replay=true)` without any render (status says "replayed"). Tested in mock_channels 4c.
