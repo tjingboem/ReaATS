@@ -2250,6 +2250,32 @@ local function draw_analyse_button()
   gfx.drawstr(label)
 end
 
+-- The empty state (no file open yet): a bigger version of the same button, centred above the empty picture rather than tucked in
+-- the top-right corner, and labelled to make clear it leads to BOTH an analysis of a new sound and opening an existing .ats file
+-- (the Analysis page's own "Import Sound File" / "Import .ats File" buttons) -- tjingboem, 10 Nov 2026: "move the Analyze button to
+-- the middle above the empty Editor and make the button show: ANALYZE or IMPORT FILE... This button takes us to the Analysis page
+-- where also a file to import can be chosen." Fields of W, like W.max_partials_rect, rather than new locals: this file is already
+-- at Lua's 200-local-variable limit for its main chunk.
+function W.empty_analyse_rect()
+  local px, py, pw = plot_rect()
+  local w, h = 280, 30
+  return px + (pw - w) / 2, math.floor((py - h) / 2), w, h
+end
+
+function W.draw_empty_analyse_button()
+  local x, y, w, h = W.empty_analyse_rect()
+  gfx.set(0.20, 0.36, 0.33, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.50, 0.85, 0.78, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 15)
+  local label = "ANALYSE or IMPORT FILE"
+  gfx.set(0.93, 1, 0.98, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + (h - 17) / 2
+  gfx.drawstr(label)
+end
+
 local function draw_print_button()
   local x, y, w, h = print_rect()
   if pending and pending.kind == "print" and (math.floor(reaper.time_precise() * 2.5) % 2 == 0) then
@@ -2528,7 +2554,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 14)
   if not data then
     if load_error then text_at(px, 10, "Could not read:\n" .. load_error, 0.95, 0.85, 0.5) end
-    if not plain then draw_analyse_button() end
+    if not plain then W.draw_empty_analyse_button() end
     if status_msg and reaper.time_precise() < status_until then text_at(px, 48, status_msg, 0.6, 0.95, 0.6) end
     return
   end
@@ -2616,7 +2642,7 @@ local function draw_header(px, py, pw, ph, plain)
   end
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
-  local build = "build 10 Nov 16:17"                                        -- (which version of the script is running)
+  local build = "build 10 Nov 16:54"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2711,7 +2737,11 @@ local function handle_input(px, py, pw, ph)
       print_to_track()
     elseif (function() local ex, ey, ew, eh = export_rect(); return mx >= ex and mx < ex + ew and my >= ey and my < ey + eh end)() then
       save_as()
-    elseif (function() local ax2, ay2, aw2, ah2 = analyse_rect(); return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2 end)() then
+    elseif (function()
+        local ax2, ay2, aw2, ah2
+        if data then ax2, ay2, aw2, ah2 = analyse_rect() else ax2, ay2, aw2, ah2 = W.empty_analyse_rect() end
+        return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2
+      end)() then
       showing_analysis = true
     elseif data and (function()
         local mx2, my2, mw2, mh2 = W.max_partials_rect()

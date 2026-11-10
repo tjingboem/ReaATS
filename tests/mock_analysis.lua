@@ -298,8 +298,8 @@ print("a non-WAV file and too many channels are refused")
 chosen_file = nil
 start(""); strings = {}; frame()
 assert(not saw("Press O to open"), "the hint text was removed, nothing loaded")
-assert(saw("^ANALYSE$"), "the button must be drawn when no file is loaded")
-click(620, 16); strings = {}; frame()
+assert(saw("^ANALYSE or IMPORT FILE$"), "the button must be drawn when no file is loaded")
+click(556, 35); strings = {}; frame()         -- centred above the empty picture (W.empty_analyse_rect, 1100x640)
 assert(saw("^ANALYSIS: make .ats files from a sound"), "clicking ANALYSE should open the page")
 print("the page is reachable with no file loaded")
 

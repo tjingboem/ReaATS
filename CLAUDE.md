@@ -699,3 +699,21 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   exactly the view's own t0/t1; and reusing the still-active selection from a previous scenario to start a new, smaller drag can hit
   an already-selected point and MOVE the old selection instead of replacing it with a new one -- a plain Esc, or here a reload (also
   needed to undo earlier scenarios' edits still sitting in the live data), clears it first. Full suite passes.
+- THE EMPTY-STATE ANALYSE BUTTON MOVED TO THE MIDDLE, AND GAINED A SECOND JOB IN ITS LABEL (tjingboem, 10 Nov 2026, starting a look-
+  and-feel pass: "move the Analyze button to the middle above the empty Editor and make the button show: ANALYZE or IMPORT FILE...
+  This button takes us to the Analysis page where also a file to import can be chosen"). Before, the SAME small ANALYSE button and
+  position served both the empty window (nothing open yet) and the normal, file-open header (top right, beside EXPORT/PRINT/
+  AUDITION) -- fine once something is open, but on first launch it left no visible clue that the Analysis page is also where you
+  open an EXISTING .ats file (`lib/analysis_page.lua`'s own "Import Sound File" / "Import .ats File" buttons), not only where a new
+  sound gets analysed. Split into two: `W.empty_analyse_rect`/`W.draw_empty_analyse_button` (fields of W, not new top-level locals --
+  this file's main chunk is already at Lua's 200-local limit, hit immediately when tried as plain locals first) draw a bigger
+  button, centred above the empty plot, labelled "ANALYSE or IMPORT FILE"; `analyse_rect`/`draw_analyse_button` are UNCHANGED, still
+  the small, top-right, plain "ANALYSE" button, used once a file is actually open.
+  Caught a real crash writing the click dispatch for this: `local ax2, ay2, aw2, ah2 = (data and analyse_rect() or
+  W.empty_analyse_rect())` -- Lua's `and`/`or` each adjust their OWN operand to exactly one value before combining, so only the
+  FIRST of analyse_rect()'s four returns survives that expression; ay2/aw2/ah2 end up nil regardless of which rect "wins", throwing
+  the moment anything was clicked with a file open (mock_channels.lua's own Analysis-page round trip caught it at once). Fixed with
+  a plain `if data then ... else ... end` assigning all four locals, which the full suite is why it is run before every deploy --
+  this would not have been something to find by eye.
+  Tests updated for both the new label text and the new button position (mock_analysis.lua, mock_snap.lua -- the empty-state click
+  test now clicks the centred rect instead of the old top-right one). Full suite passes.

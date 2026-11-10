@@ -24,7 +24,7 @@ ReaATS starts with an empty window: it does not reopen the file you used last. T
 
 ## Making an .ats file: the Analysis page
 
-The ANALYSE button, at the top right of the window (or Ctrl+A), opens the Analysis page. It is there even when no .ats file is open yet. The page analyses a sound into .ats files and opens the result in the editor. Esc, or the BACK button, returns to the editor.
+The ANALYSE button (or Ctrl+A) opens the Analysis page. With no file open yet, it is a bigger button centred above the empty picture, labelled "ANALYSE or IMPORT FILE" to make clear the page is also where an existing .ats file is opened, not only where a new sound gets analysed; once a file is open, it moves to its usual small spot at the top right, labelled plainly ANALYSE. Esc, or the BACK button, returns to the editor.
 
 **Importing an .ats file.** The button Import .ats File on the page opens an existing .ats file, for example one that you made with Csound, and returns to the editor. It does the same as the O key in the editor.
 
