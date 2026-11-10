@@ -75,13 +75,14 @@ ext[key("tjingboem_ATSViewer", "last_file")] = file
 deferred = nil
 dofile("ATS_Editor.lua")
 frame()
--- no snapshot at all: the window starts empty, with the hint, even though a last file is remembered
+-- no snapshot at all: the window starts empty, even though a last file is remembered
 ext = {}
 ext[key("tjingboem_ATSViewer", "last_file")] = file
 strings = {}; deferred = nil
 dofile("ATS_Editor.lua")
 frame()
 assert(not saw("^snap_sax%.ats"), "the last file must not be reopened at the start")
-assert(saw("Press O to open a .ats file, or click ANALYSE"), "the empty window shows the hint")
+assert(not saw("Press O to open"), "the hint text was removed")
+assert(saw("^ANALYSE$"), "the empty window still offers ANALYSE")
 os.remove(file)
 print("missing file / garbage / empty start OK")

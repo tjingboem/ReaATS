@@ -420,6 +420,7 @@ local SUGGEST_ORDER = { "lowest_frequency", "highest_frequency", "amp_threshold_
 
 function Page:apply_all_suggestions()
   for _, key in ipairs(SUGGEST_ORDER) do self:apply_suggestion(key) end
+  self.view = nil                                                    -- nothing left to see here once they're all used: go straight back
   self:say("The suggested settings are used.")
 end
 

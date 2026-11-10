@@ -7,7 +7,6 @@
   transpose them. Edits are saved to a NEW file next to the original.
 
   Run it from the action list (Actions > Show action list > ReaScript: Load...).
-  The window starts empty: press O to open a .ats file, or click ANALYSE to make one from a sound.
 
   Mouse:  left drag = select box (Shift adds, click on empty space clears)
           left drag ON a selected point = move the selection (Shift locks to one axis)
@@ -65,6 +64,7 @@ local DB_FLOOR = -80            -- partials quieter than this (relative to the l
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
 local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 70, 54
 local CHAN_ROW = 30                 -- the extra header height with several channels: LEDs above, buttons and sliders below
+local ANALYSIS_TOP = 40             -- the Analysis/Suggested pages have no channel row of their own: just room for the one plain header line above them
 local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
 -- --------------------------------------------------------------------- state
@@ -1703,9 +1703,16 @@ function W.set_region(ta, tb, fa, fb, add)
   W.region = { t0 = ta, t1 = tb, f0 = fa, f1 = fb }
 end
 
--- The box: the one the selection was made with, or else the one round the selected points.
+-- The box: the one the selection was made with (W.region), except its t0/t1 are replaced with the exact span of the selected
+-- frames when there are any -- so u is exactly 0/1 at the true edge of the data plan_warp itself will move, not wherever the mouse
+-- happened to be when the drag started. The frequency range (f0/f1) keeps using the raw drag rectangle as before: frequency is
+-- continuous (no frame grid to miss), so there is nothing there for a mismatch to silently drop.
+-- Using W.region's raw time whenever it existed used to leave every row's own first selected frame at a small but nonzero u: its
+-- real anchor is where ITS data starts, not where the mouse was, so any stretch already moved it a little, away from the still-
+-- fixed, un-selected frame right before it -- a gap at exactly the old selection border, on every row alike (tjingboem, 10 Nov 2026,
+-- a third screenshot after the ripple fix, diagnosing it directly: "the border itself is not the anchor point ... anchor points for
+-- each partial just inside the selection ... should stretch as well to close the gap ... making this anchor point a joint point").
 function W.current_region()
-  if W.region then return W.region end
   local t0, t1, f0, f1 = math.huge, -math.huge, math.huge, 0
   for i, c in ipairs(chs) do
     local si = W.sel_info_of(i)
@@ -1713,9 +1720,10 @@ function W.current_region()
       t0, t1, f0, f1 = math.min(t0, si.t0), math.max(t1, si.t1), math.min(f0, si.f0), math.max(f1, si.f1)
     end
   end
-  if t0 == math.huge or not data then return nil end
+  if t0 == math.huge or not data then return W.region end
   local dt = (data.times[data.frames] - data.times[1]) / math.max(data.frames - 1, 1)
   if t1 - t0 < dt then local m = (t0 + t1) / 2; t0, t1 = m - dt / 2, m + dt / 2 end
+  if W.region then f0, f1 = W.region.f0, W.region.f1 end
   if f1 / f0 < 1.06 then local m = math.sqrt(f0 * f1); f0, f1 = m / 1.03, m * 1.03 end
   return { t0 = t0, t1 = t1, f0 = f0, f1 = f1 }
 end
@@ -1724,21 +1732,14 @@ function W.get()
   if not W.w then
     local r = W.current_region()
     if not r then return nil end
-    -- A box that is only a few pixels high or wide (one partial, a few frames) would have its dots on top of each other: it is made at
-    -- least 30 px each way (round its middle) when the bend is started.
-    local t0, t1, f0, f1 = r.t0, r.t1, r.f0, r.f1
-    local px0, py0, pw0, ph0 = plot_rect()
-    local lane_h = lane_layout(ph0)[1].h
-    local per_st = lane_h / (12 * math.log(view.f1 / view.f0, 2))
-    local height = 12 * math.log(f1 / f0, 2) * per_st
-    if height < 30 then
-      local extra = (30 - height) / per_st / 2
-      f0, f1 = f0 / 2 ^ (extra / 12), f1 * 2 ^ (extra / 12)
-    end
-    local per_s = pw0 / (view.t1 - view.t0)
-    local width = (t1 - t0) * per_s
-    if width < 30 then local extra = (30 - width) / per_s / 2; t0, t1 = t0 - extra, t1 + extra end
-    W.w = W.m.new(t0, t1, f0, f1)
+    -- The box's own t0/t1/f0/f1 are the exact extent of the selected points: plan_warp maps every selected frame through them, so if
+    -- this were padded out to a minimum size (as it used to be, for narrow selections), frames right at the true edge would sit at a
+    -- fractional u/v instead of exactly 0/1 and pick up a sliver of unintended displacement -- some of them then land outside the
+    -- destination range plan_warp computes from the (now shifted) mapped times, while plan_warp still silences their SOURCE cells
+    -- unconditionally: a real gap, right where the selection border was, that stretching could not be undone. A minimum on-screen size
+    -- for grabbable dots is still needed (one partial, a few frames, would draw them on top of each other) -- W.geo now does that purely
+    -- in pixel space, leaving the box's own t0/t1/f0/f1 (and so the warp math) untouched.
+    W.w = W.m.new(r.t0, r.t1, r.f0, r.f1)
   end
   return W.w
 end
@@ -1784,12 +1785,13 @@ function W.commit()
   W.busy = true
   group_counter = group_counter + 1
   edit_group = group_counter
-  local dropped, frames_before, dur_before = 0, chs[1].data.frames, chs[1].data.dur
+  local dropped, frames_before, dur_before, any_noise = 0, chs[1].data.frames, chs[1].data.dur, false
   local hop = chs[1].data.frame_size / chs[1].data.sr
   for i = 1, #chs do
     with_channel(i, function()
       local plan, np = plans[i], nplans[i]
       local has_plan, has_noise = plan and #plan.changes > 0, np and #np.changes > 0
+      if has_noise then any_noise = true end
       local total = need_end + need_front
       local ext = (need_front > 0 or total > data.frames) and { front = need_front, frames_after = total } or nil
       if has_plan or has_noise then
@@ -1828,17 +1830,25 @@ function W.commit()
     local where = {}
     if need_front > 0 then where[#where + 1] = string.format("%d frames in front (everything is %.2f s later)", need_front, need_front * hop) end
     if grown - need_front > 0 then where[#where + 1] = string.format("%d at the end", grown - need_front) end
-    set_status(string.format("%s: the file is %.2f s longer now: %s%s", label, chs[1].data.dur - dur_before, table.concat(where, ", "),
+    set_status(string.format("%s: the file is %.2f s longer now: %s%s%s", label, chs[1].data.dur - dur_before, table.concat(where, ", "),
+      any_noise and ", and the noise" or "",
       dropped > 0 and (string.format(", %d piece(s) still fell outside", dropped)) or ""))
   elseif dropped > 0 then
     set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped))
   end
 end
 
--- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone).
+-- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone). A box that is only a few pixels
+-- high or wide (one partial, a few frames) would have its dots on top of each other, so it is drawn (and hit-tested: everything below
+-- goes through this) at least 30 px each way, round its own middle -- purely on screen: w.t0/t1/f0/f1 themselves, and so the warp math,
+-- stay the box's exact, un-padded extent (see W.get).
 function W.geo(px, py, pw, lane, w)
   local lpy = py + lane.off
-  return { x0 = px + tx(w.t0, pw), x1 = px + tx(w.t1, pw), yt = lpy + fy(w.f1, lane.h), yb = lpy + fy(w.f0, lane.h),
+  local x0, x1 = px + tx(w.t0, pw), px + tx(w.t1, pw)
+  if x1 - x0 < 30 then local m = (x0 + x1) / 2; x0, x1 = m - 15, m + 15 end
+  local yt, yb = lpy + fy(w.f1, lane.h), lpy + fy(w.f0, lane.h)
+  if yb - yt < 30 then local m = (yt + yb) / 2; yt, yb = m - 15, m + 15 end
+  return { x0 = x0, x1 = x1, yt = yt, yb = yb,
            pxs = lane.h / (12 * math.log(view.f1 / view.f0, 2)), pps = pw / (view.t1 - view.t0) }
 end
 
@@ -2417,7 +2427,7 @@ end
 local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 14)
   if not data then
-    text_at(px, 10, load_error and ("Could not read:\n" .. load_error) or "Press O to open a .ats file, or click ANALYSE to make one from a sound", 0.95, 0.85, 0.5)
+    if load_error then text_at(px, 10, "Could not read:\n" .. load_error, 0.95, 0.85, 0.5) end
     if not plain then draw_analyse_button() end
     if status_msg and reaper.time_precise() < status_until then text_at(px, 48, status_msg, 0.6, 0.95, 0.6) end
     return
@@ -2755,7 +2765,7 @@ local function draw_analysis_frame()
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
   draw_header(px, py, pw, ph, true)
-  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), MARGIN_T + ((#chs > 1) and CHAN_ROW or 0))
+  analysis:draw(math.floor(gfx.w), math.floor(gfx.h), ANALYSIS_TOP)
 end
 
 local function loop()
@@ -2849,6 +2859,6 @@ do
   end
 end
 -- Without a snapshot the window starts EMPTY (tjingboem, 9 Nov 2026: "it must start cleared"): no file is reopened and no
--- dialog asks for one. Press O to open a file, or use ANALYSE. (The last folder is still the dialog's starting point.)
+-- dialog asks for one. (The last folder is still the dialog's starting point.)
 remove_stale_temp_files()                                       -- (files that an earlier editor left behind)
 loop()

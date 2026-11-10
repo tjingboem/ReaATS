@@ -1,6 +1,7 @@
 -- Run: lua5.4 tests/test_ats_edit.lua   (from the ReaATS folder)
 package.path = "lib/?.lua;" .. package.path
 local edit = require("ats_edit")
+local warp = require("ats_warp")
 local ok, fails = 0, 0
 local function check(name, cond, extra)
   if cond then ok = ok + 1 else fails = fails + 1; print("FAIL: " .. name .. " " .. tostring(extra or "")) end
@@ -158,12 +159,16 @@ do
   apply(d8, plan8)
   check("warp: squeezed to half: frames 3 to 7", d8.amp[1][3] > 0 and d8.amp[1][7] > 0 and d8.amp[1][8] == 0 and d8.amp[1][11] == 0)
   check("warp: squeezed to half: every second point", math.abs(d8.amp[1][5] - (0.1 + 2 * 0.1)) < 1e-9 and math.abs(d8.amp[1][7] - (0.1 + 4 * 0.1)) < 1e-9)
-  -- a stretched run that meets other sound goes to another row, nothing is overwritten
-  d8 = make(2, 60); ramp(d8, 1, 3, 7, 0.1, 0.1, 200); ramp(d8, 1, 10, 12, 0.9, 0, 900)
-  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t3 + 2 * (t - t3), fr end)
+  -- a stretched run that meets other sound goes to another row, nothing is overwritten. The other sound is placed so the stretched
+  -- run's own new range (3 to 19, a x4 stretch from frame 3) genuinely reaches it -- a real collision, not just nearby -- while still
+  -- starting well past plan_warp's own GAP_TOLERANCE (5 frames after the run's old end, frame 7) for "is this the same line
+  -- continuing": a gap meant to read as a separate sound in a test has to be built clearly wider than that tolerance AND still within
+  -- the stretch's own reach, not just barely nonzero somewhere -- see the comment above `ripple` in ats_edit.lua.
+  d8 = make(2, 60); ramp(d8, 1, 3, 7, 0.1, 0.1, 200); ramp(d8, 1, 15, 17, 0.9, 0, 900)
+  plan8 = edit.plan_warp(d8, selall(1, 3, 7), function(t, fr) return t3 + 4 * (t - t3), fr end)
   apply(d8, plan8)
-  check("warp: a stretch into other sound: the other sound stays", d8.amp[1][10] == 0.9 and d8.frq[1][12] == 920)
-  check("warp: a stretch into other sound: the run is in row 2", d8.amp[2][3] > 0 and d8.amp[2][11] > 0 and plan8.sel[2] and not plan8.sel[1])
+  check("warp: a stretch into other sound: the other sound stays", d8.amp[1][15] == 0.9 and d8.frq[1][17] == 920)
+  check("warp: a stretch into other sound: the run is in row 2", d8.amp[2][3] > 0 and d8.amp[2][19] > 0 and plan8.sel[2] and not plan8.sel[1])
   -- beyond the end of the file: the frames after the last are dropped; a run that is wholly outside is a dropped run
   d8 = make(2, 20); ramp(d8, 1, 15, 19, 0.1, 0.1, 200)
   plan8 = edit.plan_warp(d8, selall(1, 15, 19), function(t, fr) return t + 3 * hop, fr end)
@@ -178,6 +183,66 @@ do
   apply(d8, plan8)
   check("warp: a single point: the nearest frame", d8.amp[1][10] == 0 and math.abs(d8.amp[1][12] - 0.7) < 1e-9)
   check("warp: nothing selected: nil", edit.plan_warp(d8, {}, function(t, fr) return t, fr end) == nil)
+end
+
+-- 8b. plan_warp with a REAL (ats_warp) mapper, box t0/t1 exactly the extent of the selected frames (as ATS_Editor.lua's W.get must give
+-- it -- it used to pad a narrow box out to a minimum size for grabbable dots, which left the box's u=0/u=1 short of the true first/last
+-- selected frame; those frames then picked up a fractional, unintended displacement from the stretch, could land outside the destination
+-- range plan_warp computes, and were silenced as source cells with nothing left to rewrite them: a real gap, right at the selection's own
+-- edge. Fixed 10 Nov 2026 by keeping the box exact and moving the minimum size to screen pixels only (W.geo); this guards the invariant
+-- plan_warp must hold for that fix to be correct: an exact box never drops a selected frame.
+do
+  local d8b = make(1, 40)
+  for f = 5, 22 do d8b.amp[1][f] = 0.5; d8b.frq[1][f] = 300 + f * 5 end    -- nothing after frame 22: row 1 stays free for the stretch
+  local f0, f1 = 18, 22
+  local sel8b = { [1] = {} }
+  for f = f0, f1 do sel8b[1][f] = true end
+  local w = warp.new(d8b.times[f0], d8b.times[f1], 200, 600)              -- the box: exactly the selected frames' own time span
+  warp.move_edge(w, "right", 0, 0.06)                                     -- a pure time stretch, right edge only (left stays put)
+  local plan8b = edit.plan_warp(d8b, sel8b, warp.mapper(w))
+  local covered = true
+  for f = f0, f1 do if not plan8b.sel[1][f] then covered = false end end
+  check("warp box exact: every originally selected frame is still covered after a stretch", covered,
+    "sel after: " .. (function() local l = {}; for f in pairs(plan8b.sel[1]) do l[#l + 1] = f end; table.sort(l); return table.concat(l, ",") end)())
+  check("warp box exact: the stretch still expands (more frames than were selected)", plan8b.frames_after - f0 + 1 >= f1 - f0 + 1)
+end
+
+-- 8c. a multi-row selection, one row with a brief (2-frame) tracking dip right at the old boundary, must still ripple on its OWN row
+-- like its neighbours, not relocate -- found 10 Nov 2026 from a real screenshot ("still a gap" after 8b's fix): the first version of the
+-- ripple-eligibility check required real data in the EXACT next frame, which a genuine, otherwise-continuous analysed line can fail by
+-- one or two flat-zero frames; AND because every row of a multi-row selection treats every OTHER row's own selected cells as "free," a
+-- relocated run can end up pushed past every other selected row too and land on a brand new one -- a whole partial vanishing, not just
+-- its own row's content shifting. `looks_continuing` (GAP_TOLERANCE frames of lookahead) fixes the dip case; a gap wider than the
+-- tolerance must still relocate, same as "stretch into other sound" above.
+do
+  local function five_rows(dip)
+    local d = make(5, 60)
+    for f = 1, 60 do for p = 1, 5 do d.amp[p][f] = 0.4 + p * 0.05; d.frq[p][f] = 200 * p + f * 2 end end
+    if dip then for _, f in ipairs(dip) do d.amp[1][f] = 0 end end
+    return d
+  end
+  local f0, f1 = 18, 22
+  local sel = {}
+  for p = 1, 5 do sel[p] = {}; for f = f0, f1 do sel[p][f] = true end end
+  local function stretch_all(d)
+    local w = warp.new(d.times[f0], d.times[f1], 100, 2000)
+    warp.move_edge(w, "right", 0, 0.06)
+    return edit.plan_warp(d, sel, warp.mapper(w), { max_extra = 20 })
+  end
+  -- a 2-frame dip, well inside GAP_TOLERANCE: row 1 ripples in place like every other row
+  local dn = five_rows({ 23, 24 })
+  local pn = stretch_all(dn)
+  check("warp ripple: a brief dip in one row of a multi-row selection does not eject it to a new row",
+    pn.sel[1] ~= nil and pn.sel[6] == nil, "rows used: " .. (function() local l = {}; for p in pairs(pn.sel) do l[#l + 1] = p end; table.sort(l); return table.concat(l, ",") end)())
+  check("warp ripple: all five rows stay on their own row", pn.sel[1] and pn.sel[2] and pn.sel[3] and pn.sel[4] and pn.sel[5] and not pn.sel[6])
+  -- a gap wider than GAP_TOLERANCE: silent for exactly the 5-frame lookahead (23..27, right after the run's old end at 22), with
+  -- real data again at 28 -- within the stretch's own reach (its new range extends past 28), so row 1 genuinely collides there and
+  -- must relocate, same as the "other sound" case, rather than this just coincidentally having nothing in the way at all.
+  local gap = { 23, 24, 25, 26, 27 }
+  local dg = five_rows(gap)
+  local pg = stretch_all(dg)
+  check("warp ripple: a gap wider than the tolerance still relocates, not rippled through",
+    pg.sel[1] == nil and pg.sel[6] ~= nil, "rows used: " .. (function() local l = {}; for p in pairs(pg.sel) do l[#l + 1] = p end; table.sort(l); return table.concat(l, ",") end)())
 end
 
 -- 9. the length of the file: frames added and taken away; a warp that may grow the file

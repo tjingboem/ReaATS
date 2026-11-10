@@ -20,7 +20,7 @@ Only Linux has been tried. Temporary files go to the temporary folder (TMPDIR, o
 
 Put the ReaATS folder (ATS_Editor.lua and the lib folder next to it) in REAPER's Scripts folder, for example Scripts/tjingboem/ReaATS. In REAPER open Actions, Show action list, choose ReaScript: Load and pick ATS_Editor.lua. Run it from the list, or give it a shortcut or a toolbar button.
 
-ReaATS starts with an empty window: it does not reopen the file you used last. Press O to open an .ats file, or click ANALYSE to make one from a sound. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
+ReaATS starts with an empty window: it does not reopen the file you used last. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
 
 ## Making an .ats file: the Analysis page
 

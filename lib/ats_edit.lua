@@ -387,6 +387,9 @@ function M.plan_warp(d, sel, map, opts)
     return q
   end
 
+  local runs_on_row = {}
+  for _, run in ipairs(runs) do runs_on_row[run.p] = (runs_on_row[run.p] or 0) + 1 end
+
   local order, by_key = {}, {}
   local function cell(q, f)
     local key = q * (limit - first_ok + 2) + (f - first_ok)
@@ -404,12 +407,57 @@ function M.plan_warp(d, sel, map, opts)
   for _, run in ipairs(runs) do                              -- first silence every source cell
     for f = run.f0, run.f1 do cell(run.p, f).na = 0 end
   end
+  -- A stretch that grows past the run's own old right edge, alone on its row, pushes the REST of that row later (like inserting
+  -- time) instead of relocating the edited piece to a different row: without this, lengthening a note in the middle of an otherwise
+  -- continuous line always collided with its own tail and jumped rows, which silenced the original row at the selection's own edge
+  -- with nothing left to replace it (tjingboem, 10 Nov 2026, with a screenshot: "the place where the selection border was, is now
+  -- cut"). Needs real data within GAP_TOLERANCE frames after the run's own old end -- that is what tells a note genuinely continuing
+  -- (ripple it) apart from a stretch reaching into separate, unrelated sound sharing the same row (the existing "stretch into other
+  -- sound" case, section 8 of test_ats_edit.lua, still wants that relocated to another row, untouched). A SINGLE exactly-adjacent frame
+  -- was tried first and was too brittle: real analysis can report one or two flat-zero frames in the middle of what is plainly one
+  -- continuing note (a tracking dip, not a pause), which fell back to relocating -- and because every row of a multi-row selection is
+  -- usually free for every OTHER row's own originally-selected cells (`free`'s "a selected cell is vacated by the move"), a relocated
+  -- run can end up pushed past every other selected row too, landing on a brand new one: a whole partial appearing to vanish from a
+  -- selection, not just its own row shifting (tjingboem again, same report, after the first fix: "still a gap" -- confirmed directly,
+  -- a selection spanning several simultaneous rows, one with a 2-frame dip right at the boundary, landed on a 6th, brand new row).
+  -- GAP_TOLERANCE is a judgement call, not derived from anything: small enough to clearly not reach a genuinely separate sound a few
+  -- hundred ms away, large enough for a short tracking dropout. A gap meant to read as a separate sound should be built wider than
+  -- this in a test, not relied on being just barely nonzero -- the two cases cannot be told apart from gap size alone close up.
+  local GAP_TOLERANCE = 5
+  local function looks_continuing(run)
+    for f = run.f1 + 1, math.min(NF, run.f1 + GAP_TOLERANCE) do
+      if d.amp[run.p][f] > 0 then return true end
+    end
+    return false
+  end
+  local function ripple(run, delta)
+    taken[run.p] = taken[run.p] or {}
+    for f = NF, run.f1 + 1, -1 do
+      local src = cell(run.p, f)
+      if f + delta <= limit then
+        local dst = cell(run.p, f + delta)
+        dst.na, dst.nf = src.na, src.nf
+        taken[run.p][f + delta] = true
+      end
+      src.na = 0
+    end
+  end
   local newsel, rows_after, frames_after, first_frame = {}, P0, NF, 1
   for _, run in ipairs(runs) do                              -- then write the destinations
     if #run.cells > 0 then
-      if run.cells[#run.cells].f > frames_after then frames_after = run.cells[#run.cells].f end
-      if run.cells[1].f < first_frame then first_frame = run.cells[1].f end
-      local q = choose(run)
+      local last_cell, first_cell = run.cells[#run.cells].f, run.cells[1].f
+      if last_cell > frames_after then frames_after = last_cell end
+      if first_cell < first_frame then first_frame = first_cell end
+      local q
+      local delta = last_cell - run.f1
+      if runs_on_row[run.p] == 1 and delta > 0 and first_cell >= run.f0 and looks_continuing(run) and not run_free(run.p, run) then
+        ripple(run, delta)
+        q = run.p
+        local tail_end = math.min(NF + delta, limit)
+        if tail_end > frames_after then frames_after = tail_end end
+      else
+        q = choose(run)
+      end
       if q > rows_after then rows_after = q end
       taken[q] = taken[q] or {}
       newsel[q] = newsel[q] or {}
