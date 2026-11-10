@@ -22,6 +22,8 @@ reaper = {
   GetUserFileNameForRead = function() return false, "" end,
   time_precise = function() return clock end,
   defer = function(fn) deferred = fn end,
+  ExecProcess = function() return "" end,                 -- the one-time Python check at startup (Analysis.check_python_once):
+  MB = function() return 7 end,                            -- not what this test is about, just needs to not crash ("No" skips open_url)
 }
 local function frame() local f = deferred; deferred = nil; assert(f, "viewer stopped"); f() end
 local function saw(pat) for _, s in ipairs(strings) do if s:find(pat) then return s end end end

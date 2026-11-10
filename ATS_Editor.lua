@@ -20,14 +20,14 @@
           click on the picture, or click/drag on the time ruler  set the playhead; AUDITION starts there (the line moves while it plays)
           A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
                         (partials / noise follow the P / N switches)
-          ANALYSE / Ctrl+A  the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
+          ANALYSE       the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
           Ctrl+P / PRINT render, from the playhead to the end, to a permanent WAV (unsaved edits are saved first) and put it on the selected
                         track (or a new ReaATS track) at the edit cursor; remembered for ReaSnap
           Tab / the channel buttons  switch the channel of a set (name_ch1.ats, name_ch2.ats ...; AUDITION and PRINT play all channels)
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
           EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
-          Esc           clear the selection, then close
+          Esc           clear the selection
 --------------------------------------------------------------------------------]]
 
 local script_dir = ({ reaper.get_action_context() })[2]:match("^(.*)[/\\]") or "."
@@ -2642,7 +2642,7 @@ local function draw_header(px, py, pw, ph, plain)
   end
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
-  local build = "build 10 Nov 16:54"                                        -- (which version of the script is running)
+  local build = "build 10 Nov 19:36"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2840,7 +2840,7 @@ local function handle_input(px, py, pw, ph)
   if ch == 27 then
     if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
     elseif W.w and not W.m.is_flat(W.w) then W.w = nil; set_status("bend cancelled")
-    elseif any_sel() then clear_selection() else stop_audition(); return false end
+    elseif any_sel() then clear_selection() else stop_audition() end     -- Esc no longer closes the window (tjingboem, 10 Nov 2026)
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
   if ch == 6579564 then delete_selection()                      -- Delete
@@ -2861,7 +2861,6 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 19 then if shift then save_as() else save_file() end   -- Ctrl+S, Ctrl+Shift+S
   elseif ch == 9 then if #chs > 1 then solo_next() end           -- Tab: only the next channel (then all again)
   elseif ch == 118 or ch == 86 then if #chs > 1 then toggle_view_mode() end   -- V: stack / overlay
-  elseif ch == 1 then showing_analysis = true                   -- Ctrl+A: the Analysis page
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
   elseif ch == 97 or ch == 65 then audition()                    -- A
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
@@ -2962,6 +2961,7 @@ analysis = Analysis.new({
   redraw = function() draw_analysis_frame(); gfx.update() end,
   back = function() showing_analysis = false; dirty = true end,
 })
+Analysis.check_python_once(script_dir, EXT_SECTION)      -- once ever (tjingboem, 10 Nov 2026): a popup, not a Check button on the page
 -- Piece 4: settings ReaSnap left for this instance (restoring a snapshot). Checked after everything the
 -- apply touches exists (load_file, view, the switches). The snapshot names a file: if it has gone, say so.
 local applied = false

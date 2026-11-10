@@ -309,28 +309,28 @@ function M.new(env)
   return self
 end
 
--- Finds a Python that can run the engine; remembers it. Returns true, or false after setting self.python_problem.
-function Page:find_python(force)
-  if self.python and not force then return true end
-  local engine = self.env.script_dir .. "/python/reaats_analyse.py"
+-- Looks for a Python that can run the engine (python/reaats_analyse.py --check), the remembered one first unless `force`. A module
+-- function, not a Page method, so it can also run once at startup (Analysis.check_python_once, called before any Page exists) as
+-- well as from the page itself (Page:find_python, below). Returns `python` ({ exe, version, numpy, cores }) and remembers it in
+-- ExtState, or nil and a `problem` ({ kind, found }).
+function M.check_python(script_dir, ext_section, force)
+  local engine = script_dir .. "/python/reaats_analyse.py"
   local ini = ""
   if reaper.get_ini_file then
     local fh = io.open(reaper.get_ini_file(), "r")
     if fh then ini = "\n" .. fh:read("a"); fh:close() end
   end
-  local remembered = (not force) and reaper.GetExtState(self.env.ext_section, "python_exe") or nil
+  local remembered = (not force) and reaper.GetExtState(ext_section, "python_exe") or nil
   local problem, found = "none", nil
   for _, exe in ipairs(M.python_candidates(ini, reaper.GetOS and reaper.GetOS() or "Linux64", remembered)) do
     local absolute = exe:find("[/\\]") ~= nil
     if not absolute or reaper.file_exists(exe) then
       local reply = reaper.ExecProcess(string.format("%s %s --check", q(exe), q(engine)), 20000) or ""
-      local status, py, extra = reply:match("CHECK (%a+) ?(%S*) ?(%S*)")
+      local status = reply:match("CHECK (%a+)")
       local version = reply:match("python=(%S+)")
       if status == "ok" then
-        self.python = { exe = exe, version = version, numpy = reply:match("numpy=(%S+)"), cores = tonumber(reply:match("cores=(%d+)")) }
-        self.python_problem = nil
-        reaper.SetExtState(self.env.ext_section, "python_exe", exe, true)
-        return true
+        reaper.SetExtState(ext_section, "python_exe", exe, true)
+        return { exe = exe, version = version, numpy = reply:match("numpy=(%S+)"), cores = tonumber(reply:match("cores=(%d+)")) }, nil
       elseif status == "missing" then
         problem, found = "numpy", "Python " .. tostring(version)
       elseif status == "old" and problem == "none" then
@@ -338,9 +338,33 @@ function Page:find_python(force)
       end
     end
   end
-  self.python = nil
-  self.python_problem = { kind = problem, found = found }
-  return false
+  return nil, { kind = problem, found = found }
+end
+
+-- Checked once, automatically, the very first time ReaATS is ever run (tjingboem, 10 Nov 2026: "it would be better if the check
+-- was done when the script was installed. A popup window should appear whether the requirements are met to run ReaATS or not...
+-- This [Analysis page's manual Check button] can be removed"). Pops up either way -- found (with what it found) or not (the same
+-- help text Page:python_popup already gives, with the same offer to open the download page). Remembered in ExtState so it never
+-- repeats once Python has been found working; a failure is NOT remembered, so the next launch tries again (Python might get
+-- installed in between) rather than nagging forever about a success that never came, or staying silent forever about a failure.
+function M.check_python_once(script_dir, ext_section)
+  if reaper.GetExtState(ext_section, "python_checked_ok") == "1" then return end
+  local python, problem = M.check_python(script_dir, ext_section, true)
+  if python then
+    reaper.SetExtState(ext_section, "python_checked_ok", "1", true)
+    reaper.MB(string.format("Python %s, numpy %s: ReaATS is ready to analyse sounds.", tostring(python.version), tostring(python.numpy)),
+              "ReaATS: Python found", 0)
+  else
+    local answer = reaper.MB(M.python_help_text(problem.kind, problem.found), "ReaATS: Python is needed for the analysis", 4)
+    if answer == 6 then open_url(M.PYTHON_URL) end
+  end
+end
+
+-- Finds a Python that can run the engine; remembers it. Returns true, or false after setting self.python_problem.
+function Page:find_python(force)
+  if self.python and not force then return true end
+  self.python, self.python_problem = M.check_python(self.env.script_dir, self.env.ext_section, force)
+  return self.python ~= nil
 end
 
 -- The popup: what is missing, what to install, and an offer to open the download page.
@@ -447,7 +471,6 @@ function Page:use_selected_item()
   end
   self.out_custom = false
   self.out = unique_out(path)
-  self:say("Item: the part of the file the item plays is analysed. Item volume, fades, FX and pitch are not applied.")
 end
 
 -- The extension list of the file dialog: only the sound files the analysis reads (nothing else is shown).
@@ -655,7 +678,7 @@ function Page:handle_reply(reply, took)
     #parts > 0 and ("  Steps: " .. table.concat(parts, ", ") .. ".") or ""), not opened)
   self.env.set_status(string.format("analysed %s: %d partials, %d frames in %.1f s%s", basename(first.file), first.partials, first.frames, took,
     #parts > 0 and ("  (" .. table.concat(parts, ", ") .. ")") or ""))
-  if opened and self.env.back then self.env.back() end                 -- the editor is shown at once (the ANALYSE button / Ctrl+A shows the page and its result again)
+  if opened and self.env.back then self.env.back() end                 -- the editor is shown at once (the ANALYSE button shows the page and its result again)
 end
 
 local function read_all(path)
@@ -905,51 +928,64 @@ function Page:draw(W, H, top)
   gfx.rect(0, top, W, H - top, 1)
   local colw = math.floor((W - 60) / 2)
   local lx, rx = 24, 24 + colw + 12
-  local y = top + 6
-  gfx.setfont(1, "Arial", 17)
-  text(lx, y, "ANALYSIS: make .ats files from a sound", 1, 1, 1)
-  y = y + 28
 
-  -- left column: source, then window and time
-  -- Python status, top right: which Python the analysis will use, or a red hint (click for the help)
+  -- Python status, top right: which Python the analysis will use, or a red hint (click Help). SOURCE (below) is centred across
+  -- the full width, tjingboem 10 Nov 2026, so it is given its own row here, clear of this one, rather than share a row with it
+  -- the way the old, left-column SOURCE briefly did. No Check button here any more (tjingboem, 10 Nov 2026: "This CECK can be
+  -- removed from the Analysis window" -- the check itself now happens once, automatically, the first time ReaATS is ever run,
+  -- with its own popup: see Analysis.check_python_once, called from ATS_Editor.lua at startup). find_python still runs lazily
+  -- here (and again, forced, right before an actual analysis in Page:run) as a safety net -- Python could still be moved or
+  -- uninstalled after that first, one-time check ever told the user it was fine.
   if self.python == nil and self.python_problem == nil then self:find_python() end
   gfx.setfont(1, "Arial", 13)
   if self.python then
     text(rx, top + 9, string.format("Python %s, numpy %s", tostring(self.python.version), tostring(self.python.numpy)), 0.55, 0.85, 0.65)
-    self:button(rx + 400, top + 5, 80, 20, "Check", { 0.25, 0.27, 0.32 }, function() self:find_python(true) end)
   else
     text(rx, top + 9, "Python not found (needed for the analysis)", 1, 0.6, 0.5)
     self:button(rx + 330, top + 5, 70, 20, "Help", { 0.45, 0.25, 0.2 }, function() self:python_popup() end)
-    self:button(rx + 405, top + 5, 75, 20, "Check", { 0.25, 0.27, 0.32 }, function()
-      if self:find_python(true) then self:say("Python found.") else self:say("Python is still not found.", true) end
-    end)
   end
-  self:heading(lx, y, "SOURCE")
+
+  -- SOURCE: centred across the whole width, above the two columns below it, rather than confined to the left column (tjingboem,
+  -- 10 Nov 2026: "move the section SOURCE to the top and in the middle... under the SOURCE section, we get to see the ANALYSIS
+  -- section, the 2 columns with all the values").
+  local y = top + 40
+  gfx.setfont(1, "Arial", 15)
+  self:heading((W - gfx.measurestr("SOURCE")) / 2, y, "SOURCE")
   local ly = y + 26
-  self:button(lx, ly, 160, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
-  self:button(lx + 170, ly, 180, 24, "Import Sound File", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
-  self:button(lx + 360, ly, 160, 24, "Import .ats File", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
+  local bw1, bw2, bw3, gap = 160, 180, 160, 10
+  local bx = (W - (bw1 + gap + bw2 + gap + bw3)) / 2
+  self:button(bx, ly, bw1, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
+  self:button(bx + bw1 + gap, ly, bw2, 24, "Import Sound File", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
+  self:button(bx + bw1 + gap + bw2 + gap, ly, bw3, 24, "Import .ats File", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
   ly = ly + 32
   gfx.setfont(1, "Arial", 13)
   if self.wav then
-    self:button(lx + 360, ly, 160, 24, "Inspect Sound File", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
-    text(lx, ly, "File: " .. (basename(self.wav)), 0.9, 0.9, 0.9)
+    -- a fixed-width block (text, then the button at a constant offset), centred as a whole -- not sized to the actual text, which
+    -- would move the button around with every different file name or duration and make it a moving target
+    local tw, ibw, igap = 400, 160, 20
+    local gx = (W - (tw + igap + ibw)) / 2
     local i = self.info
-    text(lx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,
+    text(gx, ly, "File: " .. basename(self.wav), 0.9, 0.9, 0.9)
+    text(gx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,
       (i.seconds >= 59.5) and ("  (" .. M.clock(i.seconds) .. ")") or ""), 0.6, 0.63, 0.68)
+    self:button(gx + tw + igap, ly, ibw, 24, "Inspect Sound File", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
   else
-    text(lx, ly, "No sound chosen yet.", 0.95, 0.8, 0.5)
+    local s = "No sound chosen yet."
+    text((W - gfx.measurestr(s)) / 2, ly, s, 0.95, 0.8, 0.5)
   end
   ly = ly + 40
-  self:heading(lx, ly, "WINDOW AND TIME")
-  ly = ly + 26
+
+  -- the 2 columns, below SOURCE: window/time on the left, peaks/tracks/output/the ANALYSE button on the right -- both start from
+  -- this same row, content_y, the way the two columns always shared one starting row before SOURCE was centred above them.
+  local content_y = ly
+  self:heading(lx, content_y, "WINDOW AND TIME")
+  ly = content_y + 26
   for _, key in ipairs(LEFT) do
     self:field(lx, ly, key, 210, 120)
     ly = ly + 25
   end
 
-  -- right column: peaks and tracks, output, derived values, buttons, result
-  local ry = y
+  local ry = content_y
   self:heading(rx, ry, "PEAKS AND TRACKS")
   ry = ry + 26
   for _, key in ipairs(RIGHT) do
@@ -986,8 +1022,7 @@ function Page:draw(W, H, top)
   self.analyse_box = { x = rx, y = ry, w = 130, h = 30 }
   self:button(rx, ry, 130, 30, "ANALYSE", { 0.18, 0.42, 0.3 }, function() if not self.job then self:run() end end)
   self:button(rx + 140, ry, 110, 30, "Defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(false) end)
-  self:button(rx + 260, ry, 130, 30, "Csound defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(true) end)
-  self:button(rx + 400, ry, 80, 30, "BACK", { 0.4, 0.22, 0.2 }, function() self.env.back() end)
+  self:button(rx + 260, ry, 80, 30, "EDITOR", { 0.4, 0.22, 0.2 }, function() self.env.back() end)
   ry = ry + 40
 
   gfx.setfont(1, "Arial", 13)
@@ -1024,8 +1059,6 @@ function Page:draw(W, H, top)
       break
     end
   end
-  gfx.setfont(1, "Arial", 12)
-  text(lx, H - 42, "Click a value to type it; the mouse wheel changes it (Shift: finer). Esc goes back to the editor.", 0.5, 0.53, 0.58)
   if self.job then self:draw_busy(W, H, top) end
 end
 

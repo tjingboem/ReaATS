@@ -88,12 +88,17 @@ reaper = {
 }
 local function frame() local f = deferred; deferred = nil; assert(f, "the window stopped"); f() end
 local function saw(pat) for _, s in ipairs(strings) do if s:find(pat) then return s end end end
+local function click(x, y)
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = x, y, 1; frame()
+  gfx.mouse_cap = 0; frame()
+  gfx.mouse_x, gfx.mouse_y = 5, 5
+end
 -- Runs frames (0.05 s of fake time each, a short real sleep so the engine can work) until `pattern` is drawn.
 local pump
 local function expire_status() fake_now = fake_now + 100; strings = {}; frame() end        -- an older status message goes by
 local function pump_done()                                           -- waits until the analysis is done (the editor shows it), then opens the page again
   pump("^analysed ", 60)
-  script.keys = { 1 }; frame()
+  click(640, 16)                                                     -- the small ANALYSE button, top right (a file is open)
   strings = {}; frame()
 end
 function pump(pattern, max_seconds)
@@ -108,11 +113,6 @@ function pump(pattern, max_seconds)
     waited = waited + 0.05
   end
   error("never drew " .. pattern .. "; last strings: " .. table.concat(strings, " / ", 1, math.min(#strings, 30)))
-end
-local function click(x, y)
-  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = x, y, 1; frame()
-  gfx.mouse_cap = 0; frame()
-  gfx.mouse_x, gfx.mouse_y = 5, 5
 end
 local function typed(text, ender)                                 -- keys typed into the field that is being edited
   local keys = {}
@@ -151,27 +151,56 @@ local function strongest(d)
   return s / n
 end
 
--- 1. open the page with Ctrl+A
+-- 0. the one-time Python check at startup (Analysis.check_python_once): pops up either way, remembered only after success
+do
+  local flag_key = key("tjingboem_ATSViewer", "python_checked_ok")
+  ext[flag_key] = nil
+  mb_log = {}
+  fake_check = ""                                   -- no Python at all
+  start(sax)
+  assert(#mb_log == 1, "a popup the very first time, when nothing is found")
+  assert(mb_log[1]:find("could not find Python", 1, true), "it says what's missing: " .. tostring(mb_log[1]))
+  assert(ext[flag_key] ~= "1", "a failure is not remembered")
+
+  mb_log = {}
+  fake_check = nil                                  -- a real, working Python
+  start(sax)
+  assert(#mb_log == 1, "a popup again, since the previous one failed")
+  assert(mb_log[1]:find("ready to analyse", 1, true), "this time it says Python was found: " .. tostring(mb_log[1]))
+  assert(ext[flag_key] == "1", "a success IS remembered")
+
+  mb_log = {}
+  fake_check = ""                                   -- even though this would fail if checked again
+  start(sax)
+  assert(#mb_log == 0, "once remembered, it is never checked again automatically")
+
+  ext[flag_key] = nil                                -- reset for the rest of this file, as if this test had not run
+  fake_check = nil
+  mb_log = {}
+  print("the one-time Python check at startup: pops up either way, remembered only after success")
+end
+
+-- 1. open the page by clicking ANALYSE
 start(sax); strings = {}; frame()
 assert(saw("ANALYSE"), "the ANALYSE button should be in the header")
-script.keys = { 1 }; strings = {}; frame(); frame()
-assert(saw("^ANALYSIS: make .ats files from a sound"), "Ctrl+A should open the Analysis page")
+click(640, 16); strings = {}; frame(); frame()
+assert(saw("^SOURCE$"), "clicking ANALYSE should open the Analysis page")
 assert(saw("No sound chosen yet"), "no sound yet")
-print("page opens with Ctrl+A")
+print("page opens by clicking ANALYSE")
 
 -- 2. choose a stereo WAV, set 2 channels and lowest frequency 100, analyse
 chosen_file = stereo; strings = {}
-click(250, 110); strings = {}; frame()
+click(550, 116); strings = {}; frame()
 assert(saw("44100 Hz, 2 channel%(s%), 16 bit, 12%.00 s") or saw("44100 Hz, 2 channel%(s%), 32 bit float, 12%.00 s"), "the file info should show")
-enter(260, 255, "2")
-enter(260, 305, "100")
+enter(260, 264, "2")
+enter(260, 314, "100")
 strings = {}; frame()
 assert(saw("^Window 1765 samples"), "the derived window should follow the lowest frequency: " .. tostring(saw("^Window")))
 -- looking at the sound first: the view with the spectrum, suggestions in red next to the fields, click one to use it, "Use all suggestions"
 do
   strings = {}; frame()
   assert(saw("^Inspect Sound File$"), "the button to inspect the sound is there")
-  click(460, 144)                                                 -- it runs the pre-scan program (a second or so)
+  click(750, 148)                                                 -- it runs the pre-scan program (a second or so)
   strings = {}; frame()
   assert(saw("^THE SOUND: an_stereo%.wav"), "the view of the sound opens: " .. table.concat(strings, " / ", 1, math.min(#strings, 12)))
   assert(saw("^Use all suggestions$") and saw("^Back to the settings$"), "with its buttons")
@@ -182,16 +211,16 @@ do
   click(316, 585)                                                 -- Back to the settings: the suggestions stay, in red
   strings = {}; frame()
   assert(saw("^%-> %d+$"), "the suggestions stand in red next to the fields: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
-  click(400, 308)                                                 -- the red value of the lowest frequency: use it
+  click(400, 317)                                                 -- the red value of the lowest frequency: use it
   strings = {}; frame()
   assert(saw("^350$"), "a click on the red value uses it (0.8 x 440 Hz, rounded): " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
-  click(460, 144)
+  click(750, 148)
   strings = {}; frame()
   click(120, 585)                                                 -- Use all suggestions: nothing left to see there, goes straight back
   strings = {}; frame()
-  assert(saw("^ANALYSIS: make"), "Use all suggestions goes straight back to the page, no Esc needed")
-  enter(260, 305, "100")                                          -- back to the values the later tests expect
-  enter(260, 255, "2")
+  assert(saw("^SOURCE$"), "Use all suggestions goes straight back to the page, no Esc needed")
+  enter(260, 314, "100")                                          -- back to the values the later tests expect
+  enter(260, 264, "2")
   print("looking at the sound: the view, the red suggestions, click to use, use all (goes straight back)")
 end
 
@@ -199,27 +228,27 @@ end
 do
   strings = {}; frame()
   local before = saw("^Channels to analyse")
-  click(260, 305)                                                 -- the lowest frequency field: selected, the next key replaces it
+  click(260, 314)                                                 -- the lowest frequency field: selected, the next key replaces it
   strings = {}; frame()
   assert(saw("^100$") or saw("^%d+$"), "the field shows its value while it is edited")
   typed("77", 27)                                                 -- 77, then Esc: nothing changes
   strings = {}; frame()
   assert(not saw("^77$"), "Esc cancels the typing")
-  enter(260, 305, "88")
+  enter(260, 314, "88")
   strings = {}; frame()
   assert(saw("^88$"), "Enter accepts the typed value: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
-  click(260, 305); typed("99", 9)                                 -- Tab accepts 99 and starts the next number
+  click(260, 314); typed("99", 9)                                 -- Tab accepts 99 and starts the next number
   strings = {}; frame()
   assert(saw("^99$"), "Tab accepts too")
   script.keys = { 27 }; frame()                                   -- Esc ends the editing the Tab started
-  click(260, 305); typed("abc"); strings = {}; frame()
+  click(260, 314); typed("abc"); strings = {}; frame()
   gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 700, 60, 1; frame(); gfx.mouse_cap = 0; frame()     -- a click elsewhere
-  click(260, 305); typed("1x0", 13)                               -- letters are ignored while typing: 10
-  enter(260, 305, "100")                                          -- back to the value the later tests expect
+  click(260, 314); typed("1x0", 13)                               -- letters are ignored while typing: 10
+  enter(260, 314, "100")                                          -- back to the value the later tests expect
   print("values are typed in the fields: Enter, Esc, Tab and a click elsewhere")
 end
 
-click(600, 510)
+click(600, 614)
 -- while it runs: the big word, the blinking button, the progress, Cancel
 local colours, saw_big, saw_percent, saw_cancel = {}, false, false, false
 for i = 1, 400 do
@@ -238,7 +267,7 @@ local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
 assert(n_colours >= 2, "the ANALYSE button should blink between two colours, saw " .. n_colours)
 print("while it runs: big word, blinking button, progress line, Cancel")
 strings = {}; frame()
-script.keys = { 1 }; frame()                                      -- Ctrl+A: the page again, with its result
+click(640, 16); frame()                                      -- the page again, with its result
 strings = {}; frame()
 assert(saw("^Analysed in") or true)
 assert(saw("^channel 1: an_stereo_ch1%.ats") and saw("^channel 2: an_stereo_ch2%.ats"), "both channel files should be listed; drawn: " .. table.concat(strings, " / ", 1, math.min(#strings, 50)))
@@ -255,23 +284,23 @@ assert(not saw("^ANALYSIS"), "Esc should leave the page")
 print("Esc returns to the editor with channel 1 open")
 
 -- 4. the settings are remembered
-start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+start(sax); click(640, 16); strings = {}; frame(); frame()
 assert(saw("^100$") and saw("^2$"), "lowest frequency 100 and 2 channels should have been remembered")
 print("settings remembered")
 
 -- 5. a file that is not a WAV, and too many channels
-chosen_file = text_file; click(250, 110); strings = {}; frame()
+chosen_file = text_file; click(550, 116); strings = {}; frame()
 assert(saw("^Cannot use this file: not a sound file"), "text file message: " .. tostring(saw("Cannot")))
-chosen_file = stereo; click(250, 110)
+chosen_file = stereo; click(550, 116)
 -- FLAC and AIFF files are chosen and analysed like WAV files
-chosen_file = flac_file; click(250, 110); strings = {}; frame()
+chosen_file = flac_file; click(550, 116); strings = {}; frame()
 assert(saw("44100 Hz, 1 channel%(s%), 16 bit, 1%.00 s"), "the FLAC file's info should show: " .. tostring(saw("Hz")))
-chosen_file = aiff_file; click(250, 110); strings = {}; frame()
+chosen_file = aiff_file; click(550, 116); strings = {}; frame()
 assert(saw("44100 Hz, 1 channel%(s%), 16 bit, 1%.00 s"), "the AIFF file's info should show: " .. tostring(saw("Hz")))
-chosen_file = flac_file; click(250, 110)
-enter(260, 305, "100")
+chosen_file = flac_file; click(550, 116)
+enter(260, 314, "100")
 expire_status()
-click(600, 510)
+click(600, 614)
 pump_done()
 assert(saw("^channel 1: an_tone%.ats"), "the FLAC file was analysed: " .. table.concat(strings, " / ", 1, math.min(#strings, 40)))
 assert(reaper.file_exists(scratch .. "an_tone.ats"), "and its .ats file is there")
@@ -281,16 +310,16 @@ print("FLAC and AIFF files are chosen and analysed")
 do
   local seen
   reaper.JS_Dialog_BrowseForOpenFiles = function(title, folder, file, filter, multi) seen = filter; return 1, aiff_file end
-  click(250, 110); strings = {}; frame()
+  click(550, 116); strings = {}; frame()
   reaper.JS_Dialog_BrowseForOpenFiles = nil
   assert(seen and seen:find("%*%.wav") and seen:find("%*%.flac") and seen:find("%*%.aif;") and seen:find("%*%.aiff"), "the dialog filter names wav, flac, aif and aiff: " .. tostring(seen))
   assert(not seen:find("%*%.%*"), "and no 'all files' entry")
   assert(saw("File: an_tone2%.aif"), "the chosen file is used: " .. tostring(saw("File:")))
   print("the file dialog shows only wav, flac, aif and aiff files")
 end
-chosen_file = stereo; click(250, 110)
-enter(260, 255, "3")
-click(600, 510); strings = {}; frame()
+chosen_file = stereo; click(550, 116)
+enter(260, 264, "3")
+click(600, 614); strings = {}; frame()
 assert(saw("The file has 2 channel%(s%); 'Channels to analyse' is 3"), "too many channels: " .. tostring(saw("channel")))
 print("a non-WAV file and too many channels are refused")
 
@@ -300,40 +329,39 @@ start(""); strings = {}; frame()
 assert(not saw("Press O to open"), "the hint text was removed, nothing loaded")
 assert(saw("^ANALYSE or IMPORT FILE$"), "the button must be drawn when no file is loaded")
 click(556, 35); strings = {}; frame()         -- centred above the empty picture (W.empty_analyse_rect, 1100x640)
-assert(saw("^ANALYSIS: make .ats files from a sound"), "clicking ANALYSE should open the page")
+assert(saw("^SOURCE$"), "clicking ANALYSE should open the page")
 print("the page is reachable with no file loaded")
 
 -- 7. the selected item: its part of the file is analysed
 chosen_file = stereo
 selected_item = { file = stereo, offs = 0.5, len = 1.0 }
-click(100, 110); strings = {}; frame()
-assert(saw("^Item: the part of the file the item plays is analysed"), "item message: " .. tostring(saw("Item")))
-enter(260, 255, "1")
-enter(260, 305, "100")
+click(370, 116); strings = {}; frame()
+enter(260, 264, "1")
+enter(260, 314, "100")
 expire_status()
-click(600, 510)
+click(600, 614)
 pump_done()
 assert(saw("1%.00 s%)"), "only the 1 s the item plays should be analysed: " .. tostring(saw("^channel 1")))
 print("the selected item: only its part is analysed")
 
 -- an item that runs past the end of its file (a few samples, or more) is analysed up to the end of the file
 selected_item = { file = stereo, offs = 0.5, len = 20.0 }
-click(100, 110)
-enter(260, 255, "1")
-enter(260, 305, "100")
+click(370, 116)
+enter(260, 264, "1")
+enter(260, 314, "100")
 expire_status()
-click(600, 510)
+click(600, 614)
 pump_done()
 assert(saw("11%.50 s%)"), "an item past the end of the file is analysed up to the end: " .. table.concat(strings, " / ", 1, math.min(#strings, 60)))
 print("an item that runs past the end of the file is cut to the file")
 
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
 local function start_long_job()
-  start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
-  chosen_file = long_wav; click(250, 110)
-  enter(260, 255, "1")
-  enter(260, 305, "100")
-  click(600, 510)
+  start(sax); click(640, 16); strings = {}; frame(); frame()
+  chosen_file = long_wav; click(550, 116)
+  enter(260, 264, "1")
+  enter(260, 314, "100")
+  click(600, 614)
   pump("^ANALYZING%.%.%.$")
 end
 for _, f in ipairs({ "an_long.ats", "an_long_2.ats" }) do os.remove(scratch .. f) end
@@ -345,19 +373,19 @@ assert(not reaper.file_exists(scratch .. "an_long.ats"), "a cancelled analysis l
 print("Cancel stops the analysis and leaves nothing behind")
 start_long_job()                                                    -- Esc: the analysis goes on in the background
 script.keys = { 27 }; strings = {}; frame()
-assert(not saw("^ANALYSIS: make"), "Esc should leave the page")
+assert(not saw("^SOURCE$"), "Esc should leave the page")
 pump("^an_long%.ats", 90)
 assert(reaper.file_exists(scratch .. "an_long.ats"))
 print("leaving the page does not stop the analysis; the result opens in the editor")
 chosen_file = sax                                                   -- the Import .ats File button
-start(""); script.keys = { 1 }; strings = {}; frame(); frame()
-click(450, 110); strings = {}; frame(); strings = {}; frame()
+start(""); click(556, 35); strings = {}; frame(); frame()
+click(700, 116); strings = {}; frame(); strings = {}; frame()
 assert(saw("^an_sax%.ats"), "Import should open the file in the editor")
-assert(not saw("^ANALYSIS: make"), "and return to the editor")
+assert(not saw("^SOURCE$"), "and return to the editor")
 print("Import .ats File opens a file and returns to the editor")
 skip_background = true                                              -- an engine that never starts
-start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
-chosen_file = long_wav; click(250, 110); click(600, 510)
+start(sax); click(640, 16); strings = {}; frame(); frame()
+chosen_file = long_wav; click(550, 116); click(600, 614)
 fake_now = fake_now + 25
 strings = {}; frame(); strings = {}; frame()
 assert(saw("^The analysis program did not start"), "an engine that never starts: " .. tostring(saw("analysis") or saw("Analy")))
@@ -372,8 +400,8 @@ local function job_files()                                          -- the resul
   for i, l in ipairs(lines) do if l == "--result-file" then return argsfile, lines[i + 1] end end
 end
 skip_background = true
-start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
-chosen_file = long_wav; click(250, 110); click(600, 510)
+start(sax); click(640, 16); strings = {}; frame(); frame()
+chosen_file = long_wav; click(550, 116); click(600, 614)
 local args1, result1 = job_files()
 assert(result1:match("reaats_%d+_%d+_result%.txt$") and args1:match("reaats_%d+_%d+_args%.txt$"), "files with an id of their own: " .. result1)
 -- a program that wrote a sign of life long ago and then died
@@ -382,7 +410,7 @@ strings = {}; frame(); strings = {}; frame()
 assert(saw("^Analysis failed") == nil and saw("stopped answering"), "a program that stopped answering is reported: " .. tostring(saw("answer") or saw("Analy")))
 assert(not reaper.file_exists(result1 .. ".started"), "and its files are removed")
 print("a dead program is noticed (no sign of life for 2 minutes)")
-click(600, 510)
+click(600, 614)
 local args2, result2 = job_files()
 assert(result2 ~= result1, "the next job has other files: " .. result2)
 print("every job has its own files")
@@ -400,14 +428,14 @@ skip_background = false
 -- 8. no usable Python: a popup says what to do, nothing is analysed
 local function fresh_page()
   ext[key("tjingboem_ATSViewer", "python_exe")] = nil
-  start(sax); script.keys = { 1 }; strings = {}; frame(); frame()
+  start(sax); click(640, 16); strings = {}; frame(); frame()
 end
 local function popup_after_analyse()
   mb_log = {}
-  chosen_file = stereo; click(250, 110)
+  chosen_file = stereo; click(550, 116)
   for _, f in ipairs({ "an_stereo.ats", "an_stereo_2.ats", "an_stereo_ch1.ats", "an_stereo_ch2.ats" }) do os.remove(scratch .. f) end
-  enter(260, 255, "1")
-  click(600, 510); strings = {}; frame()
+  enter(260, 264, "1")
+  click(600, 614); strings = {}; frame()
   return mb_log[#mb_log]
 end
 fake_check = ""                                                   -- nothing answers: no Python at all
@@ -439,9 +467,9 @@ assert(saw("^Python 3%.") and saw("numpy"), "with a working Python the page show
 fake_check = ""; fresh_page()                                    -- no Python again ...
 assert(saw("^Python not found"))
 fake_check = nil
-click(990, 55); strings = {}; frame()                            -- ... then the Check button after installing
-assert(saw("^Python 3%."), "the Check button should find Python: " .. tostring(saw("Python")))
-print("the Check button finds Python after it was installed")
+fresh_page()                                                     -- ... reopening the page (there is no Check button any more) checks again
+assert(saw("^Python 3%."), "reopening the page finds Python after it was installed: " .. tostring(saw("Python")))
+print("reopening the page finds Python after it was installed")
 
 for _, f in ipairs({ "an_stereo_ch1.ats", "an_stereo_ch2.ats", "an_stereo.ats", "an_stereo_2.ats", "an_stereo.wav", "an_notwav.txt", "an_sax.ats", "an_long.wav", "an_long.ats", "an_long_2.ats" }) do os.remove(scratch .. f) end
 print("analysis page OK")

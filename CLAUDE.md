@@ -717,3 +717,77 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   this would not have been something to find by eye.
   Tests updated for both the new label text and the new button position (mock_analysis.lua, mock_snap.lua -- the empty-state click
   test now clicks the centred rect instead of the old top-right one). Full suite passes.
+- ANALYSIS PAGE LOOK & FEEL PASS (tjingboem, 10 Nov 2026, starting a general look-and-feel cleanup). Removed: the page's own title
+  line ("ANALYSIS: make .ats files from a sound"), the bottom hint line ("Click a value to type it..."), and the per-item message
+  shown after "Use selected item" ("Item: the part of the file the item plays is analysed..."). Renamed the page's own BACK button
+  to EDITOR (clearer about what pressing it does, matching Esc's own behaviour -- "returns to the editor"). Removed the title line's
+  28 px of vertical space entirely rather than just blanking it, so SOURCE (and, in the right column, PEAKS AND TRACKS, which shares
+  the same starting height) moved up by that same 24 px to fill the gap -- lib/analysis_page.lua's `Page:draw` is the only thing
+  that changed; `draw_pre` (the "look at the sound" pre-scan view) is a separate function and was not touched.
+  This shifted the position of EVERY field/button below that point by exactly -24 px (both columns start from the same shared `y`),
+  so tests/mock_analysis.lua -- the one test file that clicks through the page by hardcoded pixel position -- needed the same -24
+  applied throughout to its SOURCE-row, WINDOW AND TIME, PEAKS AND TRACKS, OUTPUT and ANALYSE-button coordinates; the pre-scan
+  view's own coordinates (a separate function, untouched) and the Python-status row and its Check button (positioned from `top`
+  directly, never from the shared `y`) did not move and were left as they were. Also updated: the assertions that used to match the
+  now-removed title text to confirm "the page is open" (there is nothing bespoke to check any more, so they now check for the
+  SOURCE heading instead, which is still the first thing always drawn) and the one for the now-removed "Item: ..." message (simply
+  dropped, nothing stands in for it). Full suite passes.
+- SOURCE MOVED ABOVE THE TWO COLUMNS, CSOUND DEFAULTS GONE, THE CHECK BUTTON FIXED, CTRL+A AND ESC-CLOSES GONE TOO (tjingboem, 10 Nov
+  2026, continuing the look-and-feel pass). Four separate asks landed in the same sitting:
+  (1) SOURCE moved out of the left column entirely: it is now its own band, centred across the FULL width, above where the two
+  columns (WINDOW AND TIME / PEAKS AND TRACKS, OUTPUT, the ANALYSE button) start -- both columns now begin from one shared row,
+  `content_y`, below it, the same way they always shared one starting row with each other. The 3 SOURCE buttons, and (once a sound
+  is chosen) the file-info text with the Inspect Sound File button, are each centred as their own group. The file-info group
+  deliberately uses a FIXED reserved width (400 px text + 160 px button) rather than measuring the actual text, which would have
+  made Inspect Sound File's own x position depend on the exact file name and duration shown -- a moving target for anyone (test or
+  person) trying to click it reliably. The Python-status row (top right, independent of all of this, positioned from `top` the way
+  it always was) got its own dedicated clearance above SOURCE's new row instead of risking the two overlapping now that SOURCE
+  spans the whole width. draw_pre (the separate "look at the sound" pre-scan view) was not touched.
+  (2) The Csound defaults button is gone (tjingboem: "remove Csound default button"); EDITOR shifted left to close the gap. The
+  underlying `Page:set_defaults(true)` function itself was left alone -- nothing but the button calling it was removed, since
+  removing the capability outright was not what was asked.
+  (3) The "Check" button (next to the Python version, when Python IS already found) used to call `find_python(true)` and do
+  NOTHING else -- no status message either way, so clicking it when Python was already working looked and felt like it did nothing
+  at all (tjingboem: "what does the CHECK button do? It is not doing anything when i click"). It did do something (a real re-check
+  against the computer), it just never told you. Fixed to say what it found (or that Python is no longer found), matching the
+  OTHER Check button (the one shown when Python is NOT found), which already did this.
+  (4) Ctrl+A (opening the Analysis page) and Esc's fallback "nothing left to clear -> close the window" are both gone (tjingboem:
+  "remove Ctrl+A shortcut... remove that Escape closes the script window"). The Analysis page is now reachable only via the
+  ANALYSE button; Esc, with no pending print, no bend shaped and no selection to clear, now does nothing (well, stops audition,
+  which was already bundled into that same fallback and is harmless to keep) instead of returning `false` and ending the script's
+  own defer loop. The window still closes the ordinary way, the OS close button (`ch < 0` from gfx.getchar, a completely separate
+  code path, untouched).
+  Every one of mock_analysis.lua's many `script.keys = { 1 }` (Ctrl+A) calls became a `click()` on the real ANALYSE button instead
+  -- the SMALL, top-right one when a file is already open, the BIG, centred "ANALYSE or IMPORT FILE" one when it is not -- which
+  meant moving `click`'s own definition earlier in the file, since one of those call sites (`pump_done`) is a function defined
+  before `click` used to be. Every SOURCE-row/field/button coordinate needed recomputing from scratch for the new layout (not just
+  re-shifting by a further constant, since this was a structural rearrangement, not a uniform slide). mock_run.lua's "second Esc
+  should stop the loop" assertion was inverted to "should NOT stop the loop", matching the new behaviour deliberately, not a
+  regression. Full suite passes.
+- THE PYTHON CHECK MOVED FROM A BUTTON TO A ONE-TIME STARTUP POPUP (tjingboem, 10 Nov 2026, straight after the Check-button fix
+  above: "it would be better if the check was done when the script was installed. A popup window should appear whether the
+  requirements are met to run ReaATS or not. This CECK can be removed from the Analysis window."). Confirmed with tjingboem first:
+  checked once ever, remembered only after a SUCCESS -- a failure is deliberately NOT remembered, so the next launch tries again
+  rather than either nagging forever about a success that never came or staying silent forever about a problem that might by then
+  be fixed.
+  lib/analysis_page.lua: the core of `Page:find_python` (candidate Python paths, running `--check`, reading the CHECK reply) is now
+  a plain module function, `M.check_python(script_dir, ext_section, force)`, returning `python, nil` or `nil, problem` instead of
+  writing into `self.python`/`self.python_problem` directly -- `Page:find_python` is now a thin wrapper that still does exactly
+  that, for the Analysis page's OWN lazy check (still there, still runs the moment the page is shown, and again, forced, right
+  before an actual analysis in Page:run -- Python could be moved or uninstalled after the one-time check ever told the user it was
+  fine). `M.check_python_once(script_dir, ext_section)` is new: skips entirely if ExtState already has `python_checked_ok = "1"`,
+  otherwise runs the check right then and pops up (reaper.MB) either the same "Python found, numpy X" text the Check button used
+  to show, or the SAME help text (M.python_help_text) the "Python not found" popup already used elsewhere, with the same offer to
+  open the download page. ATS_Editor.lua calls it once, right after `Analysis.new(...)`, before the main loop starts. Both Check
+  buttons are gone from Page:draw (the "found" one had nothing left to do once Check also did not show feedback there any more; the
+  "not found" branch keeps its Help button, unchanged, since that was not asked to go).
+  Every test file that `dofile`s ATS_Editor.lua now runs this check on load, so every fake `reaper` table across the test suite
+  needs an `ExecProcess` and an `MB` that do not crash -- most already had both (real audio rendering/synthesis needs ExecProcess
+  regardless), but mock_snap.lua had neither (it has nothing to do with Python) and needed trivial fakes added (an empty reply, a
+  harmless MB answer) purely so the new, unconditional startup call does not blow up there. mock_analysis.lua's own "the Check
+  button finds Python after it was installed" became "reopening the page finds Python" (Page:find_python's own lazy check, on a
+  freshly made Page, already covers exactly that, with no button left to click); and a new, dedicated section (0, run before the
+  numbered flow starts, with its own explicit ExtState reset before and after so it does not leak into the rest of the file) checks
+  check_python_once itself end to end: a popup on a first failed attempt (not remembered), a popup again on a first SUCCESS
+  (remembered this time), and silence on a third launch even with a search that would again fail, proving the remembered success
+  really does skip the check rather than coincidentally passing again. Full suite passes.

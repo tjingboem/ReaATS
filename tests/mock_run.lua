@@ -491,7 +491,7 @@ assert(not saw("^selected:"), "plain click should clear the selection")
 local line_before = calls.line or 0
 script.keys = { 102 }; frame()                                              -- fit -> full re-render
 print(string.format("one full render: %d line calls, %d rect calls", (calls.line or 0) - line_before, calls.rect or 0))
--- Esc: clears a selection first, then closes
+-- Esc: clears a selection, but no longer closes the window (tjingboem, 10 Nov 2026)
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 65, 75; frame()                -- whole plot (earlier box was deleted)
 gfx.mouse_x, gfx.mouse_y = 1040, 600; frame()
 gfx.mouse_cap = 0; frame(); strings = {}; frame()
@@ -501,5 +501,5 @@ strings = {}; frame()
 assert(not saw("^selected:"), "first Esc should clear the selection")
 script.keys = { 27 }
 local fn = deferred; deferred = nil; fn()
-assert(deferred == nil, "second Esc should stop the loop")
+assert(deferred ~= nil, "a second Esc, with nothing left to clear, should not stop the loop")
 print(string.format("mock run OK: %d frames, %.2f s CPU", #steps + 2, os.clock() - t0))
