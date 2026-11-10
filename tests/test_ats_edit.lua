@@ -356,16 +356,20 @@ do
   check("no noise: nothing", edit.plan_noise_move(make(2, 10), region, 3) == nil and edit.plan_noise_clear(make(2, 10), region) == nil)
 end
 
--- 12. the max-partials knob: rank_partials finds every run (a shared row can hold more than one), plan_keep_loudest silences the rest
+-- 12. the max-partials button: rank_partials finds every run of SELECTED frames (a shared row can hold more than one),
+-- plan_keep_loudest silences only what was actually selected -- never real data outside the selection on the same row
 do
-  -- three rows, three different loudnesses, plus a second, separate run sharing row 2's own row (pack_rows) much later
+  -- three rows, three different loudnesses, plus a second, separate selected run sharing row 2's own row (pack_rows); all fully selected
   local d = make(3, 60)
   fill(d, 1, 1, 10, 200, 0.9)                -- 10 frames at 0.9 = 9.0 energy (loudest)
   fill(d, 2, 1, 10, 300, 0.2)                -- 10 frames at 0.2 = 2.0 energy (quietest of the first three)
   fill(d, 2, 41, 45, 300, 0.5)               -- a second, unrelated run sharing row 2: 5 frames at 0.5 = 2.5 energy
   fill(d, 3, 1, 10, 400, 0.5)                -- 10 frames at 0.5 = 5.0 energy
-  local runs = edit.rank_partials(d, nil)
-  check("rank_partials: a shared row's two separate runs are two entries, not one", #runs == 4, #runs)
+  local function range(f0, f1) local s = {}; for f = f0, f1 do s[f] = true end; return s end
+  local sel = { [1] = range(1, 10), [2] = range(1, 10), [3] = range(1, 10) }
+  for f in pairs(range(41, 45)) do sel[2][f] = true end
+  local runs = edit.rank_partials(d, sel)
+  check("rank_partials: a shared row's two separate selected runs are two entries, not one", #runs == 4, #runs)
   check("rank_partials: sorted loudest first", runs[1].p == 1 and math.abs(runs[1].energy - 9.0) < 1e-9
         and runs[2].p == 3 and math.abs(runs[2].energy - 5.0) < 1e-9
         and runs[3].p == 2 and math.abs(runs[3].energy - 2.5) < 1e-9
@@ -384,13 +388,25 @@ do
   local none = edit.plan_keep_loudest(d, runs, 0)
   check("plan_keep_loudest: n = 0 silences every run", none.kept == 0 and none.dropped == 4 and #none.changes == 10 + 10 + 5 + 10)
 
-  -- a region keeps only the runs that enter its time AND frequency range -- others are never even candidates, whatever n is
-  local region = { t0 = 0, t1 = 0.1, f0 = 150, f1 = 250 }                 -- only row 1 (200 Hz, frames 1-10) is inside
-  local in_region = edit.rank_partials(d, region)
-  check("rank_partials: a region keeps only the runs that actually enter it", #in_region == 1 and in_region[1].p == 1, #in_region)
-  check("plan_keep_loudest: with n = 0 on a region, only what is IN the region can be silenced", edit.plan_keep_loudest(d, in_region, 0).dropped == 1)
+  check("rank_partials: nothing selected is nothing to rank", #edit.rank_partials(make(2, 10), {}) == 0)
 
-  check("rank_partials: an empty file has nothing to rank", #edit.rank_partials(make(2, 10), nil) == 0)
+  -- the regression: a partial that is real (amp > 0) well before AND after the selection on the same row -- only the SELECTED
+  -- sub-range may be ranked or silenced, never the whole continuous run (tjingboem, 10 Nov 2026, with screenshots: "also outside
+  -- the selection on the left things were removed, as if that was part of the selection")
+  local d2 = make(1, 30)
+  fill(d2, 1, 1, 30, 500, 0.6)                              -- one continuous partial spanning the entire file
+  local sel2 = { [1] = range(10, 20) }                      -- only the middle is selected
+  local runs2 = edit.rank_partials(d2, sel2)
+  check("rank_partials: only the selected sub-range becomes a run, not the whole continuous partial",
+        #runs2 == 1 and runs2[1].f0 == 10 and runs2[1].f1 == 20, runs2[1] and (runs2[1].f0 .. "-" .. runs2[1].f1))
+  check("rank_partials: energy only over the selected frames (11 * 0.6)", math.abs(runs2[1].energy - 11 * 0.6) < 1e-9, runs2[1].energy)
+  local plan2 = edit.plan_keep_loudest(d2, runs2, 0)         -- drop it: n = 0, nothing kept
+  local touched2 = {}
+  for _, c in ipairs(plan2.changes) do touched2[c.f] = c.na end
+  check("plan_keep_loudest: silences exactly the selected frames, nothing more", #plan2.changes == 11 and touched2[10] == 0 and touched2[20] == 0)
+  check("plan_keep_loudest: frames outside the selection, on the very same partial, are left completely alone",
+        touched2[9] == nil and touched2[21] == nil and touched2[1] == nil and touched2[30] == nil
+        and d2.amp[1][9] == 0.6 and d2.amp[1][21] == 0.6, "d untouched outside selection")
 end
 
 print(string.format("%d passed, %d failed", ok, fails))

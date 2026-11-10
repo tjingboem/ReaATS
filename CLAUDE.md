@@ -604,3 +604,98 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   outright instead of reporting "nil" in the assertion message -- a trap for the NEXT test that writes `tostring(saw(...))` without
   the `or`, not just this one. Full suite passes, including a new end-to-end section of mock_partials_knob.lua for the weak-mode
   mirror (drag right, keep the 2 weakest of the 4-partial fixture, verify the 2 loudest are actually silenced in the saved file).
+- THE SLIDER MOVED OUT OF THE PLOT ENTIRELY, INTO THE HEADER (tjingboem, 10 Nov 2026: "the 2 way slider is mostly in the way of
+  other partials. Can we move the slider to above the selection where there is always empty space?"). First attempt: pin it to the
+  very top of the PLOT (the same row the playhead's own time readout sits in) instead of next to the box. That broke mock_channels.
+  lua's "a stretch to before 0" test outright: a bend's own draggable corners and edges can be anywhere the selection's own
+  frequency range reaches, including the plot's very top row when a selection spans the whole visible range (a plain "select
+  everything" does, and is exactly the kind of broad selection someone thinning partials would make) -- so the slider's hit test
+  (checked first in the input dispatch) silently stole the click meant for the box's own corner dot. There is no row INSIDE the
+  plot that is reliably free of the bend box's own draggable area, because that area is defined by the selection itself, not by any
+  fixed layout.
+  Fixed by moving the slider OUTSIDE the plot altogether, into the header: the row between the file info line and the "selected:
+  ... points ..." summary (y 26-47 in both single- and multi-channel layouts) is blank except on its own right-hand side, where
+  PRINT / EXPORT .ats / ANALYSE and the rest of the header buttons live -- `W.pk_rect`'s `right_limit` mirrors that chain of rects
+  (checkbox_rect -> audition_rect -> print_rect -> export_rect -> analyse_rect) by hand, since those functions are declared further
+  down the file and are not yet in scope as locals at the point `W.pk_rect` is compiled (an early return just for geometry was not
+  worth moving a few hundred lines of code for). Its hit-test is no longer gated on `inside` (the plot's own mouse-over-the-picture
+  test) since it no longer lives inside the plot; it is checked in the SAME un-gated header block as the Noise/Sine checkboxes and
+  the transport buttons, right after ANALYSE and before the time ruler. x0/x1 still follow the selection's own time span (via
+  `W.get()`'s `t0`/`t1`), clamped to stay left of that button row and never narrower than 60 px.
+  The persistent "max partials: N of M" label beside the slider is gone too: the header gap is not tall enough for a bar AND a
+  label without reaching into the "selected: ..." row below it, and the bend box itself already follows the same convention --
+  nothing is written beside it while it is flat, only once it is actually being shaped (`W.commit`'s own "bend ...: Enter applies"
+  text). The live count still shows on the status line, via `W.pk_drag_to`'s existing `set_status` call. tests/mock_partials_knob.lua
+  updated for the new geometry and the missing persistent label (the "slider re-ranks immediately" check, previously read straight
+  off that label, now drags again right after Enter and reads the live status instead -- same thing it was checking, read a
+  different way). Full suite passes, including the mock_channels.lua stretch-to-before-0 test that caught this.
+- THE SLIDER WAS NOT, IN FACT, INVISIBLE -- JUST NEARLY SO (tjingboem 10 Nov 2026, twice: "where is the slider?", after moving it
+  into the header above). Also caught something more basic first: the build stamp at the bottom-right of the editor ("which version
+  of the script is running") was a hand-written literal that I had never once updated while working on this feature all day, so the
+  first screenshot was a genuinely stale, pre-session build -- REAPER keeps a script's old code loaded until its window is closed
+  and reopened, same as always. Told tjingboem to reopen the window; it's now bumped on every deploy during this feature's work.
+  After reopening, still nothing showed, even zoomed in on just the header strip. Rather than guess again, recorded every gfx.rect
+  call for a selection built to match the real one in the screenshot (a real sax.ats fixture, a comparable point/partial count) and
+  printed whichever ones landed in the header's own y-range: the slider's rect WAS there, at sane coordinates (x matching the
+  selection's own time span, y=34, 8 px tall) -- so the earlier placement fix was not the bug. The actual problem: its colours
+  (`gfx.set(0.16, 0.18, 0.22, 1)` track, muted grey border) were barely lighter than the header's own near-black background, and 8
+  px is thin to begin with -- reads as basically invisible once screenshotted and shared, which is exactly the two reports that
+  came in. Fixed by making it unmistakable regardless of contrast conditions: taller (12 px, still well inside the 24-48 px header
+  gap), a teal-tinted track instead of flat grey, and a bright cyan border -- deliberately far more saturated than anything else in
+  this muted header, so it cannot blend in again. Lesson for next time something "isn't showing": record the actual draw calls for
+  a matching scenario before assuming either a geometry bug or genuinely dead code -- it settled in one step whether the function
+  even ran, instead of re-reading the same logic a fourth time looking for a mistake that was not there.
+- THE SLIDER WAS GIVEN UP ON, AND REPLACED WITH A PLAIN BUTTON (tjingboem, 10 Nov 2026, after the contrast fix also showed nothing:
+  "Maybe we should think about other solutions"). Even an UNCONDITIONAL, oversized (the whole top 60 px of the window), solid-
+  magenta `gfx.rect` call, placed in the exact same per-frame function as the build stamp text (which DID keep reflecting every
+  edit, confirming fresh code loaded every time), produced no visible effect and no functional response to a click -- confirmed
+  with the SAME code after a full REAPER restart, ruling out a stale window or a stale script load, and confirmed in an offline
+  reproduction that the exact same file DOES fire that gfx.rect call when run under plain lua5.4. Something about that specific
+  draw call never reached the screen in that one real REAPER session, for a reason this never got to the bottom of -- every other
+  gfx.rect/gfx.set call in this file, old and new, renders fine there (buttons, the bend box, checkboxes), so it was not a blanket
+  gfx problem, and no error ever appeared in the REAPER console either. Rather than keep spending tjingboem's time on an
+  unreproducible difference between a real REAPER Lua host and everything this project can test offline, the whole custom-drawn,
+  live-dragged slider (and its dimmed, live preview over the picture) is gone. In its place: a plain button, drawn and hit-tested
+  exactly like PRINT/EXPORT/ANALYSE (mechanisms already proven, in that exact session, to render and respond), which opens
+  REAPER's own text-input dialog (reaper.GetUserInputs, the same one Export/Save already use) asking how many partials to keep --
+  positive keeps that many loudest, negative that many weakest -- and applies immediately as one undo step. No live drag, no
+  dimmed preview; W.pk_ranks/W.pk_apply replace the whole W.pk/W.pk_get/W.pk_commit/W.pk_draw*/W.pk_drag_to/W.pk_mouse_down state
+  machine, and lib/ats_edit.lua's rank_partials/plan_keep_loudest (always solid, tested independently of any of this) are unchanged
+  and reused as-is.
+  Also removed in the same pass, at tjingboem's request ("remove all these unreadable messages from the bottom of ReaATS"): the two
+  long keyboard-shortcut hint lines that used to run along the bottom of the window -- the button now sits in that freed space
+  (bottom left, where the first hint line began). The button is greyed out, and its click does nothing, whenever there is no
+  selection (`any_sel()`), per tjingboem's explicit ask.
+  tests/mock_partials_knob.lua rewritten for the new flow: the fake `reaper.GetUserInputs` now records whether it was called and
+  returns a settable (ok, text) pair, so the test can drive Cancel, a non-numeric answer, a positive count and a negative one, each
+  checked against the actual saved-and-reloaded file's amplitudes, plus confirming the button does NOT open the dialog at all when
+  nothing is selected. Hit the 200-local chunk limit again doing this (two new `local function`s for the button's rect/draw) --
+  same fix as before, made them fields of W instead. Full suite passes.
+- MAX PARTIALS SILENCED REAL DATA OUTSIDE THE SELECTION (tjingboem, 10 Nov 2026, with screenshots: selected a short stretch in the
+  middle of several sustained partials, set MAX PARTIALS to 1, and a dropped partial went silent well to the LEFT of the selection
+  box too -- "only the selection should be affected"). Root cause: `rank_partials` and every other edit in this file (delete,
+  transpose, move, plan_warp...) are NOT the same shape. Every other edit works on `sel[p][f]`, the literal per-cell selection.
+  `rank_partials` instead took a `region` (the box's own t0/t1/f0/f1) and ranked -- and so `plan_keep_loudest` silenced -- the WHOLE
+  continuous run of real sound (amp > 0) wherever it merely PASSED THROUGH that box at any single frame, however far the run
+  actually reached outside it. A partial sustained from well before the selection to well after lost its entire length the moment
+  it was not among the ones kept, not just the selected stretch of it. This was there from the very first version (the abandoned
+  slider had the same bug; it was simply never exercised with a selection that was narrower than an entire continuous partial, in
+  all the testing that went into that feature, including the pure-logic tests -- every fixture so far used partials selected in
+  full, end to end, which cannot expose this).
+  Fixed in lib/ats_edit.lua: `rank_partials(d, sel)` now takes the actual selection, exactly like plan_move/plan_warp already do --
+  finds contiguous runs of SELECTED frames per row (same sort-and-group idiom as those two), ranks them by energy over only the
+  selected frames, and `plan_keep_loudest` (unchanged) then only ever silences f0..f1 of a run, which now IS the selected sub-range,
+  never more. ATS_Editor.lua's W.pk_ranks passes `W.sel_of(i)` (a new accessor beside the existing W.sel_info_of, same `(i==cur) and
+  sel or chs[i].sel` pattern) instead of `W.current_region()`'s box.
+  New regression coverage at both levels: test_ats_edit.lua's section 12 adds a continuous one-partial fixture where only the
+  middle third of the frames is selected, asserting the resulting run's own f0/f1 match the selection exactly and that silencing it
+  leaves the real data on both sides, on the very same row, completely untouched; mock_partials_knob.lua adds an end-to-end case
+  selecting only a middle stretch of a real multi-partial picture and verifying (via the saved file) that a silenced partial is
+  silent inside the selection and still fully intact, same amplitude and frequency as the original, well before and well after it.
+  Also fixed two accuracy issues found WHILE building that end-to-end case, both pre-existing in the test itself, not today's bug:
+  the "select everything" sweeps used a few pixels of inset from the plot's own edges, which (now that silencing is exact instead
+  of over-reaching) could miss the very first or last frame and leave it stuck at its old value -- replaced with a sweep that starts
+  exactly on the plot's left edge and deliberately overshoots the right/bottom, which the box-select's own clamp brings back to
+  exactly the view's own t0/t1; and reusing the still-active selection from a previous scenario to start a new, smaller drag can hit
+  an already-selected point and MOVE the old selection instead of replacing it with a new one -- a plain Esc, or here a reload (also
+  needed to undo earlier scenarios' edits still sitting in the live data), clears it first. Full suite passes.

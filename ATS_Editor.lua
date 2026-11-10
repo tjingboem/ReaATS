@@ -103,9 +103,8 @@ local box = nil                -- rubber-band box while the left button is down:
 local lasso = nil              -- Alt+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
 local amp_thresh = 0
 -- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
--- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged, W.pk = the max-partials slider under the box being
--- shaped (nil = not touched; see "the max-partials knob" below). Everything about it lives in this one table (the main chunk of this file is at
--- Lua's limit of 200 local variables).
+-- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
+-- chunk of this file is at Lua's limit of 200 local variables).
 local W = { m = dofile(script_dir .. "/lib/ats_warp.lua") }
 local last_audition = nil      -- the last sound AUDITION made (see start_preview)
 
@@ -1694,6 +1693,7 @@ end
 -- dots to move the whole edge; Ctrl+click on an edge adds a border dot, right-click on a border dot removes it, Alt+drag on an edge arches it,
 -- Shift makes the movement fine. Nothing is changed in the data until Enter applies it (Esc, Ctrl+R: back to flat). Frequency only for now.
 function W.sel_info_of(i) return (i == cur) and sel_info or chs[i].sel_info end
+function W.sel_of(i) return (i == cur) and sel or chs[i].sel end
 
 function W.set_region(ta, tb, fa, fb, add)
   W.w = nil
@@ -1745,146 +1745,99 @@ function W.get()
   return W.w
 end
 
--- ------------------------------------------------------------ the max-partials knob (tjingboem, 10 Nov 2026)
--- A slider under the selection box, centred: at rest (the middle) nothing is dropped. Drag it toward the LEFT and it keeps only the
--- N loudest partials of the box's own region (time AND frequency), same as a plain "keep the loudest" would; drag it toward the
--- RIGHT and it keeps only the N WEAKEST instead, dropping the loudest ones -- one control, two directions, so you can thin either
--- end of the loudness range without a second widget (tjingboem: "drag from right to left = keep the strongest, drag from left to
--- right = keep the weakest"). In every channel that is on, green and has a selection there. Shaped live like the bend (dragging only
--- dims a preview, nothing in the data changes until Enter), but it is its OWN commit, not folded into the bend's: the two are never
--- combined in one Enter, so there is never a question of which edit's silencing of a cell the other one should see.
--- W.pk = { region (what it was ranked against), group (group_counter when it was ranked, so an edit that leaves the region's own
--- bounds unchanged -- a move within the box, say -- still invalidates stale run positions), n (how many are kept, live), mode
--- ("loud" keeps the loudest n, "weak" keeps the weakest n -- meaningless at n = max, where nothing is dropped either way), max (the
--- most of any one channel), per = { [channel] = { runs (edit.rank_partials, loudest first), count } } }.
-
--- The on-screen text for the slider's own count, independent of whether it is being dragged or just shown.
-function W.pk_label(pk)
-  if pk.n >= pk.max then return string.format("max partials: %d of %d", pk.max, pk.max) end
-  return string.format("keep %d %s of %d", pk.n, pk.mode == "weak" and "weakest" or "loudest", pk.max)
-end
-
--- (Re)builds W.pk for the box's current region if the region or the data has moved on since it was last built; returns it, or nil
--- when there is nothing to knob down (no sine selection at all). Called every frame it might be drawn or hit-tested, not just once,
--- so it never needs its own reset hooked into every place the selection or the data can change.
-function W.pk_get()
-  local region = W.current_region()
-  if not region then W.pk = nil; return nil end
-  local r = W.pk and W.pk.region
-  if r and r.t0 == region.t0 and r.t1 == region.t1 and r.f0 == region.f0 and r.f1 == region.f1 and W.pk.group == group_counter then
-    return W.pk
-  end
+-- ------------------------------------------------------------ max partials (tjingboem, 10 Nov 2026)
+-- A plain button, not a custom-drawn slider: three different slider designs in a row (in the plot, at the plot's own top, up in
+-- the header) never rendered at all for tjingboem despite every one of them working in a from-scratch reproduction of the real
+-- input/draw code against real data (lib/ats_edit.lua's rank_partials/plan_keep_loudest are fine, and tested; this was purely the
+-- ATS_Editor.lua-side widget) -- including a version that drew an unconditional, oversized, solid-colour bar across the entire top
+-- of the window, confirmed (by recording every gfx.rect call) to actually fire in a plain reproduction, and confirmed functionally
+-- dead (no status change on click either) after closing every open window and fully restarting REAPER, ruling out a stale window
+-- and a stale script load. Rather than keep chasing an unreproducible rendering difference, this uses only mechanisms already
+-- proven to render and respond in that exact session: a button drawn exactly like PRINT/EXPORT/ANALYSE, and REAPER's own text
+-- dialog (reaper.GetUserInputs), the same one Export/Save already use. No live drag, no dimmed preview -- type a count, it applies
+-- right away, one undo step.
+-- Ranks every channel's ACTUAL selected cells (sel[p][f], exactly what plan_move/plan_warp/delete_single etc. all operate on) --
+-- not a time/frequency bounding box: a first version ranked (and so silenced) a whole continuous run wherever it merely PASSED
+-- THROUGH the selection's box, which could reach far outside it in time -- a partial sustained from well before the selection to
+-- well after lost its entire length, not just the selected stretch of it, the moment it was not among the ones kept (tjingboem,
+-- 10 Nov 2026, with screenshots: "also outside the selection on the left things were removed, as if that was part of the
+-- selection... only the selection should be affected"). Using sel itself instead means a dropped run can only ever be silenced
+-- where it was actually highlighted, the same guarantee every other edit in this file already gives.
+function W.pk_ranks()
   local per, max_count = {}, 0
   for _, i in ipairs(on_channels()) do
-    if W.sel_info_of(i) then
-      local runs = edit.rank_partials(chs[i].data, region)
-      per[i] = { runs = runs, count = #runs }
+    local s = W.sel_of(i)
+    if s and next(s) then
+      local runs = edit.rank_partials(chs[i].data, s)
+      per[i] = runs
       if #runs > max_count then max_count = #runs end
     end
   end
-  W.pk = { region = region, group = group_counter, n = max_count, mode = "loud", max = max_count, per = per }
-  return W.pk
+  if max_count == 0 then return nil end
+  return { per = per, max = max_count }
 end
 
--- The slider's own pixel rectangle: x, y, w, h -- just under the box, in the first lane that has one, but never below the lane's own
--- bottom (a box selected low in frequency would otherwise push it off the plot, or onto the time ruler). nil when there is nothing
--- to show it under (no selection, or the Sine layer is off: W.lane_geos already gates on both).
-function W.pk_rect(px, py, pw, ph)
-  local list = W.lane_geos(px, py, pw, ph)
-  if #list == 0 then return nil end
-  local g, lane = list[1].g, list[1].lane
-  local y = math.min(g.yb + 16, py + lane.off + lane.h - 12)
-  return g.x0, y, math.max(g.x1 - g.x0, 60), 10
-end
-
-function W.pk_hit(px, py, pw, ph, mx, my)
-  local x, y, w, h = W.pk_rect(px, py, pw, ph)
-  if not x then return false end
-  return mx >= x - 4 and mx < x + w + 4 and my >= y - 5 and my < y + h + 5
-end
-
-function W.pk_mouse_down(px, py, pw, ph, mx, my)
-  if not W.pk_hit(px, py, pw, ph, mx, my) then return false end
-  local pk = W.pk_get()
-  if not pk or pk.max == 0 then return false end
-  W.drag_pk = true
-  W.pk_drag_to(px, py, pw, ph, mx)
-  return true
-end
-
-function W.pk_drag_to(px, py, pw, ph, mx)
-  local pk = W.pk
-  if not pk then return end
-  local x, _, w = W.pk_rect(px, py, pw, ph)
-  if not x then return end
-  local half = w / 2
-  local center = x + half
-  pk.mode = (mx <= center) and "loud" or "weak"
-  local dist = clamp(math.abs(mx - center) / half, 0, 1)                 -- 0 at the centre (nothing dropped), 1 at either end
-  pk.n = clamp(math.floor((1 - dist) * pk.max + 0.5), 0, pk.max)
-  set_status(W.pk_label(pk) .. (pk.n < pk.max and "  Enter applies   Esc cancels" or ""))
-end
-
--- The live preview: every partial beyond the shown count, dimmed directly over the (cached) picture, drawn fresh every frame like
--- the box itself rather than baked into the picture's own cache -- so dragging the slider needs no re-render of the whole picture.
--- In "weak" mode the dimmed ones are the FRONT of the loudest-first ranking (the loudest, about to be dropped) instead of the tail.
-function W.pk_draw_preview(px, py, pw, ph)
-  local pk = W.pk
-  if not pk or pk.n >= pk.max then return end
-  local weak = pk.mode == "weak"
-  for _, lane in ipairs(lane_layout(ph)) do
-    for _, ci in ipairs(lane.chans) do
-      local p = pk.per[ci]
-      if p then
-        as_channel(ci, function()
-          gfx.set(0.52, 0.53, 0.55, 1)                          -- flat grey, fully opaque: a loud partial's picture is two lines
-                                                                 -- (see draw_partials), so this one is drawn twice too, or a bright
-                                                                 -- sliver of the original colour would still show beside it
-          local lo, hi = weak and 1 or (pk.n + 1), weak and (#p.runs - pk.n) or #p.runs
-          for i = lo, hi do
-            local run = p.runs[i]
-            local amp, frq, times = data.amp[run.p], data.frq[run.p], data.times
-            for f = run.f0, run.f1 - 1 do
-              local x1, x2 = tx(times[f], pw), tx(times[f + 1], pw)
-              if x2 >= 0 and x1 <= pw then
-                local cx1, cy1, cx2, cy2 = clip_segment(x1, fy(frq[f], lane.h), x2, fy(frq[f + 1], lane.h), pw, lane.h)
-                if cx1 then
-                  gfx.line(px + cx1, py + lane.off + cy1, px + cx2, py + lane.off + cy2, 1)
-                  gfx.line(px + cx1, py + lane.off + cy1 + 1, px + cx2, py + lane.off + cy2 + 1, 1)
-                end
-              end
-            end
-          end
-        end)
+-- Asks how many partials to keep (positive: that many loudest; negative: that many weakest) and applies it right away, as one
+-- undo group across every channel with a ranking in the box's own region. plan_keep_loudest always keeps the FRONT of the list
+-- it is given, loudest-first ranked -- keeping the weakest instead just hands it that list reversed (quietest-first), so lib/
+-- ats_edit.lua needs no separate "weak" mode of its own.
+function W.pk_apply()
+  local ranks = W.pk_ranks()
+  if not ranks then set_status("nothing selected to thin"); return end
+  local ok, text = reaper.GetUserInputs("Max partials", 1,
+    string.format("keep this many loudest (negative: weakest instead; up to %d here),extrawidth=60", ranks.max), "")
+  if not ok then return end
+  local n = tonumber(text)
+  if not n then set_status("max partials: not a number"); return end
+  local weak = n < 0
+  n = math.floor(math.abs(n) + 0.5)
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  local dropped, touched = 0, 0
+  for i, runs in pairs(ranks.per) do
+    with_channel(i, function()
+      local use = runs
+      if weak then
+        local rev = {}
+        for k = #runs, 1, -1 do rev[#rev + 1] = runs[k] end
+        use = rev
       end
-    end
+      local plan = edit.plan_keep_loudest(data, use, n)
+      if plan then
+        do_edit("max partials", plan.changes)
+        dropped, touched = dropped + plan.dropped, touched + 1
+      end
+    end)
+  end
+  edit_group = nil
+  if touched > 0 then
+    set_status(string.format("kept the %d %s, silenced %d%s", n, weak and "weakest" or "loudest", dropped,
+                              touched > 1 and (" (" .. touched .. " channels)") or ""))
+  else
+    set_status("max partials: nothing to silence at that count")
   end
 end
 
--- Draws the slider itself (its live preview, W.pk_draw_preview, is drawn separately over the picture, below the box): a track with a
--- centre tick for the resting ("nothing dropped") position, and a fill growing from the centre toward whichever side is dragged.
-function W.pk_draw(px, py, pw, ph)
-  local pk = W.pk_get()
-  if not pk or pk.max == 0 then return end
-  local x, y, w, h = W.pk_rect(px, py, pw, ph)
-  if not x then return end
-  local half = w / 2
-  local center = x + half
-  gfx.set(0.16, 0.18, 0.22, 1)
+-- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
+-- tjingboem 10 Nov 2026). A field of W, like W.pk_ranks/W.pk_apply, rather than its own local: this file is already at Lua's
+-- 200-local-variable limit for its main chunk (see the comment near "local W =" above), so a plain new local here fails to compile.
+function W.max_partials_rect()
+  return MARGIN_L, math.floor(gfx.h) - 26, 150, 18
+end
+
+function W.draw_max_partials_button()
+  local x, y, w, h = W.max_partials_rect()
+  local enabled = any_sel()
+  gfx.set(enabled and 0.20 or 0.15, enabled and 0.38 or 0.17, enabled and 0.42 or 0.19, 1)
   gfx.rect(x, y, w, h, 1)
-  local active = pk.n < pk.max
-  local dist = active and (1 - pk.n / pk.max) or 0
-  local thumb = active and ((pk.mode == "weak") and (center + dist * half) or (center - dist * half)) or center
-  gfx.set(active and 0.95 or 0.45, active and 0.55 or 0.9, active and 0.3 or 1, 0.7)
-  gfx.rect(math.min(center, thumb), y, math.abs(thumb - center), h, 1)
-  gfx.set(1, 1, 1, 0.45)
-  gfx.rect(center - 1, y - 2, 2, h + 4, 1)
-  gfx.set(1, 1, 1, 0.9)
-  gfx.rect(thumb - 1.5, y - 2, 3, h + 4, 1)
-  gfx.set(0.35, 0.38, 0.43, 1)
+  gfx.set(enabled and 0.45 or 0.3, enabled and 0.92 or 0.34, enabled and 1 or 0.37, 1)
   gfx.rect(x, y, w, h, 0)
   gfx.setfont(1, "Arial", 13)
-  text_at(x, y + h + 4, W.pk_label(pk), active and 1 or 0.6, active and 0.85 or 0.63, active and 0.55 or 0.68)
+  local label = "MAX PARTIALS"
+  gfx.set(enabled and 1 or 0.42, enabled and 1 or 0.44, enabled and 1 or 0.46, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
 end
 
 -- Applies the bend to the selected points of every channel that is on and green (one undo step), and opens a flat box round them.
@@ -1978,43 +1931,6 @@ function W.commit()
       dropped > 0 and (string.format(", %d piece(s) still fell outside", dropped)) or ""))
   elseif dropped > 0 then
     set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped))
-  end
-end
-
--- Applies the max-partials knob: every channel with a ranking keeps its own n loudest (mode "loud") or n weakest (mode "weak")
--- partials of the box's region and silences the rest, as one undo group (a channel where n already covers every partial there has
--- nothing to do and is left out of it). plan_keep_loudest always keeps the FRONT of the list it is given, loudest-first ranked --
--- "weak" mode just hands it the list reversed (quietest-first), so the same function keeps the quietest n instead, without lib/
--- ats_edit.lua needing to know about two modes at all.
-function W.pk_commit()
-  local pk = W.pk
-  if not pk then return end
-  local weak = pk.mode == "weak"
-  group_counter = group_counter + 1
-  edit_group = group_counter
-  local dropped, touched = 0, 0
-  for i, p in pairs(pk.per) do
-    with_channel(i, function()
-      local runs = p.runs
-      if weak then
-        local rev = {}
-        for k = #runs, 1, -1 do rev[#rev + 1] = runs[k] end
-        runs = rev
-      end
-      local plan = edit.plan_keep_loudest(data, runs, pk.n)
-      if plan then
-        do_edit("max partials", plan.changes)
-        dropped, touched = dropped + plan.dropped, touched + 1
-      end
-    end)
-  end
-  edit_group = nil
-  W.pk, W.region = nil, nil
-  if touched > 0 then
-    set_status(string.format("kept the %d %s, silenced %d%s", pk.n, weak and "weakest" or "loudest", dropped,
-                              touched > 1 and (" (" .. touched .. " channels)") or ""))
-  else
-    set_status("max partials: nothing to silence at that count")
   end
 end
 
@@ -2699,14 +2615,9 @@ local function draw_header(px, py, pw, ph, plain)
     end
   end
   gfx.setfont(1, "Arial", 12)
-  text_at(px, gfx.h - 34, "drag select (Shift adds)   Alt+drag lasso   box dots bend (Enter applies)   drag a selected point = move (Shift fine, Ctrl one axis)   right-drag pan   right-click whole file   wheel zoom time   Ctrl+wheel zoom frequency   Shift+wheel scroll   O open   F fit   P partials   N noise",
-    0.5, 0.53, 0.58)
-  text_at(px, gfx.h - 18, "V stack/overlay   Tab solo   Del delete   Up/Down transpose   Left/Right move   Ctrl+C/X/V copy cut paste   Ctrl+Z/Y undo/redo   Ctrl+S save   Ctrl+Shift+S export   A audition   Ctrl+P print   click the picture or the time ruler = playhead   Esc clear/close",
-    0.5, 0.53, 0.58)
-  local build = "build 09 Nov 22:25"                                             -- (which version of the script is running)
+  W.draw_max_partials_button()
+  local build = "build 10 Nov 16:17"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
-  gfx.set(0.09, 0.10, 0.12, 1)
-  gfx.rect(gfx.w - bw - 12, gfx.h - 18, bw + 12, 16, 1)                      -- (a patch of the background, so that it never mixes with the hint line)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
 
@@ -2802,13 +2713,16 @@ local function handle_input(px, py, pw, ph)
       save_as()
     elseif (function() local ax2, ay2, aw2, ah2 = analyse_rect(); return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2 end)() then
       showing_analysis = true
+    elseif data and (function()
+        local mx2, my2, mw2, mh2 = W.max_partials_rect()
+        return any_sel() and mx >= mx2 and mx < mx2 + mw2 and my >= my2 and my < my2 + mh2
+      end)() then
+      W.pk_apply()
     elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
       ruler_drag = true                                          -- a click (or drag) on the time ruler sets the playhead
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
     elseif channel_row_click(mx, my) then
       -- (the channel row: handled above)
-    elseif data and inside and (cap & 8) == 0 and W.pk_mouse_down(px, py, pw, ph, mx, my) then
-      -- (the max-partials slider under the box: handled above)
     elseif data and inside and (cap & 8) == 0 and W.mouse_down(px, py, pw, ph, mx, my, cap) then
       -- (the box and its handles: handled above; Shift is left for adding to the selection)
     elseif data and inside and (cap & 16) ~= 0 and lane_at(py, ph, my) then       -- Alt+drag: a lasso
@@ -2842,8 +2756,6 @@ local function handle_input(px, py, pw, ph)
     else
       mover.axis = nil
     end
-  elseif down and W.drag_pk then
-    W.pk_drag_to(px, py, pw, ph, mx)
   elseif down and W.drag then
     W.drag_to(mx, my, cap)
   elseif down and lasso then
@@ -2890,14 +2802,13 @@ local function handle_input(px, py, pw, ph)
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
-  if not down then ruler_drag = false; slider_drag = nil; W.drag = nil; W.drag_pk = false end
+  if not down then ruler_drag = false; slider_drag = nil; W.drag = nil end
   prev_down = down
 
   local ch = gfx.getchar()
   if ch < 0 then stop_audition(); return false end
   if ch == 27 then
     if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
-    elseif W.pk and W.pk.n < W.pk.max then W.pk.n = W.pk.max; set_status("max partials: reset")
     elseif W.w and not W.m.is_flat(W.w) then W.w = nil; set_status("bend cancelled")
     elseif any_sel() then clear_selection() else stop_audition(); return false end
   end
@@ -2909,10 +2820,8 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 1818584692 or ch == 1919379572 then              -- Left / Right arrow: move in time
     local frames = ctrl and 10 or 1
     move_selection(ch == 1919379572 and frames or -frames, 1)
-  elseif ch == 13 then                                          -- Enter: apply the bend, or the max-partials slider if that was touched instead
-    if W.pk and W.pk.n < W.pk.max then W.pk_commit()
-    elseif W.w and not W.m.is_flat(W.w) then W.commit()
-    else set_status("nothing to apply: drag the corner dots or the edges of the box, or the max-partials slider, first") end
+  elseif ch == 13 then                                          -- Enter: apply the bend
+    if W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
   elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
   elseif ch == 24 then if copy_selection() then edit_on_channels(function() delete_single(true) end, "cut") end   -- Ctrl+X (the noise goes with the sines)
@@ -3007,8 +2916,6 @@ local function loop()
   end
   draw_selection(px, py, pw, ph)
   W.draw(px, py, pw, ph)
-  W.pk_draw_preview(px, py, pw, ph)
-  W.pk_draw(px, py, pw, ph)
   draw_crosshair(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)

@@ -477,48 +477,44 @@ function M.plan_warp(d, sel, map, opts)
            frames_front = 1 - first_frame, count = count, dropped = dropped }
 end
 
--- ------------------------------------------------------------------------------------------------ the max-partials knob
--- Finds every contiguous run of real sound (amp > 0) in every row -- the actual individual partials, which a shared row can hold
--- several of, one after another, when rows are shared between non-overlapping tracks (pack_rows in the analysis). `region` (a box
--- t0, t1, f0, f1) keeps only the runs that enter it at some frame (time AND frequency both in range there); nil means every run in
--- the file. Returns them sorted loudest first, by total energy (the sum of amplitude over the run's own frames) -- used live, to
--- show what dragging the knob to a given count would drop, and at Enter (plan_keep_loudest) to actually silence them; both use the
--- same ranking, computed once, so the preview and the result always agree.
-function M.rank_partials(d, region)
+-- ------------------------------------------------------------------------------------------------ the max-partials button
+-- Finds every contiguous run of SELECTED frames (sel[p] = { [frame] = true }, exactly as plan_move/plan_warp/delete_single use it)
+-- in every row -- the actual individual partials, which a shared row can hold several of, one after another, when rows are shared
+-- between non-overlapping tracks (pack_rows in the analysis), or simply because the selection itself covers two separate stretches
+-- of the same row. Ranking (and so later silencing, plan_keep_loudest) only what is actually selected -- never a whole run just
+-- because it happens to pass through a selected time/frequency box at some point, which could reach arbitrarily far outside the
+-- box in either direction -- is deliberate: every other edit in this file already works this way, and an earlier, region-based
+-- version of this one did not, which silenced a sustained partial in full the moment it was not kept, far beyond the selection
+-- that was supposedly being edited (tjingboem, 10 Nov 2026, with screenshots: "also outside the selection on the left things were
+-- removed, as if that was part of the selection... only the selection should be affected"). Returns the runs sorted loudest first,
+-- by total energy (the sum of amplitude over the run's own selected frames).
+function M.rank_partials(d, sel)
   local runs = {}
-  for p = 1, d.partials do
-    local amp, frq = d.amp[p], d.frq[p]
-    local f0, energy = nil, 0
-    for f = 1, d.frames + 1 do
-      local on = f <= d.frames and amp[f] > 0
-      if on then
-        if not f0 then f0, energy = f, 0 end
-        energy = energy + amp[f]
-      elseif f0 then
-        local f1 = f - 1
-        local in_region = true
-        if region then
-          in_region = false
-          for g = f0, f1 do
-            if d.times[g] >= region.t0 and d.times[g] <= region.t1 and frq[g] >= region.f0 and frq[g] <= region.f1 then
-              in_region = true
-              break
-            end
-          end
-        end
-        if in_region then runs[#runs + 1] = { p = p, f0 = f0, f1 = f1, energy = energy } end
-        f0 = nil
+  for p, frames in pairs(sel) do
+    local fl = {}
+    for f in pairs(frames) do fl[#fl + 1] = f end
+    table.sort(fl)
+    local amp = d.amp[p]
+    local start, prev = fl[1], fl[1]
+    for i = 2, #fl + 1 do
+      local f = fl[i]
+      if f == nil or f ~= prev + 1 then
+        local energy = 0
+        for g = start, prev do energy = energy + amp[g] end
+        runs[#runs + 1] = { p = p, f0 = start, f1 = prev, energy = energy }
+        start = f
       end
+      prev = f
     end
   end
   table.sort(runs, function(a, b) return a.energy > b.energy end)
   return runs
 end
 
--- The plan for the max-partials knob at Enter: every run beyond the `n` loudest of `runs` (as given by rank_partials -- passed in,
--- not recomputed, so the live preview and the commit agree on exactly the same list even if the knob was dragged past data that is
--- about to be silenced by a run earlier in the same list) is silenced; the `n` loudest are left untouched. n <= 0 silences every run
--- in the list, n >= #runs silences nothing. Returns nil (nothing to silence) or { changes, kept, dropped }.
+-- The plan for the max-partials button: every run beyond the `n` loudest of `runs` (as given by rank_partials -- passed in, not
+-- recomputed, so a preview and a commit would always agree on exactly the same list) is silenced; the `n` loudest are left
+-- untouched. n <= 0 silences every run in the list, n >= #runs silences nothing. Returns nil (nothing to silence) or
+-- { changes, kept, dropped }.
 function M.plan_keep_loudest(d, runs, n)
   if n < 0 then n = 0 end
   local changes = {}
