@@ -2642,7 +2642,7 @@ local function draw_header(px, py, pw, ph, plain)
   end
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
-  local build = "build 10 Nov 19:36"                                        -- (which version of the script is running)
+  local build = "build 10 Nov 22:34"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
