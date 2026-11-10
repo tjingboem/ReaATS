@@ -1983,7 +1983,11 @@ function W.drag_to(mx, my, cap)
   local ey = (d.axis == "x") and 0 or d.ey
   d.dv = clamp(ey / d.g.pxs, -48, 48)
   local span = w.t1 - w.t0
-  d.dh = (d.axis == "y") and 0 or clamp(d.th, -3 * span, 3 * span)
+  -- No cap on d.dh itself any more (tjingboem, 10 Nov 2026: "i need to stretch partials for creative sounds. There should be no
+  -- cap."): the old +-3x-the-selection's-own-width limit was an arbitrary drag-time ceiling with no record of why that number, not
+  -- a safety limit -- the real one is W.commit's `room` (the file may grow by at most its own length again, or 20 million cells,
+  -- whichever is smaller), which still applies no matter how far the handle is dragged.
+  d.dh = (d.axis == "y") and 0 or d.th
   if d.kind == "point" then
     W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48), d.h0 + d.dh)
   elseif d.kind == "edge" then
