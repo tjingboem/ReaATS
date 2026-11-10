@@ -535,3 +535,72 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   time is, so a mismatch there cannot silently drop a cell the way a time mismatch can -- changing it too would have been scope creep, and did in fact first break the existing corner-drag bend test below by moving the box's on-screen
   frequency edges (reverted to touch only `t0`/`t1`). No existing test depended on `W.region`'s raw time surviving into the box used for warping (mock_channels.lua's bend/stretch test drags a rectangle whose time bounds already match the
   actual data underneath almost exactly, so it was not sensitive to this). Full suite (500+ cases) passes.
+- THE DRAG-TIME STRETCH CAP HAD NO RECORDED REASON, SO IT IS GONE (tjingboem, 10 Nov 2026: "i need to stretch partials for creative
+  sounds. There should be no cap."). `W.drag_to` clamped the time displacement of a dragged corner/edge to +-3x the selection's own
+  width (ATS_Editor.lua, `d.dh = ... clamp(d.th, -3 * span, 3 * span)`); `git log -S"3 * span"` found only the original commit that
+  added dragging, with no comment explaining the figure -- not a safety limit, since the real one (`W.commit`'s `room`: the file may
+  grow by at most its own length again, or 20 million cells, whichever is smaller) is untouched and still applies regardless of how
+  far the handle is dragged. Removed; `d.dh` is now the plain drag distance. Full suite passes (no test depended on hitting the cap).
+- THE MAX-PARTIALS SLIDER -- A NEW CREATIVE TOOL, NOT A BUG FIX (tjingboem, 10 Nov 2026, after asking why there was no way to say
+  "give me 10 partials for this sound": ATS tracking has no such knob -- the partial count is an emergent result of the threshold,
+  frequency range and track-length settings, not a target it solves for -- so building "keep only the N loudest, drop the rest" as
+  a post-processing step on an existing analysis was the alternative. Design, settled with tjingboem before writing any UI code:
+  ranked by TOTAL ENERGY (the sum of a partial's amplitude over its own length -- favours a long, sustained partial over a short,
+  loud blip, which reads better for "important to the sound" than a bare peak amplitude would); the unit kept/dropped is each
+  separate CONTIGUOUS RUN of real sound, not a whole row -- `pack_rows` already shares a row between unrelated, non-overlapping
+  tracks, so a whole-row count would conflate them; scope is the selection box's own region (time AND frequency), falling back to
+  the whole file with no selection; and it behaves exactly like the bend box -- shaped live (a dimmed preview of what would be
+  dropped, directly in the picture, nothing touched in the data yet), Enter commits, Esc cancels.
+  Pure logic in lib/ats_edit.lua: `rank_partials(d, region)` walks every row for contiguous amp>0 runs, keeps the ones that enter the
+  region (any frame inside both its time AND frequency range; nil region = the whole file), and returns them sorted loudest first;
+  `plan_keep_loudest(d, runs, n)` takes that SAME ranked list (not recomputed) and n, and silences every run beyond the n'th --
+  passing in the already-ranked list rather than re-ranking is what keeps a live preview and the eventual commit from ever
+  disagreeing about which run was where.
+  The UI (ATS_Editor.lua): `W.pk` holds the ranking, built lazily (`W.pk_get`, called every time it might be drawn or hit-tested) and
+  invalidated two ways -- the box's own region bounds changed (a new or different selection), or `group_counter` moved on since it was
+  built (an edit happened that could have touched the same cells, even one that leaves the region's own bounds unchanged, e.g. a
+  move within the box) -- rather than hooking a reset into every single place `W.region`/`sel` can change, which is scattered across
+  a dozen call sites and an easy one to miss (as the "forgot to re-run a test file" lesson above already showed once this session).
+  A small slider is drawn just under the box (`W.pk_rect`, clamped to the lane's own bottom so a box selected low in frequency cannot
+  push it off the plot or onto the time ruler); dragging it maps the mouse x linearly across its width to n (0..the most of any one
+  channel) and the live preview (`W.pk_draw_preview`) dims every run beyond n directly over the cached picture, drawn fresh every
+  frame like the box itself rather than baked into the picture's own render cache, so dragging needs no re-render of the whole
+  picture. DELIBERATELY NOT COMBINED with a bend shaped on the same box in one Enter: both silence cells, computed from a snapshot of
+  the data at the moment each was shaped, and reconciling which one's view of "already silenced" wins for a cell both could touch
+  (narrow, but real: a partial dropped by the slider could also be a bend's own collision target) was not worth the risk for a first
+  version -- whichever one is engaged (slider moved down from its full count) wins Enter/Esc outright; the bend is untouched and can
+  still be applied afterward with a fresh Enter. Tests: lib/ats_edit.lua's two new functions get a dedicated section (12) in
+  test_ats_edit.lua (a shared row's two separate runs rank as two, the sort order, both n=0 and n>=every-run edges, and a region that
+  excludes a row entirely); the full interactive path (drag, live preview text, Enter, the actual silenced amplitudes on a saved and
+  reloaded file, Esc, and undo restoring the saved file's data again) is a new dedicated end-to-end test, tests/mock_partials_knob.lua,
+  against a hand-built 4-partial fixture (known, distinct energies and frequencies) rather than the shared sax.ats/mc_ch*.ats fixtures,
+  so the exact pixel geometry of the slider is fully predictable rather than approximated. Full suite passes.
+- THE SLIDER MADE GREY, AND MADE BIDIRECTIONAL (tjingboem, 10 Nov 2026, straight after the above). Two follow-ups, same control:
+  (1) the dimmed preview used the original line's own colour at 90% alpha -- too subtle to read as "this is being dropped" rather
+  than just a dimmer version of the same partial. Now a flat, fully OPAQUE grey, and drawn TWICE (the main line and the 1px-lower
+  highlight line `draw_partials` itself draws for anything louder than -30 dB) so no sliver of the original bright colour can still
+  show beside a single grey line the way it could before. Verified the already-reported worry (grey lingering after Enter) was
+  already correct rather than a bug: added an explicit check (test above) that the slider re-ranks against the smaller, real
+  partial count in the SAME frame Enter is processed -- `pk.n >= pk.max` becomes true again immediately because there is nothing
+  left to rank above it, which is exactly the guard `W.pk_draw_preview` already used to decide whether to draw anything at all.
+  (2) "What if we move the slider from left to right? We could then eliminate the strongest partials... drag from right to left =
+  keep the strongest, drag from left to right = keep the weakest" -- the slider is now CENTRED: the middle is "nothing dropped" (as
+  the full-right end used to be), dragging LEFT keeps the n loudest same as before, dragging RIGHT keeps the n WEAKEST instead,
+  eliminating the loudest ones. `W.pk.mode` ("loud"/"weak") records which half is active; `W.pk_drag_to` derives both `n` and
+  `mode` fresh from the mouse x every call (so a single drag can cross the centre and flip mode mid-gesture, which just falls out
+  of the maths rather than needing special-casing). lib/ats_edit.lua is UNCHANGED: `plan_keep_loudest` only ever keeps the FRONT of
+  whatever ranked list it is handed, so "weak" mode hands it `p.runs` reversed (quietest-first) instead of changing the function --
+  the core, already-tested logic stays agnostic of direction entirely. `W.pk_draw_preview` mirrors this: dims the TAIL of the
+  loudest-first list in "loud" mode (unchanged), the FRONT of it in "weak" mode. A new label helper, `W.pk_label` (a FIELD of `W`,
+  not a new top-level `local` -- this file is already at Lua's 200-local-variable chunk limit, hit immediately when a plain local
+  function was tried first) builds the slider's own text ("keep N loudest/weakest of M", or "max partials: M of M" at rest) so the
+  drag status and the drawn label can never say something different from each other.
+  Test lesson, found the hard way extending tests/mock_partials_knob.lua for the new mode: `undo_single` (and `redo_single`) call
+  `clear_selection()` as part of normal, intentional behaviour -- so a test that does Ctrl+Z and then expects the selection (and so
+  the slider) to still be there needs to select again first; the symptom when it is not re-selected is not an error, just every
+  selection-dependent status line silently missing, which looks exactly like a feature regression until you dump every drawn
+  string to look for it. Also fixed in the same pass: `saw()` fell off its own end with no explicit `return nil` when nothing
+  matched, so `tostring(saw(...))` used on its own (not as part of an `x or y`, which coerces to one value either way) crashed
+  outright instead of reporting "nil" in the assertion message -- a trap for the NEXT test that writes `tostring(saw(...))` without
+  the `or`, not just this one. Full suite passes, including a new end-to-end section of mock_partials_knob.lua for the weak-mode
+  mirror (drag right, keep the 2 weakest of the 4-partial fixture, verify the 2 loudest are actually silenced in the saved file).

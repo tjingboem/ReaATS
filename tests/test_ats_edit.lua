@@ -356,5 +356,42 @@ do
   check("no noise: nothing", edit.plan_noise_move(make(2, 10), region, 3) == nil and edit.plan_noise_clear(make(2, 10), region) == nil)
 end
 
+-- 12. the max-partials knob: rank_partials finds every run (a shared row can hold more than one), plan_keep_loudest silences the rest
+do
+  -- three rows, three different loudnesses, plus a second, separate run sharing row 2's own row (pack_rows) much later
+  local d = make(3, 60)
+  fill(d, 1, 1, 10, 200, 0.9)                -- 10 frames at 0.9 = 9.0 energy (loudest)
+  fill(d, 2, 1, 10, 300, 0.2)                -- 10 frames at 0.2 = 2.0 energy (quietest of the first three)
+  fill(d, 2, 41, 45, 300, 0.5)               -- a second, unrelated run sharing row 2: 5 frames at 0.5 = 2.5 energy
+  fill(d, 3, 1, 10, 400, 0.5)                -- 10 frames at 0.5 = 5.0 energy
+  local runs = edit.rank_partials(d, nil)
+  check("rank_partials: a shared row's two separate runs are two entries, not one", #runs == 4, #runs)
+  check("rank_partials: sorted loudest first", runs[1].p == 1 and math.abs(runs[1].energy - 9.0) < 1e-9
+        and runs[2].p == 3 and math.abs(runs[2].energy - 5.0) < 1e-9
+        and runs[3].p == 2 and math.abs(runs[3].energy - 2.5) < 1e-9
+        and runs[4].p == 2 and math.abs(runs[4].energy - 2.0) < 1e-9,
+        table.concat((function() local t={} for _,r in ipairs(runs) do t[#t+1]=r.p.."@"..r.f0..":"..r.energy end return t end)(), " "))
+
+  local plan = edit.plan_keep_loudest(d, runs, 2)
+  check("plan_keep_loudest: keeps 2, drops the other 2", plan.kept == 2 and plan.dropped == 2)
+  local touched = {}
+  for _, c in ipairs(plan.changes) do touched[c.p .. "@" .. c.f] = c.na end
+  check("plan_keep_loudest: the 2 loudest runs are untouched", touched["1@1"] == nil and touched["3@1"] == nil)
+  check("plan_keep_loudest: the quieter run of row 2 and its other run are both silenced",
+        touched["2@1"] == 0 and touched["2@41"] == 0 and touched["2@10"] == 0 and touched["2@45"] == 0)
+
+  check("plan_keep_loudest: n >= every run silences nothing", edit.plan_keep_loudest(d, runs, 10) == nil)
+  local none = edit.plan_keep_loudest(d, runs, 0)
+  check("plan_keep_loudest: n = 0 silences every run", none.kept == 0 and none.dropped == 4 and #none.changes == 10 + 10 + 5 + 10)
+
+  -- a region keeps only the runs that enter its time AND frequency range -- others are never even candidates, whatever n is
+  local region = { t0 = 0, t1 = 0.1, f0 = 150, f1 = 250 }                 -- only row 1 (200 Hz, frames 1-10) is inside
+  local in_region = edit.rank_partials(d, region)
+  check("rank_partials: a region keeps only the runs that actually enter it", #in_region == 1 and in_region[1].p == 1, #in_region)
+  check("plan_keep_loudest: with n = 0 on a region, only what is IN the region can be silenced", edit.plan_keep_loudest(d, in_region, 0).dropped == 1)
+
+  check("rank_partials: an empty file has nothing to rank", #edit.rank_partials(make(2, 10), nil) == 0)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

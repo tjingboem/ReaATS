@@ -477,6 +477,62 @@ function M.plan_warp(d, sel, map, opts)
            frames_front = 1 - first_frame, count = count, dropped = dropped }
 end
 
+-- ------------------------------------------------------------------------------------------------ the max-partials knob
+-- Finds every contiguous run of real sound (amp > 0) in every row -- the actual individual partials, which a shared row can hold
+-- several of, one after another, when rows are shared between non-overlapping tracks (pack_rows in the analysis). `region` (a box
+-- t0, t1, f0, f1) keeps only the runs that enter it at some frame (time AND frequency both in range there); nil means every run in
+-- the file. Returns them sorted loudest first, by total energy (the sum of amplitude over the run's own frames) -- used live, to
+-- show what dragging the knob to a given count would drop, and at Enter (plan_keep_loudest) to actually silence them; both use the
+-- same ranking, computed once, so the preview and the result always agree.
+function M.rank_partials(d, region)
+  local runs = {}
+  for p = 1, d.partials do
+    local amp, frq = d.amp[p], d.frq[p]
+    local f0, energy = nil, 0
+    for f = 1, d.frames + 1 do
+      local on = f <= d.frames and amp[f] > 0
+      if on then
+        if not f0 then f0, energy = f, 0 end
+        energy = energy + amp[f]
+      elseif f0 then
+        local f1 = f - 1
+        local in_region = true
+        if region then
+          in_region = false
+          for g = f0, f1 do
+            if d.times[g] >= region.t0 and d.times[g] <= region.t1 and frq[g] >= region.f0 and frq[g] <= region.f1 then
+              in_region = true
+              break
+            end
+          end
+        end
+        if in_region then runs[#runs + 1] = { p = p, f0 = f0, f1 = f1, energy = energy } end
+        f0 = nil
+      end
+    end
+  end
+  table.sort(runs, function(a, b) return a.energy > b.energy end)
+  return runs
+end
+
+-- The plan for the max-partials knob at Enter: every run beyond the `n` loudest of `runs` (as given by rank_partials -- passed in,
+-- not recomputed, so the live preview and the commit agree on exactly the same list even if the knob was dragged past data that is
+-- about to be silenced by a run earlier in the same list) is silenced; the `n` loudest are left untouched. n <= 0 silences every run
+-- in the list, n >= #runs silences nothing. Returns nil (nothing to silence) or { changes, kept, dropped }.
+function M.plan_keep_loudest(d, runs, n)
+  if n < 0 then n = 0 end
+  local changes = {}
+  for i = n + 1, #runs do
+    local run = runs[i]
+    local amp, frq = d.amp[run.p], d.frq[run.p]
+    for f = run.f0, run.f1 do
+      changes[#changes + 1] = { p = run.p, f = f, oa = amp[f], na = 0, of = frq[f], nf = frq[f] }
+    end
+  end
+  if #changes == 0 then return nil end
+  return { changes = changes, kept = math.min(n, #runs), dropped = #runs - math.min(n, #runs) }
+end
+
 -- ------------------------------------------------------------------------------------------------ the noise bands follow the sines
 -- The noise of an ATS file is 25 energies per frame, one for every critical band (see ats_file.lua). They have no tracks and no
 -- frequency to move; what a movement of sines can do to them is move or stretch them in TIME. The noise "region" of an edit is the box
