@@ -8,6 +8,20 @@ An ATS file is not a recording. A sound is analysed into partials, the sine wave
 
 ReaATS is a Lua script that runs inside REAPER on Linux. It makes the sound itself, so it does not need any other program to play or print an edited sound.
 
+## Csound and other ATS programs: import and export
+
+ReaATS reads and writes **standard ATS files**, the format of Csound's ATS opcodes (ATSread, ATSadd, ATSaddnz, ATSsinnoi and the others). There is no format of its own and no conversion step.
+- **Into ReaATS:** any .ats file opens, whatever made it: Csound's own analyser (atsa), the ATSA and ATSH programs, pyatsyn, or the analysis in ReaATS. File types 1 to 4 are read (with or without phase, with or without the 25 noise bands), in either byte order. Use the O key, or Import .ats File on the Analysis page.
+- **Out of ReaATS:** Ctrl+S saves your edits as a new .ats file next to the original, and EXPORT .ats puts a file where you choose. They are written in the layout that Csound reads (type 4 with phase and noise bands, or type 2 without noise). The analysis in ReaATS makes the same kind of file. A stereo or multichannel sound is one file per channel, name_ch1.ats, name_ch2.ats and so on, because the Csound opcodes read one channel from one file.
+- **Csound itself is not needed** for any of this. It is only the program that other people's instruments read the files with.
+
+What has been checked with Csound 7 itself: that Csound reads the files that ReaATS saves (the ATSinfo and ATSadd opcodes), that an analysis from Csound's atsa opens in ReaATS and is saved again without change except the header value for the highest frequency, and that a test sound analysed by ReaATS (three gliding notes) plays back through ATSadd at the same pitches, within 1 Hz, and with the same loudness over time as the original (the loudness curves agreed with a correlation of 0.994). It is one small test sound, not a guarantee for every kind of sound.
+
+Three things to know when you use the files in Csound:
+- **The phase.** ReaATS keeps the phase in the file, and the programs that use it (such as pyatsyn) play it back exactly. Csound's ATSadd does not use the stored phase: its oscillators start with a phase of their own. The sound has the same partials and the same loudness, but a waveform printed from Csound will not be sample for sample the same as one printed from ReaATS.
+- **Rows are not always single partials.** With Share rows between tracks on (the default) one row of the file can hold several partials one after the other, with a silent frame between them, which keeps the file many times smaller. Played in ATSadd the result is the same as without sharing (the loudness curves of a shared and an unshared analysis of the same sound agreed to 0.9998). But an instrument that reads one row with ATSread, or that uses the number of the row as the number of a partial, will see the row jump from one partial to the next. If your Csound instrument depends on partial numbers, switch Share rows between tracks off before analysing.
+- **Edits can add rows.** A move or a paste can need a new row, so a file that you edited may have more partials than the original. Tell ATSadd the number of partials of the edited file, which the line at the bottom of the window shows.
+
 ## What you need
 
 - REAPER, with the script loaded from the action list.
