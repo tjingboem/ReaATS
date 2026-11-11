@@ -1,3 +1,4 @@
+REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 -- Run: lua5.4 tests/mock_channels.lua   (from the ReaATS folder)
 -- Channel sets in the editor: opening name_chK.ats opens the whole set, channel buttons and Tab, per-channel edits and undo,
 -- AUDITION and PRINT play/print ALL channels, saving and exporting a set. Fake gfx and reaper; the REAL Python engine makes
@@ -775,6 +776,30 @@ do
   assert(saw("   2%.00 s   "), "one Ctrl+Z takes the paste and the length back: " .. tostring(saw("partials")))
 end
 print("a move and a paste past the ends make the file longer")
+
+-- 14. the messages of AUDITION are not shown (the real editor): not while the sound is prepared, not when it plays, not when Space stops it
+do
+  REAATS_SHOW_AUDITION_TEXT = false
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  press(102)
+  local n0 = #previews
+  press(97)
+  local frames = 0
+  for _ = 1, 4000 do
+    clock_skew = clock_skew + 0.05; strings = {}; frame()
+    frames = frames + 1
+    assert(not saw("^preparing") and not saw("^auditioning"), "no message while the sound is prepared or plays: " .. tostring(saw("preparing") or saw("auditioning")))
+    if #previews > n0 then break end
+    os.execute('sleep 0.02')
+  end
+  assert(#previews > n0, "the sound was played")
+  strings = {}; frame()
+  assert(not saw("^auditioning"), "and no message when it plays")
+  press(32); strings = {}; frame()
+  assert(not saw("audition stopped"), "Space stops it without a message")
+  REAATS_SHOW_AUDITION_TEXT = true
+end
+print("AUDITION shows no text")
 
 clean()
 os.remove(scratch .. "mc.wav"); os.remove(scratch .. "mm_short.wav")

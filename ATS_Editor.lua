@@ -119,6 +119,12 @@ function W.lay(id)
   if e.ay == "b" then y = math.floor(gfx.h) - (W.layout.ref_h - e.y) end
   return x, y, e.w, e.h
 end
+-- The messages that belong to AUDITION (preparing the sound, auditioning from ..., audition stopped) are not shown (tjingboem, 11 Nov 2026: "remove text that pops
+-- up when Auditioning"): the last one is kept in W.audition_note, and the tests can switch them on with the global REAATS_SHOW_AUDITION_TEXT. Failures are still shown.
+function W.say_audition(msg)
+  W.audition_note = msg
+  if rawget(_G, "REAATS_SHOW_AUDITION_TEXT") then set_status(msg) end
+end
 -- The size of a font in which `label` fits in `w` pixels (13 or the given size at most, 9 at least).
 function W.fit(label, w, size)
   size = size or 14
@@ -1109,7 +1115,7 @@ local function audition()
   if engine == "Lua" and W.space_opts() then job.cancel(); set_status("P-STEREO and VBAP need the Python program (see ANALYSE): put SPACE on STEREO to use the built-in synthesis"); return end
   pending = { kind = "audition", mode = mode, channels = #chs, wav = wav, engine = engine, req = req, job = job, state = state,
               span_s = s_r, span_e = e_r }
-  set_status("preparing the sound ... 0 %")
+  W.say_audition("preparing the sound ... 0 %")
 end
 
 -- Plays the sound in `wav` through REAPER's preview, and remembers it: while nothing changes, the next AUDITION plays this
@@ -1159,7 +1165,7 @@ function start_preview(p, wav, dur, t_start, how)
       or (how == "cut") and ", from the sound already made: nothing has changed"
       or (p.note and (", " .. p.engine .. " synthesis: Python failed with: " .. p.note) or (", " .. p.engine .. " synthesis"))
     if p.gain_db and p.gain_db < -0.005 then engine_note = engine_note .. string.format(", turned down %.1f dB to stay under -1 dBFS", -p.gain_db) end
-    set_status(string.format("auditioning from %.2f s, %.1f s long (%s%s%s)  Space stops", t_start or 0, dur, p.mode, chan_note, engine_note))
+    W.say_audition(string.format("auditioning from %.2f s, %.1f s long (%s%s%s)  Space stops", t_start or 0, dur, p.mode, chan_note, engine_note))
   else
     set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
   end
@@ -1188,7 +1194,8 @@ local function advance_pending()
   local p = pending
   if not p then return end
   if not p.job.step(0.03) then
-    set_status(string.format("preparing the %s ... %d %%", p.kind == "print" and "print" or "sound", math.floor(p.job.progress * 100)))
+    local msg = string.format("preparing the %s ... %d %%", p.kind == "print" and "print" or "sound", math.floor(p.job.progress * 100))
+    if p.kind == "print" then set_status(msg) else W.say_audition(msg) end            -- (the print's progress is still told)
     return
   end
   local job = p.job
@@ -2165,7 +2172,7 @@ function W.audition_selection()
     return true
   end
   pending = { kind = "audition", selection = true, mode = "the selection only", channels = #chs, wav = wav, engine = engine, req = req, job = job }
-  set_status("preparing the selection ... 0 %")
+  W.say_audition("preparing the selection ... 0 %")
   return true
 end
 
@@ -3271,7 +3278,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 97 or ch == 65 then                                -- A: the selection only when there is one, else the whole sound from the playhead
     if not (any_sel() and W.audition_selection()) then audition() end
   elseif ch == 122 or ch == 90 then W.zoom_selection()           -- Z: zoom to the selection
-  elseif ch == 32 then stop_audition(); set_status("audition stopped")
+  elseif ch == 32 then stop_audition(); W.say_audition("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
   elseif ch == 102 or ch == 70 then fit_view()
@@ -3364,6 +3371,7 @@ end
 
 gfx.init(TITLE, 1100, 640)
 analysis = Analysis.new({
+  layout = dofile(script_dir .. "/lib/analysis_layout.lua"),
   serial = Serial, wav_info = wav_info, script_dir = script_dir, ext_section = EXT_SECTION,
   on_open = function(path) return load_file(path) end,
   set_status = set_status,

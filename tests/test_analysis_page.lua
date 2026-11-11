@@ -134,5 +134,51 @@ do
   check("advice: none for a long sound", page.noise_advice(s, { rate = 48000, channels = 2, seconds = 536 }) == nil)
   check("advice: none without a sound", page.noise_advice(s, nil) == nil)
 end
+
+-- the values that the suggestions changed are shown in red on the settings page, until they are changed by hand (tjingboem, 11 Nov 2026)
+do
+  local colour, drawn = { 0, 0, 0 }, {}
+  gfx = { w = 1100, h = 640, x = 0, y = 0, mouse_x = 0, mouse_y = 0, mouse_cap = 0 }
+  function gfx.set(r, g, b) colour = { r, g, b } end
+  function gfx.setfont() end
+  function gfx.rect() end
+  function gfx.line() end
+  function gfx.circle() end
+  function gfx.measurestr(t) return #t * 7 end
+  function gfx.drawstr(t) drawn[#drawn + 1] = { s = t, r = colour[1], g = colour[2], b = colour[3] } end
+  reaper.time_precise = function() return 1000 end
+  reaper.SetExtState = function() end
+  local layout = dofile("lib/analysis_layout.lua")
+  local pg = page.new({ layout = layout, serial = { deserialize = function() return nil end }, ext_section = "x", script_dir = ".", set_status = function() end,
+                        on_open = function() return true end, back = function() end, redraw = function() end, wav_info = {} })
+  pg.python = { exe = "python3", version = "3.12", numpy = "1", cores = 4 }
+  pg.wav, pg.info, pg.out = "/m/a.wav", { rate = 44100, channels = 1, bits = 16, float = false, seconds = 5 }, "/m/a.ats"
+  pg.s.lowest_frequency, pg.s.amp_threshold_db, pg.s.hop_size = 20, -60, 0.25
+  pg.suggest = { lowest_frequency = { v = 210, why = "x" }, amp_threshold_db = { v = -60, why = "y" }, hop_size = { v = 0.125, why = "z" }, window_cycles = { v = 4, why = "w" } }
+  local function value_colour(text)
+    drawn = {}
+    pg:draw(1100, 640, 40)
+    for _, d in ipairs(drawn) do if d.s == text then return d end end
+  end
+  local before = value_colour("210")
+  check("before: a value is not red", before == nil)                      -- (the old value 20 is drawn, 210 only as a suggestion arrow)
+  pg:apply_all_suggestions()
+  check("what a suggestion changed is marked", pg.changed.lowest_frequency and pg.changed.hop_size, "")
+  check("what it did not change is not marked", not pg.changed.amp_threshold_db and not pg.changed.window_cycles)
+  pg.view = nil
+  local lf = value_colour("210")
+  check("the changed value is drawn in red", lf and lf.r > 0.9 and lf.g < 0.5, lf and (lf.r .. "," .. lf.g))
+  local thr = value_colour("-60")
+  check("an unchanged value keeps its colour", thr and thr.g > 0.8, thr and thr.g)
+  pg:begin_edit("hop_size")
+  check("typing in a field takes the red away", not pg.changed.hop_size)
+  pg.edit = nil
+  pg:step("lowest_frequency", 1, false)
+  check("the mouse wheel takes it away too", not pg.changed.lowest_frequency)
+  pg.changed.amp_threshold_db = true
+  pg:set_defaults(false)
+  check("Defaults clears the red", next(pg.changed) == nil)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

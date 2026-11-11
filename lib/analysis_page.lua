@@ -288,6 +288,7 @@ function M.new(env)
   self.message, self.message_bad = nil, false
   self.result = nil
   self.hits = {}
+  self.changed = {}                                   -- the settings that a suggestion changed: their values are shown in red until they are changed by hand
   self.prev_down = false
   self.busy = false
   math.randomseed(os.time() + math.floor(reaper.time_precise() * 1000))      -- (once: the job ids are drawn from this)
@@ -401,6 +402,7 @@ function Page:set_source(wav)
   end
   self.wav, self.info, self.result = wav, info, nil
   self.pre, self.suggest, self.view = nil, nil, nil                 -- (what was seen of the previous sound)
+  self.changed = {}
   self.s.channels = info.channels                          -- a new sound: analyse all its channels (lower it by hand if you want fewer)
   if not self.out_custom then self.out = unique_out(wav) end
   self:say(nil)
@@ -436,6 +438,7 @@ function Page:apply_suggestion(key)
   if not sg or not f then return end
   local v = clamp(sg.v, f.min or sg.v, f.max or sg.v)
   if f.int then v = math.floor(v + 0.5) end
+  if v ~= self.s[key] then self.changed[key] = true end              -- (tjingboem, 11 Nov 2026: what the suggestions changed is shown in red on the settings page)
   self.s[key] = v
   self.suggest[key] = nil
 end
@@ -512,6 +515,7 @@ end
 function Page:set_defaults(csound)
   local keep = { channels = self.s.channels, mono_mix = self.s.mono_mix, start = self.s.start, duration = self.s.duration }
   self.s = M.default_settings()
+  self.changed = {}
   for k, v in pairs(keep) do self.s[k] = v end
   if csound then self.s.smr_continuity = 0.5 end            -- the one default that differs from the Python package
   self:say(csound and "Csound atsa defaults (its SMR contribution is 0.5)." or "Defaults of the Python engine.")
@@ -520,6 +524,7 @@ end
 -- A value is typed in the field itself: click it (all of it is selected, so the first key replaces it), type, then Enter (or Tab for
 -- the next number, or a click elsewhere) accepts and Esc cancels.
 function Page:begin_edit(key)
+  self.changed[key] = nil                                               -- (typing a value: it is yours now)
   self.edit = { key = key, text = fmt_num(self.s[key]), fresh = true }
 end
 
@@ -583,11 +588,12 @@ function Page:pick_choice(key)
   end
   gfx.x, gfx.y = gfx.mouse_x, gfx.mouse_y
   local n = gfx.showmenu(table.concat(items, "|"))
-  if n and n > 0 then self.s[key] = f.values[n] end
+  if n and n > 0 then self.s[key] = f.values[n]; self.changed[key] = nil end
 end
 
 function Page:step(key, notches, fine)
   local f = FIELDS[key]
+  self.changed[key] = nil
   if f.kind == "num" then
     local st = f.step * (fine and 0.1 or 1)
     local v = self.s[key] + notches * st
@@ -770,53 +776,74 @@ function Page:button(x, y, w, h, label, rgb, action)
   self.hits[#self.hits + 1] = { x = x, y = y, w = w, h = h, click = action }
 end
 
-function Page:field(x, y, key, label_w, box_w)
+-- The places of everything on this page come from the layout (lib/analysis_layout.lua, made by tools/gen_analysis_layout.py from the ReaLayout file):
+-- env.layout.el[id] = { x, y, w, h }. A field is a label (lbl_<key>), a box (fld_<key>) and, for a number with a unit, the unit (unit_<key>); a switch is
+-- one element, fld_<key>, with its label at the left and the check box at the right end. Headings are hdr_*. Nothing here is centred or anchored: the page is
+-- drawn at the places of the layout, which is made for the default window, 1100 x 640.
+function Page:pos(id)
+  local e = self.env.layout.el[id]
+  if not e then return nil end
+  return e.x, e.y, e.w, e.h
+end
+
+function Page:field(key)
   local f = FIELDS[key]
   local v = self.s[key]
+  local bx, by, bw, bh = self:pos("fld_" .. key)
+  if not bx then return end
   gfx.setfont(1, "Arial", 14)
-  text(x, y + 3, f.label, 0.8, 0.82, 0.86)
-  local bx = x + label_w
   if f.kind == "bool" then
-    gfx.set(0.4, 0.43, 0.48, 1); gfx.rect(bx, y + 2, 16, 16, 0)
-    if v then gfx.set(0.45, 0.8, 0.6, 1); gfx.rect(bx + 3, y + 5, 10, 10, 1) end
-    self.hits[#self.hits + 1] = { x = x, y = y, w = label_w + 30, h = 20, click = function() self.s[key] = not self.s[key] end, tip = f.tip }
+    text(bx, by + 3, f.label, 0.8, 0.82, 0.86)
+    local cx = bx + bw - 30
+    gfx.set(0.4, 0.43, 0.48, 1); gfx.rect(cx, by + 2, 16, 16, 0)
+    if v then gfx.set(0.45, 0.8, 0.6, 1); gfx.rect(cx + 3, by + 5, 10, 10, 1) end
+    self.hits[#self.hits + 1] = { x = bx, y = by, w = bw, h = bh, click = function() self.s[key] = not self.s[key] end, tip = f.tip }
     return
   end
+  local lx, ly = self:pos("lbl_" .. key)
+  if lx then text(lx, ly, f.label, 0.8, 0.82, 0.86) end
   local editing = self.edit and self.edit.key == key
-  gfx.set(editing and 0.10 or 0.14, editing and 0.20 or 0.16, editing and 0.17 or 0.19, 1); gfx.rect(bx, y, box_w, 20, 1)
+  gfx.set(editing and 0.10 or 0.14, editing and 0.20 or 0.16, editing and 0.17 or 0.19, 1); gfx.rect(bx, by, bw, bh, 1)
   if editing then gfx.set(0.45, 0.85, 0.6, 1) else gfx.set(0.4, 0.43, 0.48, 1) end
-  gfx.rect(bx, y, box_w, 20, 0)
+  gfx.rect(bx, by, bw, bh, 0)
   local shown
   if editing then shown = self.edit.text
   elseif f.kind == "choice" then shown = (v == 0) and "automatic" or tostring(v) else shown = fmt_num(v) end
-  gfx.set(1, 0.9, 0.6, 1)
-  gfx.x, gfx.y = bx + 6, y + 3
+  if self.changed[key] and not editing then gfx.set(1, 0.35, 0.3, 1) else gfx.set(1, 0.9, 0.6, 1) end        -- (red: a suggestion changed this value)
+  gfx.x, gfx.y = bx + 6, by + 3
   if editing and self.edit.fresh and shown ~= "" then                   -- all of it selected: the next key replaces it
     local sw = gfx.measurestr(shown)
-    gfx.set(0.25, 0.45, 0.65, 1); gfx.rect(bx + 5, y + 2, sw + 2, 16, 1)
-    gfx.set(1, 1, 1, 1); gfx.x, gfx.y = bx + 6, y + 3
+    gfx.set(0.25, 0.45, 0.65, 1); gfx.rect(bx + 5, by + 2, sw + 2, 16, 1)
+    gfx.set(1, 1, 1, 1); gfx.x, gfx.y = bx + 6, by + 3
   end
   gfx.drawstr(shown)
   if editing and (math.floor(reaper.time_precise() * 2) % 2 == 0) and not self.edit.fresh then       -- a blinking caret
     local cx = bx + 6 + gfx.measurestr(shown)
-    gfx.set(1, 1, 1, 1); gfx.line(cx + 1, y + 3, cx + 1, y + 17, 1)
+    gfx.set(1, 1, 1, 1); gfx.line(cx + 1, by + 3, cx + 1, by + 17, 1)
   end
-  if f.kind == "num" and f.unit ~= "" then text(bx + box_w + 6, y + 3, f.unit, 0.55, 0.58, 0.63) end
+  local ux, uy = bx + bw + 6, by + 3                                      -- (the unit, and the things that follow the box)
+  local after = bx + bw + 6
+  if f.kind == "num" and f.unit ~= "" then
+    local px_, py_ = self:pos("unit_" .. key)
+    if px_ then ux, uy = px_, py_ end
+    text(ux, uy, f.unit, 0.55, 0.58, 0.63)
+    after = ux + gfx.measurestr(f.unit) + 12
+  end
   local sg = self.suggest and self.suggest[key]
   if sg and f.kind == "num" and not editing and math.abs(sg.v - v) > 1e-9 then              -- the suggestion, in red, outside the field
-    local sx = bx + box_w + 6 + ((f.unit ~= "") and (gfx.measurestr(f.unit) + 12) or 0)
+    local sx = after
     local label = "-> " .. fmt_num(sg.v)                                                         -- an arrow and the value
     gfx.set(1, 0.35, 0.3, 1)
-    gfx.x, gfx.y = sx, y + 3
+    gfx.x, gfx.y = sx, by + 3
     gfx.drawstr(label)
-    self.hits[#self.hits + 1] = { x = sx - 2, y = y, w = gfx.measurestr(label) + 6, h = 20, tip = "Suggested: " .. sg.why .. "  (click to use it)", key = false,
+    self.hits[#self.hits + 1] = { x = sx - 2, y = by, w = gfx.measurestr(label) + 6, h = bh, tip = "Suggested: " .. sg.why .. "  (click to use it)", key = false,
                                   click = function() self:apply_suggestion(key) end }
   end
   if key == "jobs" and self.python and self.python.cores then
-    text(bx + box_w + 6, y + 3, string.format("%d at once, of %d cores", M.workers(self.s, self.python.cores), self.python.cores), 0.55, 0.58, 0.63)
+    text(bx + bw + 6, by + 3, string.format("%d at once, of %d cores", M.workers(self.s, self.python.cores), self.python.cores), 0.55, 0.58, 0.63)
   end
   self.hits[#self.hits + 1] = {
-    x = bx, y = y, w = box_w, h = 20, tip = f.tip, key = key,
+    x = bx, y = by, w = bw, h = bh, tip = f.tip, key = key,
     click = function()
       if f.kind == "num" then if not (self.edit and self.edit.key == key) then self:begin_edit(key) end
       else self:pick_choice(key) end
@@ -825,7 +852,9 @@ function Page:field(x, y, key, label_w, box_w)
   }
 end
 
-function Page:heading(x, y, label)
+function Page:heading(id, label)
+  local x, y = self:pos(id)
+  if not x then return end
   gfx.setfont(1, "Arial", 15)
   text(x, y, label, 0.55, 0.68, 0.92)
   gfx.set(0.55, 0.68, 0.92, 0.5)
@@ -838,6 +867,8 @@ function Page:draw_pre(W, H, top)
   local pre = self.pre
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, top, W, H - top, 1)
+  local SHIFT = 25                                  -- (tjingboem, 11 Nov 2026: everything on this view 25 px higher, except the two buttons at the bottom)
+  top = top - SHIFT
   gfx.setfont(1, "Arial", 17)
   text(24, top + 6, "THE SOUND: " .. basename(self.wav or ""), 1, 1, 1)
   gfx.setfont(1, "Arial", 13)
@@ -914,7 +945,7 @@ function Page:draw_pre(W, H, top)
       ty = ty + 17
     end
   end
-  local by = math.min(ty + 8, H - 36)
+  local by = math.min(ty + 8 + SHIFT, H - 36)                          -- (the buttons stay where they were)
   self:button(24, by, 200, 26, "Use all suggestions", { 0.5, 0.2, 0.18 }, function() self:apply_all_suggestions() end)
   self:button(236, by, 160, 26, "Back to the settings", { 0.25, 0.27, 0.32 }, function() self.view = nil end)
   gfx.setfont(1, "Arial", 13)
@@ -926,138 +957,101 @@ function Page:draw(W, H, top)
   if self.view == "pre" and self.pre then return self:draw_pre(W, H, top) end
   gfx.set(0.09, 0.10, 0.12, 1)
   gfx.rect(0, top, W, H - top, 1)
-  local colw = math.floor((W - 60) / 2)
-  local lx, rx = 24, 24 + colw + 12
-
-  -- Python status, top right: which Python the analysis will use, or a red hint (click Help). SOURCE (below) is centred across
-  -- the full width, tjingboem 10 Nov 2026, so it is given its own row here, clear of this one, rather than share a row with it
-  -- the way the old, left-column SOURCE briefly did. No Check button here any more (tjingboem, 10 Nov 2026: "This CECK can be
-  -- removed from the Analysis window" -- the check itself now happens once, automatically, the first time ReaATS is ever run,
-  -- with its own popup: see Analysis.check_python_once, called from ATS_Editor.lua at startup). find_python still runs lazily
-  -- here (and again, forced, right before an actual analysis in Page:run) as a safety net -- Python could still be moved or
-  -- uninstalled after that first, one-time check ever told the user it was fine.
   if self.python == nil and self.python_problem == nil then self:find_python() end
-  gfx.setfont(1, "Arial", 13)
-  if self.python then
-    text(rx, top + 9, string.format("Python %s, numpy %s", tostring(self.python.version), tostring(self.python.numpy)), 0.55, 0.85, 0.65)
-  else
-    text(rx, top + 9, "Python not found (needed for the analysis)", 1, 0.6, 0.5)
-    self:button(rx + 330, top + 5, 70, 20, "Help", { 0.45, 0.25, 0.2 }, function() self:python_popup() end)
-  end
 
-  -- SOURCE: centred across the whole width, above the two columns below it, rather than confined to the left column (tjingboem,
-  -- 10 Nov 2026: "move the section SOURCE to the top and in the middle... under the SOURCE section, we get to see the ANALYSIS
-  -- section, the 2 columns with all the values").
-  local y = top + 40
+  -- SOURCE
   gfx.setfont(1, "Arial", 15)
-  self:heading((W - gfx.measurestr("SOURCE")) / 2, y, "SOURCE")
-  local ly = y + 26
-  local bw1, bw2, bw3, gap = 160, 180, 160, 10
-  local bx = (W - (bw1 + gap + bw2 + gap + bw3)) / 2
-  self:button(bx, ly, bw1, 24, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
-  self:button(bx + bw1 + gap, ly, bw2, 24, "Import Sound File", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
-  self:button(bx + bw1 + gap + bw2 + gap, ly, bw3, 24, "Import .ats File", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
-  ly = ly + 32
+  self:heading("hdr_source", "SOURCE")
+  local x, y, w, h = self:pos("btn_use_selected_item")
+  self:button(x, y, w, h, "Use selected item", { 0.18, 0.34, 0.26 }, function() self:use_selected_item() end)
+  x, y, w, h = self:pos("btn_import_sound_file")
+  self:button(x, y, w, h, "Import Sound File", { 0.2, 0.26, 0.4 }, function() self:choose_file() end)
+  x, y, w, h = self:pos("btn_import_ats_file")
+  self:button(x, y, w, h, "Import .ats File", { 0.36, 0.27, 0.16 }, function() self:import_ats() end)
   gfx.setfont(1, "Arial", 13)
+  local fx, fy = self:pos("txt_file")
   if self.wav then
-    -- a fixed-width block (text, then the button at a constant offset), centred as a whole -- not sized to the actual text, which
-    -- would move the button around with every different file name or duration and make it a moving target
-    local tw, ibw, igap = 400, 160, 20
-    local gx = (W - (tw + igap + ibw)) / 2
     local i = self.info
-    text(gx, ly, "File: " .. basename(self.wav), 0.9, 0.9, 0.9)
-    text(gx, ly + 16, string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,
+    text(fx, fy, "File: " .. basename(self.wav), 0.9, 0.9, 0.9)
+    local ix, iy = self:pos("txt_fileinfo")
+    text(ix or fx, iy or (fy + 16), string.format("%d Hz, %d channel(s), %d bit%s, %.2f s%s", i.rate, i.channels, i.bits, i.float and " float" or "", i.seconds,
       (i.seconds >= 59.5) and ("  (" .. M.clock(i.seconds) .. ")") or ""), 0.6, 0.63, 0.68)
-    self:button(gx + tw + igap, ly, ibw, 24, "Inspect Sound File", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
+    x, y, w, h = self:pos("btn_inspect_sound_file")
+    self:button(x, y, w, h, "Suggested Settings", { 0.34, 0.2, 0.3 }, function() self:prescan() end)
   else
-    local s = "No sound chosen yet."
-    text((W - gfx.measurestr(s)) / 2, ly, s, 0.95, 0.8, 0.5)
-  end
-  ly = ly + 40
-
-  -- the 2 columns, below SOURCE: window/time on the left, peaks/tracks/output/the ANALYSE button on the right -- both start from
-  -- this same row, content_y, the way the two columns always shared one starting row before SOURCE was centred above them.
-  local content_y = ly
-  self:heading(lx, content_y, "WINDOW AND TIME")
-  ly = content_y + 26
-  for _, key in ipairs(LEFT) do
-    self:field(lx, ly, key, 210, 120)
-    ly = ly + 25
+    text(fx, fy, "No sound chosen yet.", 0.95, 0.8, 0.5)
   end
 
-  local ry = content_y
-  self:heading(rx, ry, "PEAKS AND TRACKS")
-  ry = ry + 26
-  for _, key in ipairs(RIGHT) do
-    self:field(rx, ry, key, 210, 120)
-    ry = ry + 25
-  end
-  ry = ry + 6
-  self:heading(rx, ry, "OUTPUT")
-  ry = ry + 26
-  for _, key in ipairs(OUTPUT) do
-    self:field(rx, ry, key, 210, 120)
-    ry = ry + 25
-  end
+  -- the two columns
+  gfx.setfont(1, "Arial", 15)
+  self:heading("hdr_window_and_time", "WINDOW AND TIME")
+  for _, key in ipairs(LEFT) do self:field(key) end
+  self:heading("hdr_peaks_and_tracks", "PEAKS AND TRACKS")
+  for _, key in ipairs(RIGHT) do self:field(key) end
+  self:heading("hdr_output", "OUTPUT")
+  for _, key in ipairs(OUTPUT) do self:field(key) end
   gfx.setfont(1, "Arial", 13)
-  text(rx, ry + 2, "Result: " .. (self.out and basename(self.out) or "(after choosing a sound)"), 0.8, 0.82, 0.86)
-  self:button(rx + 330, ry - 1, 150, 22, "Change...", { 0.2, 0.26, 0.4 }, function() self:choose_output() end)
-  ry = ry + 30
+  local rx, ry = self:pos("txt_result")
+  if rx then text(rx, ry, "Result: " .. (self.out and basename(self.out) or "(after choosing a sound)"), 0.8, 0.82, 0.86) end
+  x, y, w, h = self:pos("btn_change")
+  if x then self:button(x, y, w, h, "Change...", { 0.2, 0.26, 0.4 }, function() self:choose_output() end) end
 
   local d = M.derived(self.s, self.info)
-  if d then
-    local warn = d.too_long
-    text(rx, ry, string.format("Window %d samples (%.0f ms), FFT %d, hop %d samples (%.0f ms), about %d frames", d.window, d.window_ms, d.fft, d.hop, d.hop_ms, d.frames),
-      warn and 1 or 0.7, warn and 0.7 or 0.75, warn and 0.5 or 0.8)
-    if warn then
-      text(rx, ry + 16, "The window is longer than the part analysed: raise the lowest frequency.", 1, 0.7, 0.5)
-    else
-      local lw = M.long_warning(self.s, self.info)
-      if lw then text(rx, ry + 16, lw, 1, 0.7, 0.5) end
-      local na = (not lw) and M.noise_advice(self.s, self.info) or nil
-      if na then text(rx, ry + 16, na, 1, 0.75, 0.45) end
+  local dx, dy = self:pos("txt_derived")
+  if d and dx then
+    -- (tjingboem, 11 Nov 2026: "remove the orange warning text": the advice about a long sound, about the noise and about a window that is longer than the sound
+    -- is not shown any more; M.long_warning, M.noise_advice and `too_long` are still there)
+    text(dx, dy, string.format("Window %d samples (%.0f ms), FFT %d, hop %d samples (%.0f ms), about %d frames", d.window, d.window_ms, d.fft, d.hop, d.hop_ms, d.frames),
+      0.7, 0.75, 0.8)
+  end
+  x, y, w, h = self:pos("btn_analyse")
+  self.analyse_box = { x = x, y = y, w = w, h = h }
+  self:button(x, y, w, h, "ANALYSE", { 0.18, 0.42, 0.3 }, function() if not self.job then self:run() end end)
+  x, y, w, h = self:pos("btn_defaults")
+  self:button(x, y, w, h, "Defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(false) end)
+  x, y, w, h = self:pos("btn_editor")
+  self:button(x, y, w, h, "EDITOR", { 0.4, 0.22, 0.2 }, function() self.env.back() end)
+
+  -- Three things that come and go are placed by optional elements of the layout, and have a default place when the layout has none: the hover tip
+  -- (txt_tip, bottom left), what the page says, a message or a failure (txt_message, top right), and the warning that no Python was found with its Help
+  -- button (txt_python_warning, btn_python_help, top right under the message). The Python version that was found, the lines of the result and the Open
+  -- buttons are not shown: the editor opens the result by itself.
+  gfx.setfont(1, "Arial", 13)
+  local function place(id, dx, dy, dw)
+    local px_, py_, pw_ = self:pos(id)
+    if px_ then return px_, py_, pw_ end
+    return dx, dy, dw
+  end
+  local function wrap(msg, width)
+    local line, lines = "", {}
+    for word in msg:gmatch("%S+") do
+      if gfx.measurestr(line .. " " .. word) > width then lines[#lines + 1] = line; line = word else line = (line == "") and word or (line .. " " .. word) end
+    end
+    lines[#lines + 1] = line
+    return lines
+  end
+  local tx, ty = place("txt_tip", 24, H - 24, 520)
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  for i = #self.hits, 1, -1 do
+    local hh = self.hits[i]
+    if hh.tip and mx >= hh.x and mx < hh.x + hh.w and my >= hh.y and my < hh.y + hh.h then
+      text(tx, ty, hh.tip, 0.7, 0.78, 0.9)
+      break
     end
   end
-  ry = ry + 38
-  self.analyse_box = { x = rx, y = ry, w = 130, h = 30 }
-  self:button(rx, ry, 130, 30, "ANALYSE", { 0.18, 0.42, 0.3 }, function() if not self.job then self:run() end end)
-  self:button(rx + 140, ry, 110, 30, "Defaults", { 0.25, 0.27, 0.32 }, function() self:set_defaults(false) end)
-  self:button(rx + 260, ry, 80, 30, "EDITOR", { 0.4, 0.22, 0.2 }, function() self.env.back() end)
-  ry = ry + 40
-
-  gfx.setfont(1, "Arial", 13)
   if self.message then
     local r, g, b = 0.6, 0.95, 0.6
     if self.message_bad then r, g, b = 1, 0.6, 0.5 end
-    -- wrap to the column
-    local line, lines = "", {}
-    for word in self.message:gmatch("%S+") do
-      if gfx.measurestr(line .. " " .. word) > colw then lines[#lines + 1] = line; line = word else line = (line == "") and word or (line .. " " .. word) end
-    end
-    lines[#lines + 1] = line
-    for i, l in ipairs(lines) do text(rx, ry + (i - 1) * 16, l, r, g, b) end
-    ry = ry + #lines * 16 + 6
+    local mx_, my_, mw_ = place("txt_message", 830, 48, 250)
+    for i, l in ipairs(wrap(self.message, mw_)) do text(mx_, my_ + (i - 1) * 16, l, r, g, b) end
   end
-  if self.result then
-    for _, f in ipairs(self.result.files) do
-      text(rx, ry, string.format("channel %s: %s  (%d partials, %d frames, %.2f s%s)", tostring(f.channel), basename(f.file), f.partials, f.frames, f.duration,
-        (f.duration >= 59.5) and (", " .. M.clock(f.duration)) or ""), 0.85, 0.87, 0.9)
-      local file = f.file
-      self:button(rx + 400, ry - 3, 80, 20, "Open", { 0.2, 0.26, 0.4 }, function()
-        if self.env.on_open(file) then self:say("Opened " .. basename(file) .. " in the editor.") else self:say("Could not open " .. basename(file), true) end
-      end)
-      ry = ry + 24
-    end
-  end
-  -- hover tip at the bottom
-  local mx, my = gfx.mouse_x, gfx.mouse_y
-  for i = #self.hits, 1, -1 do
-    local h = self.hits[i]
-    if h.tip and mx >= h.x and mx < h.x + h.w and my >= h.y and my < h.y + h.h then
-      gfx.setfont(1, "Arial", 13)
-      text(lx, H - 24, h.tip, 0.7, 0.78, 0.9)
-      break
-    end
+  if not self.python then
+    local wx, wy, ww = place("txt_python_warning", 830, 116, 250)
+    local lines = wrap("Python not found (needed for the analysis)", ww)
+    for i, l in ipairs(lines) do text(wx, wy + (i - 1) * 16, l, 1, 0.6, 0.5) end
+    local hx, hy, hw, hh_ = self:pos("btn_python_help")
+    if not hx then hx, hy, hw, hh_ = wx, wy + #lines * 16 + 4, 70, 20 end
+    self:button(hx, hy, hw, hh_, "Help", { 0.45, 0.25, 0.2 }, function() self:python_popup() end)
   end
   if self.job then self:draw_busy(W, H, top) end
 end

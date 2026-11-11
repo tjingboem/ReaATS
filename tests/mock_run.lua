@@ -1,3 +1,4 @@
+REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 no_py_synth = false
 -- Run: lua5.4 tests/mock_run.lua   (from the ATSEditor folder)
 -- Runs ATS_Editor.lua against a fake `gfx` and `reaper` with scripted input, to catch

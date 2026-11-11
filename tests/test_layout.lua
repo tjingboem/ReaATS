@@ -16,6 +16,26 @@ end
 local p = L.el.plot
 check("margins follow the picture", L.margins[1] == p.x and L.margins[2] == L.ref_w - (p.x + p.w) and L.margins[3] == p.y and L.margins[4] == L.ref_h - (p.y + p.h))
 check("channel row height is the difference of the two pictures", L.margins[5] == L.el.plot_s.y - p.y)
+
+-- the Analysis page layout (lib/analysis_layout.lua, from the ReaLayout file): every field of the page has its box (and its label unless it is a switch)
+do
+  package.path = "lib/?.lua;" .. package.path
+  reaper = { file_exists = function() return false end, GetExtState = function() return "" end }
+  local page = require("analysis_page")
+  local A = dofile("lib/analysis_layout.lua")
+  for key, f in pairs(page.FIELDS) do
+    check("analysis layout: box of " .. key, A.el["fld_" .. key] ~= nil, key)
+    if f.kind ~= "bool" then check("analysis layout: label of " .. key, A.el["lbl_" .. key] ~= nil, key) end
+  end
+  for _, id in ipairs({ "hdr_source", "hdr_window_and_time", "hdr_peaks_and_tracks", "hdr_output", "btn_use_selected_item", "btn_import_sound_file",
+                        "btn_import_ats_file", "btn_inspect_sound_file", "txt_file", "btn_analyse", "btn_defaults", "btn_editor" }) do
+    check("analysis layout: " .. id, A.el[id] ~= nil, id)
+  end
+  for id, e in pairs(A.el) do
+    check("analysis layout: " .. id .. " is inside the window width", e.x >= 0 and (e.x + e.w <= 1100 or id:find("^txt_")) and e.w > 0 and e.h > 0, id)   -- (the width of a text is a guess)
+  end
+end
+
 -- the generator refuses a layout that lacks an element, and says which
 local function run(cmd) local h = io.popen(cmd .. " 2>&1"); local o = h:read("a"); h:close(); return o end
 local tmp = (os.getenv("TMPDIR") or "/tmp") .. "/reaats_layout_test_" .. os.time() .. ".json"
