@@ -622,7 +622,7 @@ print("mismatching channel files and single files open alone")
 do
   start(scratch .. "mc_ch1.ats"); strings = {}; frame()
   local by = 6 + 9                                              -- (the top row of the layout)
-  assert(saw("^STEREO$"), "SPACE starts on STEREO")
+  assert(saw("^3 channels$"), "SPACE starts on the channels as analysed (3 for this set), not greyed out: " .. tostring(saw("channel")))
   click(444 + 40, by); strings = {}; frame()
   assert(saw("^P%-STEREO$"), "a click on SPACE gives pseudo-stereo")
   click(444 + 40, by); strings = {}; frame()
@@ -634,7 +634,7 @@ do
   click(548 + 24, by); strings = {}; frame()
   assert(saw("spread 2[0-9]%%") or saw("spread 3[0-9]%%") or saw("spread 24%%"), "the slider sets the spread: " .. tostring(saw("spread") or saw("width")))
   click(444 + 40, by); strings = {}; frame()
-  assert(saw("^STEREO$"), "and a third click is back at STEREO")
+  assert(saw("^3 channels$"), "and a third click is back at the channels as analysed")
 end
 print("SPACE: pseudo-stereo and VBAP controls OK")
 
@@ -695,6 +695,43 @@ do
   press(27)
 end
 print("edge-scroll works for a box and a lasso")
+
+-- 13. a right-click with a selection opens the gain slider (+-20 dB): drag, APPLY changes the amplitude of the selection, one undo step; Esc cancels
+do
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  press(102)
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  local function rclick(x, y) gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = x, y, 2; frame(); gfx.mouse_cap = 0; strings = {}; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5 end
+  rclick(500, 300)
+  assert(saw("whole file in view") and not saw("Gain of the selection"), "no selection: a right-click shows the whole file: " .. tostring(saw("whole") or saw("Gain")))
+  sweep(65, y_top, 1040, y_bot)
+  rclick(500, 300)
+  assert(saw("Gain of the selection") and saw("^%+0%.0 dB$"), "with a selection a right-click opens the slider: " .. tostring(saw("Gain") or "(nothing)"))
+  -- Esc cancels
+  press(27); strings = {}; frame()
+  assert(not saw("Gain of the selection") and saw("gain cancelled") and not saw("^%d%*$"), "Esc closes it and changes nothing")
+  rclick(500, 300)
+  -- the slider at 3/4 of its track is +10 dB; the popup is at (370, 276), its track at x 386, 228 wide, y 310
+  click(386 + 171, 315); strings = {}; frame()
+  assert(saw("^%+10%.0 dB$"), "a click at three quarters of the track is +10 dB: " .. tostring(saw(" dB")))
+  press(30064); strings = {}; frame()
+  assert(saw("^%+10%.5 dB$"), "Up adds half a dB: " .. tostring(saw(" dB")))
+  click(558 + 20, 276 + 54 + 9); strings = {}; frame()                                  -- APPLY
+  assert(not saw("Gain of the selection") and saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "APPLY changes every green channel: " .. tostring(saw("gain") or "(no status)"))
+  assert(saw("gain %+10%.5 dB"), "and the status says what it did: " .. tostring(saw("gain") or "(no status)"))
+  -- the amplitude really changed: save and read the file (the selection holds the strongest point, so the maximum is 10.5 dB higher)
+  for k = 1, 3 do os.remove(scratch .. "mc_edit_ch" .. k .. ".ats") end                  -- (an older save from another test must not be read)
+  press(19); strings = {}; frame()
+  local before = assert(ats.load(scratch .. "mc_ch1.ats"))
+  local after = assert(ats.load(scratch .. "mc_edit_ch1.ats"))
+  local ratio = after.ampmax / before.ampmax
+  assert(math.abs(ratio - 10 ^ (10.5 / 20)) < 0.02 * 10 ^ (10.5 / 20), "the amplitude of the selection went up 10.5 dB: " .. ratio)
+  os.remove(scratch .. "mc_edit_ch1.ats"); os.remove(scratch .. "mc_edit_ch2.ats"); os.remove(scratch .. "mc_edit_ch3.ats")
+  press(26, 4); strings = {}; frame()
+  assert(saw("^undo in 3 channels"), "ONE Ctrl+Z takes it back in every channel: " .. tostring(saw("undo") or "(no status)"))
+end
+print("right-click with a selection opens the gain slider")
 
 -- 12. a move and a paste that go beyond the end of the file make it longer (every channel), one undo step each
 do

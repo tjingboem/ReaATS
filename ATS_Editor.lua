@@ -1955,15 +1955,23 @@ end
 function W.space_rects()
   return { button = { W.lay("btn_space_s") }, slider = { W.lay("space_slider_s") }, out = { W.lay("space_out_s") }, pct = { W.lay("space_pct_s") } }
 end
+-- The name of the first state: the sound comes out with the channels it was analysed in (one for a single file), so it says how many.
+function W.space_label(mode)
+  if mode == 1 then return (#chs == 1) and "1 channel" or (#chs .. " channels") end
+  return W.space_names[mode]
+end
 function W.draw_space()
   local r, sp = W.space_rects(), W.space
-  local on = sp.mode > 1
+  local on = sp.mode > 1                                         -- (the slider belongs to P-STEREO and VBAP: dim in the first state)
   local x, y, w, h = table.unpack(r.button)
-  gfx.set(on and 0.30 or 0.18, on and 0.26 or 0.20, on and 0.12 or 0.23, 1)
+  if sp.mode == 1 then gfx.set(0.18, 0.27, 0.36, 1)
+  else gfx.set(sp.mode == 2 and 0.30 or 0.12, sp.mode == 2 and 0.26 or 0.28, sp.mode == 2 and 0.12 or 0.34, 1) end
   gfx.rect(x, y, w, h, 1)
-  gfx.set(on and (sp.mode == 3 and 0.45 or 0.95) or 0.45, on and (sp.mode == 3 and 0.85 or 0.75) or 0.48, on and (sp.mode == 3 and 1 or 0.35) or 0.52, 1)
+  if sp.mode == 1 then gfx.set(0.55, 0.72, 0.95, 1)
+  elseif sp.mode == 2 then gfx.set(0.95, 0.75, 0.35, 1)
+  else gfx.set(0.45, 0.85, 1, 1) end
   gfx.rect(x, y, w, h, 0)
-  local label = W.space_names[sp.mode]
+  local label = W.space_label(sp.mode)
   W.fit(label, w, 13)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
@@ -1998,7 +2006,7 @@ function W.space_click(mx, my, cap)
   if inside(r.button) then
     sp.mode = sp.mode % 3 + 1
     W.space_save()
-    set_status(sp.mode == 1 and "output: plain stereo" or (sp.mode == 2 and "output: pseudo-stereo (odd partials left, even right); AUDITION and PRINT make it with the Python program"
+    set_status(sp.mode == 1 and ("output: " .. W.space_label(1) .. ", as analysed") or (sp.mode == 2 and "output: pseudo-stereo (odd partials left, even right); AUDITION and PRINT make it with the Python program"
       or string.format("output: VBAP over %d outputs (AUDITION mixes it down to stereo, PRINT writes %d channels)", sp.channels, sp.channels)))
     return true
   elseif inside({ r.slider[1] - 3, r.slider[2] - 4, r.slider[3] + 6, r.slider[4] + 8 }) then
@@ -2018,6 +2026,116 @@ function W.space_to(mx)
   W.space.amount = math.min(math.max((mx - r.slider[1]) / r.slider[3], 0), 1)
   W.space_save()
   dirty = true
+end
+
+-- GAIN OF THE SELECTION (tjingboem 11 Nov 2026: "if we have a selection, we could do right-click to open up a slider for gain in dB. +-20dB should be
+-- enough"): a right-click (no drag) with a selection opens a small slider at the pointer. Drag it, or Up/Down for 0.5 dB, Enter or APPLY changes the
+-- amplitude of the selected points of every green channel by that many dB (one undo step); Esc, CANCEL or a click outside leaves everything as it was.
+-- The sines only: the noise bands are not touched. W.gain = { x, y, db, drag } while it is open (it takes every click and key).
+W.GAIN_MAX = 20
+function W.gain_open(mx, my)
+  W.gain = { x = clamp(mx - 130, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(my - 24, 4, math.max(math.floor(gfx.h) - 84, 4)), db = 0 }
+  dirty = true
+end
+function W.gain_rects()
+  local g = W.gain
+  return { box = { g.x, g.y, 260, 80 }, track = { g.x + 16, g.y + 34, 228, 10 },
+           reset = { g.x + 16, g.y + 54, 56, 18 }, cancel = { g.x + 120, g.y + 54, 62, 18 }, apply = { g.x + 188, g.y + 54, 56, 18 } }
+end
+function W.gain_single(db)
+  if not sel_info then return end
+  local k = 10 ^ (db / 20)
+  local changes = {}
+  for p, frames in pairs(sel) do
+    for f in pairs(frames) do
+      local a = data.amp[p][f]
+      if a > 0 then changes[#changes + 1] = { p = p, f = f, oa = a, na = a * k, of = data.frq[p][f], nf = data.frq[p][f] } end
+    end
+  end
+  if #changes == 0 then return end
+  do_edit(string.format("gain %+.1f dB", db), changes)
+  update_sel_info()
+end
+function W.gain_apply()
+  local db = W.gain.db
+  W.gain = nil
+  dirty = true
+  if math.abs(db) < 0.05 then set_status("gain: 0 dB, nothing changed"); return end
+  edit_on_channels(function() W.gain_single(db) end, string.format("gain %+.1f dB", db))
+end
+function W.gain_to(mx)
+  local r = W.gain_rects().track
+  local db = (math.min(math.max((mx - r[1]) / r[3], 0), 1) * 2 - 1) * W.GAIN_MAX
+  db = math.floor(db * 10 + 0.5) / 10
+  if math.abs(db) < 0.4 then db = 0 end                                   -- (it sticks at 0 dB)
+  W.gain.db = db
+  dirty = true
+end
+-- Mouse and key while the slider is open. Returns nothing; the caller does not handle the input any further.
+function W.gain_input(mx, my, cap, ch)
+  local g, r = W.gain, W.gain_rects()
+  local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
+  local down = (cap & 1) ~= 0
+  if ch == 27 then W.gain = nil; dirty = true; set_status("gain cancelled"); return end
+  if ch == 13 then W.gain_apply(); return end
+  if ch == 30064 then g.db = math.min(g.db + 0.5, W.GAIN_MAX); dirty = true
+  elseif ch == 1685026670 then g.db = math.max(g.db - 0.5, -W.GAIN_MAX); dirty = true end
+  if down and not prev_down then
+    if inside(r.track, 6) then g.drag = true; W.gain_to(mx)
+    elseif inside(r.reset) then g.db = 0; dirty = true
+    elseif inside(r.apply) then W.gain_apply()
+    elseif inside(r.cancel) or not inside(r.box) then W.gain = nil; dirty = true; set_status("gain cancelled") end
+  elseif down and g.drag then
+    W.gain_to(mx)
+  end
+  if not down then g.drag = nil end
+end
+function W.draw_gain()
+  local g = W.gain
+  if not g then return end
+  local r = W.gain_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.55, 0.68, 0.92, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr("Gain of the selection")
+  local label = string.format("%+.1f dB", g.db)
+  gfx.set(1, 0.9, 0.5, 1)
+  gfx.x, gfx.y = bx + bw - 16 - gfx.measurestr(label), by + 8
+  gfx.drawstr(label)
+  local tx0, ty, tw, th = table.unpack(r.track)
+  gfx.set(0.16, 0.18, 0.22, 1)
+  gfx.rect(tx0, ty, tw, th, 1)
+  gfx.set(0.4, 0.43, 0.48, 1)
+  gfx.rect(tx0 + tw // 2, ty - 3, 1, th + 6, 1)                           -- the 0 dB mark
+  local frac = (g.db / W.GAIN_MAX + 1) / 2
+  gfx.set(0.45, 0.62, 0.95, 0.6)
+  if frac >= 0.5 then gfx.rect(tx0 + tw // 2, ty, tw * (frac - 0.5), th, 1) else gfx.rect(tx0 + tw * frac, ty, tw * (0.5 - frac), th, 1) end
+  gfx.set(1, 1, 1, 0.95)
+  gfx.rect(tx0 + math.floor((tw - 3) * frac), ty - 2, 3, th + 4, 1)
+  gfx.set(0.35, 0.38, 0.43, 1)
+  gfx.rect(tx0, ty, tw, th, 0)
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(0.6, 0.64, 0.7, 1)
+  gfx.x, gfx.y = tx0, ty + 12; gfx.drawstr("-20")
+  gfx.x, gfx.y = tx0 + tw - gfx.measurestr("+20"), ty + 12; gfx.drawstr("+20")
+  local function button(rc, text, rgb)
+    gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(rgb[1], rgb[2], rgb[3], 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.setfont(1, "Arial", 12)
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.reset, "0 dB", { 0.7, 0.72, 0.78 })
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "APPLY", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
 end
 
 -- AUDITION of the selection only (A with a selection): only the selected points sound, from just before the first to just after the last
@@ -2937,6 +3055,14 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
+  if W.gain then                                                 -- the gain slider is open: it takes the mouse and the keys
+    local ch = gfx.getchar()
+    if ch < 0 then stop_audition(); return false end
+    gfx.mouse_wheel = 0
+    W.gain_input(mx, my, cap, ch)
+    prev_down = (cap & 1) ~= 0
+    return true
+  end
 
   if gfx.mouse_wheel ~= 0 and data then
     local notches = gfx.mouse_wheel / 120
@@ -2976,8 +3102,12 @@ local function handle_input(px, py, pw, ph)
   else
     if drag and drag.right and not drag.moved then              -- a right-click without a drag: a border dot goes away, else the whole file in view (as F; the same in ReaShapeM)
       if not W.right_click(px, py, pw, ph, drag.x0, drag.y0) then
-        fit_view()
-        set_status("whole file in view")
+        if any_sel() and show_partials then
+          W.gain_open(mx, my)                                    -- a selection: the gain slider
+        else
+          fit_view()
+          set_status("whole file in view")
+        end
       end
     end
     drag = nil
@@ -3227,6 +3357,7 @@ local function loop()
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)
+  W.draw_gain()
   gfx.update()
   if keep then reaper.defer(loop) end
 end
