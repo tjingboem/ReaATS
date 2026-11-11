@@ -73,9 +73,10 @@ function M.start(opts)
     if job.done then return true end
     if reaper.file_exists(result) then
       local reply = read_all(result) or ""
-      local t_start, dur, sr, nch = reply:match("^OK (%S+) (%S+) (%S+) (%S+)")
+      local t_start, dur, sr, nch, gain = reply:match("^OK (%S+) (%S+) (%S+) (%S+) ?(%S*)")
       if t_start and reaper.file_exists(opts.wav) then
         job.t_start, job.dur, job.sr, job.nchan, job.progress = tonumber(t_start), tonumber(dur), tonumber(sr), tonumber(nch), 1
+        job.gain_db = tonumber(gain) or 0                                 -- how far the sound was turned down to stay under the peak limit (0: not)
         finish(nil)
       else
         local msg = reply:match("ERROR ([^\n]*)") or (reply == "" and "the synthesis program gave no answer" or reply:gsub("%s+", " "):sub(1, 200))

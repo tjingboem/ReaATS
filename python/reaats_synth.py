@@ -519,6 +519,22 @@ def mix_to_stereo(chans):
     return [left * norm, right * norm]
 
 
+PEAK_LIMIT_DB = -1.0            # the sound is turned down when its peak is above this (dBFS); a quieter sound is left alone
+
+
+def limit_peak(chans, limit_db):
+    """Turns every channel down by the same gain when the highest peak is above `limit_db` (dBFS). Returns (channels, gain in dB: 0 when
+    nothing was done). A sound that is quieter is not turned up: prints of sines and noise that are mixed later keep their balance."""
+    if limit_db is None:
+        return chans, 0.0
+    peak = max((float(np.max(np.abs(c))) if len(c) else 0.0) for c in chans)
+    ceiling = 10 ** (limit_db / 20.0)
+    if peak <= ceiling or peak <= 0:
+        return chans, 0.0
+    g = ceiling / peak
+    return [c * g for c in chans], 20 * np.log10(g)
+
+
 def write_wav(path, chans, sr):
     """A 32-bit float WAV, one channel per array (shorter ones padded with silence)."""
     n = max(len(c) for c in chans)
@@ -618,6 +634,9 @@ def build_parser():
                         "--spatial-channels outputs. The channels of a set are then added together (the output is made from the partials)")
     p.add_argument("--spatial-amount", type=float, default=1.0, help="pseudo: the amount 0..1 (1 = the full split); vbap: the spread 0..1")
     p.add_argument("--spatial-channels", type=int, default=2, help="vbap: the number of outputs, 2 to 8")
+    p.add_argument("--peak-limit", type=float, default=PEAK_LIMIT_DB,
+                   help="turn the sound down when its peak is above this level in dBFS (default %.1f); a quieter sound is left as it is" % PEAK_LIMIT_DB)
+    p.add_argument("--no-limit", action="store_true", help="do not turn the sound down, whatever its peak")
     p.add_argument("--result-file", default=None)
     return p
 
@@ -679,9 +698,10 @@ def main(argv=None):
             chans = [total[k].astype(np.float64) for k in range(spatial.channels)]
         if a.mixdown == "stereo":
             chans = mix_to_stereo(chans)
+        chans, gain_db = limit_peak(chans, None if a.no_limit else a.peak_limit)
         write_wav(a.out, chans, first.sr)
         if RESULT:
-            write_text(RESULT, "OK %.6f %.6f %d %d\n" % (t_start, len(chans[0]) / first.sr, int(round(first.sr)), len(chans)))
+            write_text(RESULT, "OK %.6f %.6f %d %d %.2f\n" % (t_start, len(chans[0]) / first.sr, int(round(first.sr)), len(chans), gain_db))
     except Cancelled:
         fail("cancelled")
     except ValueError as e:

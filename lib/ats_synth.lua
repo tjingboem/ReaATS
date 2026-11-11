@@ -398,6 +398,20 @@ function M.render_multi_job(list, opts)
 end
 
 -- Writes a 32-bit float WAV with one channel per array in `chans` (interleaved). Shorter channels are padded with silence.
+-- Turns the channels (arrays of samples) down, all by the same gain, when the highest peak is above `limit_db` (dBFS, default -1). Returns the gain in dB
+-- (0 when nothing was done). A quieter sound is not turned up. The same rule as the Python program (--peak-limit).
+function M.limit_peak(chans, limit_db)
+  limit_db = limit_db or -1.0
+  local peak = 0
+  for _, c in ipairs(chans) do
+    for i = 1, #c do local v = c[i]; if v < 0 then v = -v end; if v > peak then peak = v end end
+  end
+  local ceiling = 10 ^ (limit_db / 20)
+  if peak <= ceiling or peak <= 0 then return 0 end
+  local g = ceiling / peak
+  for _, c in ipairs(chans) do for i = 1, #c do c[i] = c[i] * g end end
+  return 20 * math.log(g, 10)
+end
 function M.write_wav_channels(path, chans, sr)
   local nch = #chans
   local n = 0

@@ -293,5 +293,18 @@ do
   check("the noise before the gap has the same level (ratio " .. string.format("%.2f", ratio) .. ")", ratio > 0.75 and ratio < 1.33)
 end
 
+
+-- the peak limit: a loud sound is turned down (one gain for every channel), a quiet one is left alone
+do
+  local loud = { { 0, 2, -1 }, { 0.5, 0, 0 } }
+  local g = synth.limit_peak(loud, -1)
+  local ceiling = 10 ^ (-1 / 20)
+  check("limit_peak: the highest peak is at the limit", math.abs(math.abs(loud[1][2]) - ceiling) < 1e-9, loud[1][2])
+  check("limit_peak: the gain is in dB and below 0", g < -6.9 and g > -7.1, g)
+  check("limit_peak: every channel got the same gain", math.abs(loud[2][1] / 0.5 - loud[1][2] / 2) < 1e-9)
+  local quiet = { { 0.1, -0.2 } }
+  check("limit_peak: a quiet sound is not turned up", synth.limit_peak(quiet, -1) == 0 and quiet[1][1] == 0.1 and quiet[1][2] == -0.2)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

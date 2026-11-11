@@ -162,5 +162,40 @@ class MaskTests(unittest.TestCase):
         self.assertGreater(len(raw), 44)
 
 
+class LimitTests(unittest.TestCase):
+    def test_a_loud_sound_is_turned_down_to_the_limit_a_quiet_one_is_left_alone(self):
+        loud = [np.array([0.0, 2.0, -1.0]), np.array([0.5, 0.0, 0.0])]
+        out, gain = S.limit_peak(loud, -1.0)
+        peak = max(float(np.max(np.abs(c))) for c in out)
+        self.assertAlmostEqual(peak, 10 ** (-1 / 20.0), places=9)
+        self.assertAlmostEqual(gain, 20 * np.log10(10 ** (-1 / 20.0) / 2.0), places=9)
+        self.assertAlmostEqual(out[1][0] / loud[1][0], out[0][1] / loud[0][1], places=9)         # one gain for every channel
+        quiet = [np.array([0.1, -0.2])]
+        out, gain = S.limit_peak(quiet, -1.0)
+        self.assertEqual(gain, 0.0)
+        self.assertTrue(np.array_equal(out[0], quiet[0]))
+        out, gain = S.limit_peak(loud, None)
+        self.assertEqual(gain, 0.0)
+
+    def test_the_command_line_limits_and_says_how_much(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "l.ats")
+        make_ats(path, [440.0, 440.0, 440.0, 440.0], [0.5, 0.5, 0.5, 0.5])                # in phase: a peak near 2.0
+        res = os.path.join(d, "r.txt")
+        wav = os.path.join(d, "l.wav")
+        S.main(["--out", wav, "--jobs", "1", "--result-file", res, path])
+        with open(res) as fh:
+            parts = fh.read().split()
+        self.assertEqual(parts[0], "OK")
+        self.assertLess(float(parts[5]), -3.0)
+        raw = np.frombuffer(open(wav, "rb").read()[44:], dtype="<f4")
+        self.assertLessEqual(float(np.max(np.abs(raw))), 10 ** (-1 / 20.0) + 1e-5)
+        wav2 = os.path.join(d, "l2.wav")
+        S.main(["--out", wav2, "--jobs", "1", "--no-limit", "--result-file", res, path])
+        raw2 = np.frombuffer(open(wav2, "rb").read()[44:], dtype="<f4")
+        self.assertGreater(float(np.max(np.abs(raw2))), 1.5)
+        self.assertEqual(float(open(res).read().split()[5]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

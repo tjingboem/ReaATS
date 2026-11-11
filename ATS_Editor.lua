@@ -1095,7 +1095,7 @@ local function audition()
   local la = last_audition
   if la and la.state == state and la.s <= s_r and e_r <= la.e and reaper.file_exists(la.wav) then
     -- nothing has changed since a sound was made that holds this part: play it (or a piece of it) without making it again
-    play_from_made(la, s_r, e_r, { mode = la.mode, channels = la.channels, engine = la.engine })
+    play_from_made(la, s_r, e_r, { mode = la.mode, channels = la.channels, engine = la.engine, gain_db = la.gain_db })
     return
   end
   audition_count = audition_count + 1
@@ -1158,6 +1158,7 @@ function start_preview(p, wav, dur, t_start, how)
     local engine_note = (how == "replayed") and ", replayed: nothing has changed since it was made"
       or (how == "cut") and ", from the sound already made: nothing has changed"
       or (p.note and (", " .. p.engine .. " synthesis: Python failed with: " .. p.note) or (", " .. p.engine .. " synthesis"))
+    if p.gain_db and p.gain_db < -0.005 then engine_note = engine_note .. string.format(", turned down %.1f dB to stay under -1 dBFS", -p.gain_db) end
     set_status(string.format("auditioning from %.2f s, %.1f s long (%s%s%s)  Space stops", t_start or 0, dur, p.mode, chan_note, engine_note))
   else
     set_status("audition rendered " .. wav .. ", but REAPER could not play it (needs the SWS extension)")
@@ -1201,6 +1202,7 @@ local function advance_pending()
     return
   end
   pending = nil
+  p.gain_db = job.gain_db
   if p.kind == "print" then finish_print(p, job); return end
   if p.selection then                                           -- the sound of the selection: played, but not kept as "the sound made before"
     slice_history[#slice_history + 1] = p.wav
@@ -1217,6 +1219,8 @@ local function advance_pending()
     local ok, err
     local chans = job.channels
     if #chans > 2 then chans = synth.mix_to_stereo(chans) end    -- REAPER's preview is stereo: more channels are mixed down
+    job.gain_db = synth.limit_peak((#chans > 1) and chans or { job.samples })      -- (turned down when over -1 dBFS)
+    p.gain_db = job.gain_db
     if #chans > 1 then ok, err = synth.write_wav_channels(wav, chans, job.sr) else ok, err = synth.write_wav(wav, job.samples, job.sr) end
     if not ok then set_status("audition failed: " .. tostring(err)); return end
     dur = #job.samples / job.sr
@@ -1228,7 +1232,7 @@ local function advance_pending()
   wav_history[#wav_history + 1] = wav
   if #wav_history > 2 then os.remove(table.remove(wav_history, 1)) end     -- (a sound of minutes is hundreds of MB: keep few)
   last_audition = { state = p.state, wav = wav, s = s0, e = s0 + math.floor(dur * sr + 0.5), nch = nch, sr = sr,
-                    mode = p.mode, channels = p.channels, engine = p.engine, note = p.note }
+                    mode = p.mode, channels = p.channels, engine = p.engine, note = p.note, gain_db = p.gain_db }
   play_from_made(last_audition, p.span_s, p.span_e, p, true)
 end
 
@@ -1400,6 +1404,7 @@ finish_print = function(p, job)
   else
     if not job.samples then set_status("print failed: " .. tostring(job.error)); return end
     local ok_w, err_w
+    job.gain_db = synth.limit_peak((#job.channels > 1) and job.channels or { job.samples })      -- (turned down when over -1 dBFS)
     if #job.channels > 1 then ok_w, err_w = synth.write_wav_channels(wav, job.channels, job.sr) else ok_w, err_w = synth.write_wav(wav, job.samples, job.sr) end
     if not ok_w then set_status("print failed: " .. tostring(err_w)); return end
     nch, dur = #job.channels, #job.samples / job.sr
@@ -1436,8 +1441,9 @@ finish_print = function(p, job)
   end
   reaper.Undo_EndBlock("ReaATS print", -1)
   reaper.UpdateArrange()
-  set_status(item and string.format("printed %.1f s from %.2f s (%s%s, %s synthesis) to the track", dur, job.t_start or 0, mode,
-                                    nch > 1 and (", " .. nch .. " channels") or "", p.engine or "Lua")
+  local limited = (job.gain_db and job.gain_db < -0.005) and string.format("; turned down %.1f dB to stay under -1 dBFS", -job.gain_db) or ""
+  set_status(item and string.format("printed %.1f s from %.2f s (%s%s, %s synthesis%s) to the track", dur, job.t_start or 0, mode,
+                                    nch > 1 and (", " .. nch .. " channels") or "", p.engine or "Lua", limited)
                   or "printed, but the new item was not found on the track")
 end
 
