@@ -104,10 +104,10 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   never-overwrite save. `write_ats(path)` is the shared writer (rebuilds phases, saves type 4). Tested with fake dialogs
   (dialog, extension added, overwrite no/yes, cancel, fallback); the real JS dialog has not been tried by tjingboem.
 - ANALYSIS PAGE (tjingboem, 9 Nov 2026: "all options as we find for analysis must be used in a yet to make Analyses
-  page"): NOT built. `docs/analysis_options.md` lists every option of Csound's atsa and pyatsyn (flags, defaults,
+  page"): BUILT (the Analysis page, with the pre-scan suggestions). `docs/analysis_options.md` lists every option of Csound's atsa and pyatsyn (flags, defaults,
   meaning, presets, what to show). Build it when tjingboem says so.
 
-- STEREO / MULTICHANNEL (tjingboem 9 Nov 2026, NOT built): see `docs/multichannel_design.md`. Analysis sets the number
+- STEREO / MULTICHANNEL (tjingboem 9 Nov 2026, BUILT): see `docs/multichannel_design.md`. Analysis sets the number
   of channels (one .ats per channel, same options, same duration); the editor loads them separately, switches
   between them, individual edits per channel, one toggle button per channel (1 2 3 ...), selecting and editing apply to every channel that is on
   (decided 9 Nov, replacing the LINK button idea; Shift keeps its existing uses); a slider per channel sets how visible
@@ -149,7 +149,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   NEXT (after tjingboem's test): editor channel buttons + visibility sliders (docs/multichannel_design.md); calling `python3 .../reaats_analyse.py`; editor channel
   buttons + visibility sliders (docs/multichannel_design.md).
 
-- ON THE LIST (tjingboem 9 Nov 2026, not built): pseudo-stereo output and VBAP, as in SpectralTransfer ("dividing the
+- (BUILT 10 Nov 2026, see "SPATIAL OUTPUT BUILT" below) pseudo-stereo output and VBAP, as in SpectralTransfer ("dividing the
   analysed channels over a stereo output"); see `docs/spatial_output.md` (what SpectralTransfer does, and the open
   question whether the partials or the analysed channels are divided over the outputs).
 
@@ -277,8 +277,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 
 ## Next (not started, wait for tjingboem)
 1. (There is no Lua analysis: see DECISION above.)
-2. A LICENSE file (tjingboem chooses; recommended MIT or BSD-3).
-3. More edit operations (amplitude scale, frequency shift in Hz, copy/paste, stretch), audition of the selection only.
+2. Ideas only, nobody has asked: zoom to selection (Z), edge-scroll for box/lasso/move, paste and move that extend the file, following REAPER's transport and looping, audition of the selection only, a ReaLayout project for the UI.
 
 ## Facts
 - Csound 7 opcode names are lowercase (`atsinfo`, `atsadd`); `atsadd` ignores the stored phase
@@ -427,7 +426,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   Python synthesis carries them as records with partial = -band (`apply_edits` writes them into `a.noise`). Region = the bend box, or the bounding box of the selection (`W.noise_region`). The main chunk is at
   Lua's 200-local limit: new helpers go into the `W` table. Tests: test_ats_edit section 11, test_py_synth (noise edits), mock_channels (stretch status "and the noise").
 
-- IDEA, NOT BUILT (tjingboem 10 Nov 2026, "do not build the controls but add the idea to Claude.md. This needs more experimenting to better pinpoint the issue"): NOISE SHAPING CONTROLS.
+- DROPPED (tjingboem 11 Nov 2026: "the suggestions for analyzing produces very good results, so i think we need no more filtering"): NOISE SHAPING CONTROLS. Do not build them. The idea as it was noted:
   Context: tjingboem analyses a cello; the bow/breath noise lands in the noise bands. Their workflow: print the sines, then the noise (Sine layer / Noise layer checkboxes), mix in REAPER, and the
   lower noise bands feel too present (this was before / partly after the noise-shape correction below; re-test with the corrected noise before drawing conclusions). They suggested a high-pass on
   the noise for a better balance between low and high noise bands. Candidate design (to be tried, not decided): three controls beside the Noise layer checkbox, applied to AUDITION and PRINT and saved
@@ -435,7 +434,9 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   They scale the band energies in the synthesis (Lua `add_noise` and Python `add_noise` both have the per-band envelope), so no filter has to run; the noise caches (memory `c.shape`, disk
   fingerprint) would need the new parameters in their keys. Interim advice given: a ReaEQ high-pass (about 250-400 Hz, 12 dB/oct) on the printed noise track. A plain high-pass only removes low
   rumble; a TILT is probably what balances low against high. Later idea: select a region of the noise layer like partials and scale/delete the noise there (editing the noise bands themselves; any
-  such edit must clear `d.noise_cache`). tjingboem wants to experiment first to pin down the problem: do not build until they say so.
+  such edit must clear `d.noise_cache`).
+- DECISIONS 11 Nov 2026 (tjingboem): the noise steps at the box edges and between bands stay as they are; noise is NOT moved in frequency (it follows the sines in time only).
+- MANUAL (11 Nov 2026): the source is `ReaATS_manual_draft.md` in the repo root; the built `.odt` lives in `docs/ReaATS.odt`: `python3 tools/make_manual.py ReaATS_manual_draft.md docs/ReaATS.odt`.
 - BUTTON NAMES (tjingboem 10 Nov 2026): "Import Sound File" (was Choose sound file...), "Import .ats File" (was Import .ats file...), "Inspect Sound File" (was Look at the sound). The Import Sound File dialog shows ONLY
   .wav .flac .aif .aiff: it uses JS_Dialog_BrowseForOpenFiles with `M.SOUND_FILTER` when JS_ReaScriptAPI is installed (the plain GetUserFileNameForRead can only offer one extension plus "all files", so without
   JS it stays as it was). Capitalisation of the page buttons follows these three: Title Case.
