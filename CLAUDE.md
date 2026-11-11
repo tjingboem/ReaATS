@@ -846,3 +846,4 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   really does skip the check rather than coincidentally passing again. Full suite passes.
 
 - SMALL FIXES 11 Nov 2026 (tjingboem's screenshots): the gain slider's -20 / +20 labels were hidden by the buttons (the popup is now 92 px high, buttons at +66); on the Suggested Settings view the marker labels ("highest now", "suggested", "content up to") go to the LEFT of their line when they would be cropped at the right edge of the plot.
+- CONFIRMED BY EAR 11 Nov 2026 (tjingboem): pseudo-stereo "works great", VBAP "works" (an 8-channel print: the loudest partials near the centre channels, the quiet ones at the outer channels).
