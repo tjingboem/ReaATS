@@ -655,6 +655,41 @@ do
 end
 print("A plays the selection only, Z zooms to it")
 
+-- 11. edge-scroll: a drag held at the right edge of the picture scrolls the view on (box, lasso, move)
+do
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  press(102)
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  sweep(300, y_top, 420, y_bot)
+  press(122)                                                    -- Z: a view that holds only a part of the file
+  press(27)
+  local function count() strings = {}; frame(); local t = saw("^selected: (%d+) points"); return t and tonumber(t:match("^selected: (%d+)")) or 0 end
+  local right = math.floor(gfx.w) - 55
+  local function drag_held(x0, x1, frames, cap)                -- press at x0, move to x1, hold there for some frames, let go
+    gfx.mouse_cap = cap; gfx.mouse_x, gfx.mouse_y = x0, y_top; frame()
+    gfx.mouse_x, gfx.mouse_y = (x0 + x1) / 2, y_bot; frame()
+    gfx.mouse_x, gfx.mouse_y = x1, y_bot; frame()
+    for _ = 1, frames do frame() end
+    gfx.mouse_cap = 0; frame(); frame(); gfx.mouse_x, gfx.mouse_y = 5, 5
+  end
+  drag_held(80, right, 0, 1)
+  local n_plain = count()
+  press(27)
+  drag_held(80, right, 40, 1)
+  local n_held = count()
+  assert(n_held > n_plain, "a box held at the right edge scrolls and selects more: " .. n_plain .. " then " .. n_held)
+  press(27)
+  drag_held(80, right, 0, 1 + 4 + 8)
+  local l_plain = count()
+  press(27)
+  drag_held(80, right, 40, 1 + 4 + 8)
+  local l_held = count()
+  assert(l_held > l_plain, "a lasso held at the right edge scrolls and selects more: " .. l_plain .. " then " .. l_held)
+  press(27)
+end
+print("edge-scroll works for a box and a lasso")
+
 clean()
 os.remove(scratch .. "mc.wav"); os.remove(scratch .. "mm_short.wav")
 print("channel sets OK")

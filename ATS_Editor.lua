@@ -1644,12 +1644,14 @@ local function draw_selection(px, py, pw, ph)
   end
   if lasso and #lasso.pts > 1 then                              -- the loop being drawn, closed with a faint line back to the start
     gfx.set(1, 1, 1, 0.9)
-    for i = 2, #lasso.pts do gfx.line(lasso.pts[i - 1][1], lasso.pts[i - 1][2], lasso.pts[i][1], lasso.pts[i][2], 1) end
+    local function cx(x) return clamp(x, px, px + pw) end                                     -- (the start may be scrolled out of the picture)
+    for i = 2, #lasso.pts do gfx.line(cx(lasso.pts[i - 1][1]), lasso.pts[i - 1][2], cx(lasso.pts[i][1]), lasso.pts[i][2], 1) end
     gfx.set(1, 1, 1, 0.35)
-    gfx.line(lasso.pts[#lasso.pts][1], lasso.pts[#lasso.pts][2], lasso.pts[1][1], lasso.pts[1][2], 1)
+    gfx.line(cx(lasso.pts[#lasso.pts][1]), lasso.pts[#lasso.pts][2], cx(lasso.pts[1][1]), lasso.pts[1][2], 1)
   end
   if box then
     local x0, x1 = math.min(box.x0, box.x1), math.max(box.x0, box.x1)
+    x0, x1 = clamp(x0, px, px + pw), clamp(x1, px, px + pw)                                 -- (the start may be scrolled out of the picture)
     local y0, y1 = math.min(box.y0, box.y1), math.max(box.y0, box.y1)
     gfx.set(1, 1, 1, 0.10)
     gfx.rect(x0, y0, x1 - x0, y1 - y0, 1)
@@ -1996,6 +1998,29 @@ function W.audition_selection()
   pending = { kind = "audition", selection = true, mode = "the selection only", channels = #chs, wav = wav, engine = engine, req = req, job = job }
   set_status("preparing the selection ... 0 %")
   return true
+end
+
+-- EDGE-SCROLL (tjingboem 11 Nov 2026: "all three of them"): while a box, a lasso or a move is dragged with the pointer in the last stretch of the
+-- picture (or beyond it), the view scrolls on, faster the further in, as it does for the bend box. The view goes on only as far as the file does (so a drag
+-- to the edge of a picture that shows the whole file does not move it). Returns how many pixels the picture moved (the dragged things are kept in place by the caller).
+-- `right_ok` / `left_ok`: the drag may go on that way (a drag that began in the edge zone and goes the other way does not scroll there).
+function W.edge_scroll(mx, right_ok, left_ok)
+  if not data then return 0 end
+  local px0, _, pw0 = plot_rect()
+  local zone = math.max(48, 0.08 * pw0)
+  local right, left = px0 + pw0 - zone, px0 + zone
+  local span = view.t1 - view.t0
+  local tmax = data.times[data.frames] or data.dur
+  local lo, hi = 0, tmax                                                  -- (only as far as the file goes: nothing to select or move to beyond it)
+  local scroll = 0
+  if mx > right and right_ok then scroll = span * 0.012 * clamp((mx - right) / zone, 0, 2.5)
+  elseif mx < left and left_ok then scroll = -span * 0.012 * clamp((left - mx) / zone, 0, 2.5) end
+  if scroll > 0 and view.t1 + scroll > hi then scroll = math.max(hi - view.t1, 0) end
+  if scroll < 0 and view.t0 + scroll < lo then scroll = math.min(lo - view.t0, 0) end
+  if scroll == 0 then return 0 end
+  view.t0, view.t1 = view.t0 + scroll, view.t1 + scroll
+  dirty = true
+  return scroll / span * pw0
 end
 
 -- Z: the view goes to the selection, with some room round it (a quarter of its size at each side, at least a little).
@@ -2825,7 +2850,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
   W.draw_space()
-  local build = "build 11 Nov 09:26"                                        -- (which version of the script is running)
+  local build = "build 11 Nov 09:56"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2965,6 +2990,7 @@ local function handle_input(px, py, pw, ph)
     local fine = ((cap & 8) ~= 0) and 0.2 or 1
     mover.ex, mover.ey = mover.ex + (mx - mover.lx) * fine, mover.ey + (my - mover.ly) * fine
     mover.lx, mover.ly, mover.x, mover.y = mx, my, mx, my
+    if mover.active then mover.ex = mover.ex + W.edge_scroll(mx, mover.ex > 0, mover.ex < 0) end                -- (what the view scrolls is part of the move)
     if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then mover.active = true end
     if (cap & 4) ~= 0 then
       if not mover.axis and math.abs(mover.ex) + math.abs(mover.ey) > 3 then
@@ -2976,10 +3002,15 @@ local function handle_input(px, py, pw, ph)
   elseif down and W.drag then
     W.drag_to(mx, my, cap)
   elseif down and lasso then
+    local ax = lasso.pts[1][1]
+    local shift_px = W.edge_scroll(mx, mx > ax, mx < ax)
+    if shift_px ~= 0 then for _, q in ipairs(lasso.pts) do q[1] = q[1] - shift_px end end      -- (the loop stays on the same points of the sound)
     local x, y = clamp(mx, px, px + pw), clamp(my, py + lasso.off, py + lasso.off + lasso.h)
     local last = lasso.pts[#lasso.pts]
     if math.abs(x - last[1]) + math.abs(y - last[2]) >= 4 then lasso.pts[#lasso.pts + 1] = { x, y } end
   elseif down and box then
+    local shift_px = W.edge_scroll(mx, mx > box.x0, mx < box.x0)
+    if shift_px ~= 0 then box.x0 = box.x0 - shift_px end                                       -- (the start stays on the same time of the sound)
     box.x1 = clamp(mx, px, px + pw)
     box.y1 = clamp(my, py + box.off, py + box.off + box.h)
   elseif (not down) and prev_down and mover then

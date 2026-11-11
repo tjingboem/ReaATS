@@ -107,6 +107,8 @@ The picture is time from left to right and frequency from bottom to top, on a lo
 
 **Lasso.** Hold Ctrl and Shift and drag to draw a freehand loop. When you let go, the loop is closed and the points inside it are selected, in every channel that is on and green, like a box. A lasso always **adds** to the selection you have; to start over, press Esc or click on empty space first (with nothing selected, a lasso is simply a new selection). A lasso follows a curved line of partials much better than a box. (ReaATS does not use Alt: on many Linux desktops Alt+drag moves the window.)
 
+**The view follows a drag.** When you draw a box or a lasso, or move a selection, and the pointer is in the last stretch of the picture at the left or right (or beyond it), the view scrolls on, faster the further in, so you can select or move over more than what is on the screen. It follows only in the direction you are dragging, and only as far as the file goes: a drag to the edge of a picture that already shows the whole file does not move it. The box or loop stays on the same points of the sound while the picture scrolls.
+
 Drag with the left mouse button to draw a box. Every point of every partial inside the box is selected. Hold Shift while you start the box to add to the selection. A click on empty space clears the selection, and so does Esc.
 
 A selection is made of points: one partial at one moment (one frame). This means you can select a piece of a partial and leave the rest. The header line shows how many points and partials are selected and the time and frequency range they cover.
