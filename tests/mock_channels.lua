@@ -123,8 +123,8 @@ local function slider(i, frac) return 62 + (i - 1) * 104 + 34 + math.floor(62 * 
 local function led(i) return 62 + (i - 1) * 104 + 15, 74 end                -- the LED above button i
 local MODE = { 62 + 3 * 104 + 4 + 50, 87 }                                 -- the STACK / OVERLAY button
 local function lanes_now() blits = {}; strings = {}; frame(); return blits end
-local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag (an Alt+click first: no old selection with its box and dots is in the way)
-  gfx.mouse_cap = 1 + 16; gfx.mouse_x, gfx.mouse_y = 500, 125; frame(); gfx.mouse_cap = 0; frame()
+local function sweep(x0, y0, x1, y1)                                       -- a rubber-band drag (Esc first: no old selection with its box and dots is in the way)
+  gfx.mouse_cap = 0; script.keys = { 27 }; frame(); gfx.mouse_x, gfx.mouse_y = 5, 5; frame()                     -- Esc: no old selection with its box and dots is in the way
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame()
   gfx.mouse_x, gfx.mouse_y = x1, y1; frame(); gfx.mouse_cap = 0; frame(); frame()
 end
@@ -358,7 +358,7 @@ do
   print("copy, cut and paste work across the channels, in one undo step")
 end
 
--- 4e. Alt+drag draws a lasso; the points inside the loop are selected, in every green channel; Shift adds
+-- 4e. Ctrl+Shift+drag draws a lasso; the points inside the loop are selected, in every green channel; it adds to the selection
 do
   press(102)
   gfx.mouse_x, gfx.mouse_y = 5, 5
@@ -376,26 +376,25 @@ do
     strings = {}; frame(); cross_label = saw("^[%d%.]+ s   ")                   -- (while drawing: the crosshair says where the pointer is)
     gfx.mouse_cap = 0; frame(); frame(); gfx.mouse_x, gfx.mouse_y = 5, 5
   end
-  -- the same rectangle, drawn as a loop with Alt held: the same points
-  lasso_through({ { 65, y_top }, { 330, y_top }, { 600, y_top }, { 600, (y_top + y_bot) / 2 }, { 600, y_bot }, { 330, y_bot }, { 65, y_bot }, { 65, (y_top + y_bot) / 2 } }, 1 + 16)
+  -- the same rectangle, drawn as a loop with Ctrl+Shift held: the same points
+  lasso_through({ { 65, y_top }, { 330, y_top }, { 600, y_top }, { 600, (y_top + y_bot) / 2 }, { 600, y_bot }, { 330, y_bot }, { 65, y_bot }, { 65, (y_top + y_bot) / 2 } }, 1 + 4 + 8)
   assert(cross_label, "while a lasso is drawn the crosshair shows time and frequency")
   local n_lasso, t_lasso = selected_count()
   assert(n_lasso == n_box and t_lasso:find("3 channels"), "the lasso round the same rectangle selects the same: " .. n_lasso .. " against " .. n_box)
   -- a triangle holds fewer points than the rectangle round it
   press(27)
-  lasso_through({ { 65, y_bot }, { 332, y_top }, { 600, y_bot } }, 1 + 16)
+  lasso_through({ { 65, y_bot }, { 332, y_top }, { 600, y_bot } }, 1 + 4 + 8)
   local n_tri = selected_count()
   assert(n_tri > 0 and n_tri < n_box, "a triangle selects part of the rectangle: " .. n_tri .. " of " .. n_box)
-  -- Shift+Alt adds a second loop to the first
+  -- a lasso adds to what is selected: a second loop is added to the first
   press(27)
-  lasso_through({ { 65, y_top }, { 200, y_top }, { 200, y_bot }, { 65, y_bot } }, 1 + 16)
+  lasso_through({ { 65, y_top }, { 200, y_top }, { 200, y_bot }, { 65, y_bot } }, 1 + 4 + 8)
   local n_a = selected_count()
-  lasso_through({ { 300, y_top }, { 450, y_top }, { 450, y_bot }, { 300, y_bot } }, 1 + 16 + 8)
+  lasso_through({ { 300, y_top }, { 450, y_top }, { 450, y_bot }, { 300, y_bot } }, 1 + 4 + 8)
   local n_ab = selected_count()
-  assert(n_a > 0 and n_ab > n_a, "Shift+Alt adds: " .. n_a .. " then " .. n_ab)
+  assert(n_a > 0 and n_ab > n_a, "a second lasso adds: " .. n_a .. " then " .. n_ab)
   press(27)
-  -- a plain Alt+click clears (like a click on empty space)
-  print("Alt+drag lasso selects the points inside the loop")
+  print("Ctrl+Shift+drag lasso selects the points inside the loop")
 end
 
 -- 4f. the playhead: the "|<" button shows where it is when it is not at the start, and Home or the button put it back at 0
@@ -558,9 +557,14 @@ do
   assert(saw("border dot removed"), "a right-click on a border dot removes it: " .. tostring(saw("border") or saw("whole")))
   press(18); strings = {}; frame()
   assert(saw("bend reset"), "Ctrl+R resets the box to flat")
+  -- an arch: Ctrl+Shift+drag on an edge (not Alt: KDE moves the window with it); it is not a lasso
+  hold_and_drag(200, y_top, 0, 30, 1 + 4 + 8); let_go()
+  strings = {}; frame()
+  assert(saw("^bend up to [%d%.]+ st") and saw("%(3 channels%)"), "Ctrl+Shift+drag on an edge arches it and keeps the selection: " .. tostring(saw("bend") or saw("selected")))
+  press(18); strings = {}; frame()
   -- the box is applied when the selection goes (here: a click on empty space)
   hold_and_drag(600, y_top, 0, 30); let_go()
-  sweep(120, 140, 300, y_bot - 20)                                                     -- a new selection: the bend is applied first
+  click(900, 140)                                                                      -- a click on empty space: the selection goes, the bend is applied first
   strings = {}; frame()
   assert(saw("^1%*$") and saw("^3%*$"), "a bend that was shaped is applied when the selection changes: " .. tostring(saw("bend") or "(no status)"))
   press(26, 4); press(26, 4); strings = {}; frame()
@@ -627,6 +631,29 @@ do
   assert(saw("^STEREO$"), "and a third click is back at STEREO")
 end
 print("SPACE: pseudo-stereo and VBAP controls OK")
+
+-- 10. A with a selection plays the selection only (the sound is short: from just before the selection to just after it); Z zooms to it
+do
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  press(102)                                                    -- F: the whole file in view
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  sweep(300, y_top, 420, y_bot)
+  local n0 = #previews
+  press(97)
+  until_done(function() return #previews > n0 end)
+  local info = wavinfo.read(previews[#previews])
+  assert(info and info.frames > 100 and info.frames < 60000, "the selection's sound is short: " .. tostring(info and info.frames))
+  assert(saw("the selection only"), "the status says it is the selection: " .. tostring(saw("auditioning")))
+  press(122); strings = {}; frame()
+  press(97)                                                     -- the zoomed view still has the selection: A again
+  until_done(function() return #previews > n0 + 1 end)
+  press(27); press(97)                                          -- no selection: A plays the whole sound again
+  until_done(function() return #previews > n0 + 2 end)
+  local whole = wavinfo.read(previews[#previews])
+  assert(whole.frames > info.frames * 2, "without a selection A plays the whole sound: " .. tostring(whole.frames))
+end
+print("A plays the selection only, Z zooms to it")
 
 clean()
 os.remove(scratch .. "mc.wav"); os.remove(scratch .. "mm_short.wav")

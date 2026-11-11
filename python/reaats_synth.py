@@ -132,6 +132,7 @@ def load_ats(path):
     a.rows = a.partials                          # rows to make: the file's, and more when the editor's edits added rows
     a.file_frames = a.frames                      # frames in the file (the editor's edits may make the sound longer)
     a.front = 0                                   # frames the editor's edits put in front of the file's own
+    a.mask = None                                 # the cells that may sound (records of partial, frame), or None for all (AUDITION of the selection)
     return a
 
 
@@ -153,6 +154,7 @@ def apply_edits(a, e):
     """Takes the editor's edits: the cells, the rows they add and, when the sound was made longer (a stretch past the end), the new
     length: a record with partial 0, whose frame field is the number of frames, whose amplitude field is the duration and whose frequency field is the number of frames put in front."""
     a.edits = e
+    a.mask = None
     if e is None or not len(e):
         return
     a.rows = max(a.partials, int(e[:, 0].max()), 0)
@@ -176,6 +178,16 @@ def apply_edits(a, e):
         a.noise[b[ok], fr[ok]] = nz[ok, 2]
 
 
+def load_mask(path):
+    """The cells that may sound: [n, 2] records (partial, frame), or None (no mask: '-' or no file)."""
+    if not path or path == "-":
+        return None
+    try:
+        return np.fromfile(path, dtype="<f8").reshape(-1, 2)
+    except (OSError, ValueError) as e:
+        raise ValueError("cannot read the selection file %s: %s" % (path, e))
+
+
 def chunk(a, p0, p1):
     """Partials p0 .. p1-1 as two arrays [partial, frame] (amplitude, frequency), with the editor's edits applied."""
     cols = slice(1 + a.pp * p0, 1 + a.pp * p1, a.pp)
@@ -193,6 +205,13 @@ def chunk(a, p0, p1):
             cols_f = e[sel, 1].astype(np.int64) - 1
             amp[rows, cols_f] = e[sel, 2]
             frq[rows, cols_f] = e[sel, 3]
+    if a.mask is not None:                                           # only the masked cells sound
+        keep = np.zeros(amp.shape, dtype=bool)
+        m = a.mask
+        sel = (m[:, 0] > p0) & (m[:, 0] <= p1) & (m[:, 1] >= 1) & (m[:, 1] <= a.frames)
+        if sel.any():
+            keep[m[sel, 0].astype(np.int64) - 1 - p0, m[sel, 1].astype(np.int64) - 1] = True
+        amp = np.where(keep, amp, 0.0)
     return amp, frq
 
 
@@ -532,6 +551,7 @@ def synth_task(t):
     NOISE_SHAPE = t["shape"]
     a = load_ats(t["path"])
     apply_edits(a, load_edits(t["edits"]))
+    a.mask = load_mask(t.get("select"))
     out, t_start = render_channel(a, t["start"], t["end"], t["sines"], t["noise"], t["seed"], 0.0, 1.0, t["cache"], t.get("spatial"))
     _SHARED[_IDX] = 1.0
     return out, t_start
@@ -577,6 +597,9 @@ def build_parser():
     p.add_argument("--edits", action="append", default=[],
                    help="edits not yet in the .ats file (records of partial, frame, amplitude, frequency), one --edits for each "
                         "file in the same order; '-' for a file without edits")
+    p.add_argument("--select", action="append", default=[],
+                   help="only the cells in this file (records of partial, frame as two doubles) sound, one --select for each file in the "
+                        "same order; '-' for a file without a mask (AUDITION of the selection)")
     p.add_argument("--no-sines", action="store_true")
     p.add_argument("--no-noise", action="store_true")
     p.add_argument("--seed", type=int, default=1)
@@ -622,9 +645,12 @@ def main(argv=None):
             fail("nothing to render (sines and noise are both off)")
         if a.edits and len(a.edits) != len(a.ats):
             fail("--edits must be given once for every file")
+        if a.select and len(a.select) != len(a.ats):
+            fail("--select must be given once for every file")
         files = [load_ats(p) for p in a.ats]
         for k, f in enumerate(files):
             apply_edits(f, load_edits(a.edits[k]) if a.edits else None)
+            f.mask = load_mask(a.select[k]) if a.select else None
         first = files[0]
         for f in files[1:]:
             if f.frames != first.frames or abs(f.sr - first.sr) > 1e-6 or abs(f.frame_size - first.frame_size) > 1e-6:
@@ -635,7 +661,8 @@ def main(argv=None):
         jobs = choose_jobs(a.jobs, len(files))
         if jobs > 1:
             tasks = [{"k": k, "path": p, "start": a.start, "end": a.end, "sines": not a.no_sines, "noise": not a.no_noise,
-                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None, "spatial": spatial}
+                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None, "spatial": spatial,
+                      "select": a.select[k] if a.select else None}
                      for k, p in enumerate(a.ats)]
             done = run_parallel(tasks, jobs)
             chans, t_start = [d[0] for d in done], done[0][1]

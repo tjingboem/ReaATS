@@ -9,6 +9,7 @@
   Run it from the action list (Actions > Show action list > ReaScript: Load...).
 
   Mouse:  left drag = select box (Shift adds, click on empty space clears)
+          Ctrl+Shift+drag = lasso (adds to the selection); Ctrl+Shift+drag on an edge of the bend box = arch (Alt is not used: KDE moves the window with it)
           left drag ON a selected point = move the selection (Shift locks to one axis)
           right/middle drag = pan       wheel = zoom time
           Ctrl+wheel = zoom frequency   Shift+wheel = scroll time
@@ -18,6 +19,8 @@
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
           click on the picture, or click/drag on the time ruler  set the playhead; AUDITION starts there (the line moves while it plays)
+          Z             zoom to the selection (with some room round it)
+          A             AUDITION of the selection only (the selected points alone) when there is a selection; AUDITION button / A without one: the whole sound
           A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
                         (partials / noise follow the P / N switches)
           ANALYSE       the Analysis page: make .ats files from a sound (python/reaats_analyse.py)
@@ -100,7 +103,7 @@ local showing_analysis = false   -- the Analysis page is on screen instead of th
 local analysis = nil            -- the Analysis page object (made at the end of the file)
 local mover = nil              -- a drag that moves the selection: { x0, y0, x, y, lx, ly, ex, ey (the movement in pixels, Shift makes it a fifth), axis (Ctrl) }
 local box = nil                -- rubber-band box while the left button is down: { x0, y0, x1, y1, add }
-local lasso = nil              -- Alt+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
+local lasso = nil              -- Ctrl+Shift+drag: a freehand loop being drawn: { pts = { {x, y}, ... }, add, off, h }
 local amp_thresh = 0
 -- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
 -- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
@@ -992,8 +995,28 @@ local function start_synth(wav, o)
     end
   end
   if not any_edits then edits = nil end
+  local select_files = nil
+  if o.selection then                                          -- AUDITION of the selection: per channel the cells that may sound (a channel with none is silent)
+    select_files = {}
+    for i, c in ipairs(chs) do
+      local path = string.format("%s/reaats_%s_ch%d_select.bin", dir, id, i)
+      local fh = io.open(path, "wb")
+      if not fh then discard(); return lua_job() end
+      local buf = {}
+      for p, frames in pairs(c.sel or {}) do
+        for f in pairs(frames) do
+          buf[#buf + 1] = string.pack("<dd", p, f)
+          if #buf >= 4096 then fh:write(table.concat(buf)); buf = {} end
+        end
+      end
+      fh:write(table.concat(buf))
+      fh:close()
+      select_files[i] = path
+      temp[#temp + 1] = path
+    end
+  end
   local job = py_synth.start({ exe = analysis.python.exe, script = script, files = files, edits = edits, temp = temp, wav = wav, dir = dir, id = id,
-                               from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown, spatial = o.spatial,
+                               from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown, spatial = o.spatial, select = select_files,
                                cache_dir = dir .. "/reaats_noise_cache" })
   if not job then discard(); return lua_job() end
   return job, "Python", req
@@ -1130,6 +1153,13 @@ local function advance_pending()
   end
   pending = nil
   if p.kind == "print" then finish_print(p, job); return end
+  if p.selection then                                           -- the sound of the selection: played, but not kept as "the sound made before"
+    slice_history[#slice_history + 1] = p.wav
+    if #slice_history > 3 then os.remove(table.remove(slice_history, 1)) end
+    p.mode = "the selection only"
+    start_preview(p, p.wav, job.dur, job.t_start, nil)
+    return
+  end
   local wav, dur, t_start = p.wav, nil, job.t_start
   if p.engine == "Python" then
     dur = job.dur
@@ -1693,7 +1723,7 @@ end
 -- ------------------------------------------------------------ the box and its handles (the "rubber sheet")
 -- The selection has a box round it, with a dot in each corner and the middle of every edge free to be dragged: the dots bend the box, and
 -- the selected points follow it (lib/ats_warp.lua has the maths). Drag a corner dot or a border dot up or down; drag an edge between the
--- dots to move the whole edge; Ctrl+click on an edge adds a border dot, right-click on a border dot removes it, Alt+drag on an edge arches it,
+-- dots to move the whole edge; Ctrl+click on an edge adds a border dot, right-click on a border dot removes it, Ctrl+Shift+drag on an edge arches it,
 -- Shift makes the movement fine. Nothing is changed in the data until Enter applies it (Esc, Ctrl+R: back to flat). Frequency only for now.
 function W.sel_info_of(i) return (i == cur) and sel_info or chs[i].sel_info end
 function W.sel_of(i) return (i == cur) and sel or chs[i].sel end
@@ -1937,6 +1967,60 @@ function W.space_to(mx)
   dirty = true
 end
 
+-- AUDITION of the selection only (A with a selection): only the selected points sound, from just before the first to just after the last
+-- frame of the selection (the sines only, in the SPACE output; no noise). Always made by the Python program, always made again.
+function W.audition_selection()
+  if not data then return end
+  W.commit()
+  capture_channel()
+  local t0, t1
+  for _, c in ipairs(chs) do
+    local si = c.sel_info
+    if si then t0 = math.min(t0 or si.t0, si.t0); t1 = math.max(t1 or si.t1, si.t1) end
+  end
+  if not t0 then return false end
+  if pending and pending.kind == "print" then set_status("wait: the print is being prepared"); return true end
+  stop_audition()
+  local hop = chs[1].data.frame_size / chs[1].data.sr
+  local from, to = math.max(t0 - hop, 0), t1 + hop
+  audition_count = audition_count + 1
+  local wav = string.format("%s/reaats_audition_%s_%d.wav", tmp_dir(), session_id, audition_count)
+  local sp = W.space_opts()
+  local job, engine, req = start_synth(wav, { sines = true, noise = false, from = from, to = to, selection = true,
+                                              mixdown = (#chs > 2 or (sp and sp.channels > 2)) and "stereo" or nil, spatial = sp })
+  if engine ~= "Python" then
+    job.cancel()
+    set_status("AUDITION of the selection needs the Python program (see ANALYSE)")
+    return true
+  end
+  pending = { kind = "audition", selection = true, mode = "the selection only", channels = #chs, wav = wav, engine = engine, req = req, job = job }
+  set_status("preparing the selection ... 0 %")
+  return true
+end
+
+-- Z: the view goes to the selection, with some room round it (a quarter of its size at each side, at least a little).
+function W.zoom_selection()
+  if not data then return end
+  capture_channel()
+  local t0, t1, f0, f1
+  for _, c in ipairs(chs) do
+    local si = c.sel_info
+    if si then
+      t0 = math.min(t0 or si.t0, si.t0); t1 = math.max(t1 or si.t1, si.t1)
+      f0 = math.min(f0 or si.f0, si.f0); f1 = math.max(f1 or si.f1, si.f1)
+    end
+  end
+  if not t0 then set_status("Z zooms to the selection: select something first"); return end
+  local hop = chs[1].data.frame_size / chs[1].data.sr
+  local pad_t = math.max((t1 - t0) * 0.25, hop * 8, 0.02)
+  view.t0, view.t1 = math.max(t0 - pad_t, -pad_t), t1 + pad_t
+  local l0, l1 = math.log(math.max(f0, 1)), math.log(math.max(f1, 1.01))
+  local pad_f = math.max((l1 - l0) * 0.25, math.log(2) * 0.2)
+  view.f0 = math.max(5, math.exp(l0 - pad_f))
+  view.f1 = math.min(40000, math.exp(l1 + pad_f))
+  dirty = true
+end
+
 -- Applies the bend to the selected points of every channel that is on and green (one undo step), and opens a flat box round them.
 function W.commit()
   local w = W.w
@@ -2114,12 +2198,13 @@ function W.hit(px, py, pw, ph, mx, my)
   return nil
 end
 
--- A click on the box: a dot is dragged; an edge is dragged as a whole (Ctrl: a new dot, Alt: an arch). Returns true when it took the click.
+-- A click on the box: a dot is dragged; an edge is dragged as a whole (Ctrl: a new dot, Ctrl+Shift: an arch; Alt is not used: KDE moves the window with it). Returns true when it took the click.
 function W.mouse_down(px, py, pw, ph, mx, my, cap)
   if not (data and show_partials and any_sel()) then return false end
   local h = W.hit(px, py, pw, ph, mx, my)
   if not h then return false end
-  local alt, ctrl = (cap & 16) ~= 0, (cap & 4) ~= 0
+  local alt = (cap & 12) == 12                                          -- (Ctrl+Shift: the arch; it was Alt before)
+  local ctrl = (cap & 4) ~= 0 and not alt
   -- A selected point that happens to lie on an edge is moved, not the edge (the dots are always the box's own).
   if h.kind == "edge" and not h.mid and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end   -- (Ctrl there is the one-axis move; the handle in the middle of an edge is always the box's)
   local w = W.get()
@@ -2148,7 +2233,7 @@ end
 function W.drag_to(mx, my, cap)
   local d, w = W.drag, W.w
   if not (d and w) then return end
-  local fine = ((cap & 8) ~= 0) and 0.2 or 1
+  local fine = ((cap & 8) ~= 0 and d.kind ~= "bulge") and 0.2 or 1        -- (an arch is made with Ctrl+Shift held: no fine movement, no one-axis lock)
   d.ex, d.ey = d.ex + (mx - d.lastx) * fine, d.ey + (d.lasty - my) * fine
   d.th = d.th + (mx - d.lastx) * fine / d.g.pps                       -- the movement in time, in seconds (it also counts what the window scrolls)
   d.lastx, d.lasty = mx, my
@@ -2168,7 +2253,7 @@ function W.drag_to(mx, my, cap)
     d.lastscroll = scroll
     dirty = true
   end
-  if (cap & 4) ~= 0 then
+  if (cap & 4) ~= 0 and d.kind ~= "bulge" then
     if not d.axis and math.abs(d.ex) + math.abs(d.ey) > 3 then d.axis = (math.abs(d.ex) >= math.abs(d.ey)) and "x" or "y" end
   else
     d.axis = nil
@@ -2740,7 +2825,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
   W.draw_space()
-  local build = "build 10 Nov 22:50"                                        -- (which version of the script is running)
+  local build = "build 11 Nov 09:26"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2853,11 +2938,11 @@ local function handle_input(px, py, pw, ph)
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
     elseif channel_row_click(mx, my) then
       -- (the channel row: handled above)
-    elseif data and inside and (cap & 8) == 0 and W.mouse_down(px, py, pw, ph, mx, my, cap) then
+    elseif data and inside and ((cap & 8) == 0 or (cap & 12) == 12) and W.mouse_down(px, py, pw, ph, mx, my, cap) then
       -- (the box and its handles: handled above; Shift is left for adding to the selection)
-    elseif data and inside and (cap & 16) ~= 0 and lane_at(py, ph, my) then       -- Alt+drag: a lasso
+    elseif data and inside and (cap & 12) == 12 and lane_at(py, ph, my) then       -- Ctrl+Shift+drag: a lasso (it adds to the selection; Esc or a click on empty space clears first)
       local lane = lane_at(py, ph, my)
-      lasso = { pts = { { mx, my } }, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
+      lasso = { pts = { { mx, my } }, add = true, off = lane.off, h = lane.h }
     elseif data and inside and lane_at(py, ph, my) then
       local lane = lane_at(py, ph, my)
       local hit, lh = false, nil
@@ -2911,7 +2996,7 @@ local function handle_input(px, py, pw, ph)
     local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
     for _, q in ipairs(l.pts) do x0, x1, y0, y1 = math.min(x0, q[1]), math.max(x1, q[1]), math.min(y0, q[2]), math.max(y1, q[2]) end
     if #l.pts < 3 or (x1 - x0 < 4 and y1 - y0 < 4) then
-      if not l.add then clear_selection() end                    -- (a click with Alt held: like a click on empty space)
+      if not l.add then clear_selection() end                    -- (a click with Ctrl+Shift held and no loop: nothing)
     else
       local pt, plf = {}, {}
       for i, q in ipairs(l.pts) do
@@ -2964,7 +3049,9 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 9 then if #chs > 1 then solo_next() end           -- Tab: only the next channel (then all again)
   elseif ch == 118 or ch == 86 then if #chs > 1 then toggle_view_mode() end   -- V: stack / overlay
   elseif ch == 16 then print_to_track()                          -- Ctrl+P
-  elseif ch == 97 or ch == 65 then audition()                    -- A
+  elseif ch == 97 or ch == 65 then                                -- A: the selection only when there is one, else the whole sound from the playhead
+    if not (any_sel() and W.audition_selection()) then audition() end
+  elseif ch == 122 or ch == 90 then W.zoom_selection()           -- Z: zoom to the selection
   elseif ch == 32 then stop_audition(); set_status("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end

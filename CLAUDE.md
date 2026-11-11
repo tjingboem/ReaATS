@@ -419,6 +419,14 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   frequency of the partial; noise: band centre) centred, pairwise sine/cosine. Lua: `W.space` (mode, amount, channels; ExtState "space"), `W.space_opts/space_key/space_rects/draw_space/space_click/space_to`; bottom row right of MAX PARTIALS;
   the replay key of AUDITION includes `W.space_key()`; the Lua fallback synthesis refuses (status) when SPACE is not STEREO. Tests: python/tests/test_spatial.py (9), test_py_synth.lua (channel counts), mock_channels section 9.
 
+- SELECTION AUDITION + ZOOM (tjingboem 11 Nov 2026: "AUDITION of the selection only ... Shortcut A"; "Zoom to selection (Z), with a bit of context"): `A` with a selection = `W.audition_selection` (only the selected cells sound, from t0-hop to t1+hop,
+  sines only, SPACE applies, Python only; the sound is NOT kept in `last_audition`, its WAV goes to `slice_history`); without a selection A is the old whole-sound AUDITION (the AUDITION button always is). Engine: `--select PATH` (one per file, '-' = none;
+  records of partial, frame as two doubles; `a.mask`, applied in `chunk` after the edits), the editor writes `reaats_<id>_chK_select.bin` per channel (a channel without selection gets an empty mask = silent). `Z` = `W.zoom_selection` (union of the
+  channels' `sel_info`; time pad 25 % (min 8 hops/20 ms), frequency pad 25 % of the log span (min 0.2 octave)). Tests: test_spatial.py MaskTests, mock_channels section 10.
+- ALT IS NOT USED ANY MORE (tjingboem 11 Nov 2026, KDE X11: KWin's Alt+left-drag "move window" grabbed the lasso): the LASSO is Ctrl+Shift+drag and it ALWAYS ADDS to the selection (tjingboem's answer; Esc or a click on empty space clears first; a
+  Ctrl+Shift click without a loop does nothing); the bend box's ARCH (bulge) is Ctrl+Shift+drag on an edge/dot (`W.mouse_down`: `alt = (cap & 12) == 12`, `ctrl` excludes it; `W.drag_to` ignores Shift-fine and Ctrl-axis for a bulge). Ctrl+Shift elsewhere on
+  the picture = lasso. The test helper `sweep` now presses Esc first (it used an Alt+click to clear).
+
 - NOISE FOLLOWS THE SINES (tjingboem 10 Nov 2026: "when noise is active, it should follow the movements of the sines"): when `show_noise` and the file has noise (`W.noise_on(d)`), the 25 noise-band energies follow
   TIME movements of the sines: move, bend/stretch (`W.commit`), copy/paste, cut (Ctrl+X; plain Delete leaves noise; transpose never moves noise). Planners in lib/ats_edit.lua: `noise_bands` (band included
   when >50% of its width is inside the region's frequencies), `plan_noise_move/clear/warp`, `noise_piece`, `plan_noise_paste`; a noise change is `{b,f,old,new}`; landing energies are ADDED, source silenced.

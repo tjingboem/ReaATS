@@ -48,6 +48,7 @@ function M.start(opts)
     args[#args + 1] = "--spatial-amount"; args[#args + 1] = string.format("%.4f", opts.spatial.amount or 1)
     args[#args + 1] = "--spatial-channels"; args[#args + 1] = tostring(opts.spatial.channels or 2)
   end
+  if opts.select then for i = 1, #opts.files do args[#args + 1] = "--select"; args[#args + 1] = opts.select[i] or "-" end end
   if opts.edits then for i = 1, #opts.files do args[#args + 1] = "--edits"; args[#args + 1] = opts.edits[i] or "-" end end
   for _, f in ipairs(opts.files) do args[#args + 1] = f end
   local fh = io.open(argsfile, "w")

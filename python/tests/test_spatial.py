@@ -130,5 +130,37 @@ class SpatialTests(unittest.TestCase):
             self.assertEqual(struct.unpack("<H", fh.read()[22:24])[0], 2)
 
 
+class MaskTests(unittest.TestCase):
+    def test_only_the_masked_cells_sound(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "m.ats")
+        make_ats(path, [440.0, 880.0])
+        a = S.load_ats(path)
+        S.NOISE_SHAPE = "corrected"
+        plain, _ = S.render_channel(a, 0.0, None, True, False, 1, 0.0, 1.0, None, None)
+        a.mask = np.array([[2.0, f] for f in range(1, FRAMES + 1)])          # only partial 2 (880 Hz)
+        only2, _ = S.render_channel(a, 0.0, None, True, False, 1, 0.0, 1.0, None, None)
+        spec_p, spec_m = np.abs(np.fft.rfft(plain[5000:25000])), np.abs(np.fft.rfft(only2[5000:25000]))
+        k = lambda f: int(round(f * 20000 / SR))
+        self.assertGreater(spec_p[k(440)], 100)
+        self.assertLess(spec_m[k(440)], 1e-3 * spec_p[k(440)])
+        self.assertAlmostEqual(spec_m[k(880)] / spec_p[k(880)], 1.0, places=3)
+        a.mask = np.zeros((0, 2))
+        none, _ = S.render_channel(a, 0.0, None, True, False, 1, 0.0, 1.0, None, None)
+        self.assertEqual(float(np.max(np.abs(none))), 0.0)
+
+    def test_the_command_line_takes_a_selection_file(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "m.ats")
+        make_ats(path, [440.0, 880.0])
+        sel = os.path.join(d, "sel.bin")
+        np.array([[1.0, f] for f in range(1, 31)], dtype="<f8").tofile(sel)
+        wav = os.path.join(d, "o.wav")
+        S.main(["--out", wav, "--select", sel, "--jobs", "1", "--from", "0.0", "--to", "0.2", path])
+        with open(wav, "rb") as fh:
+            raw = fh.read()
+        self.assertGreater(len(raw), 44)
+
+
 if __name__ == "__main__":
     unittest.main()
