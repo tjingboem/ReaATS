@@ -718,7 +718,7 @@ do
   assert(saw("^%+10%.0 dB$"), "a click at three quarters of the track is +10 dB: " .. tostring(saw(" dB")))
   press(30064); strings = {}; frame()
   assert(saw("^%+10%.5 dB$"), "Up adds half a dB: " .. tostring(saw(" dB")))
-  click(558 + 20, 276 + 54 + 9); strings = {}; frame()                                  -- APPLY
+  click(558 + 20, 276 + 66 + 9); strings = {}; frame()                                  -- APPLY
   assert(not saw("Gain of the selection") and saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "APPLY changes every green channel: " .. tostring(saw("gain") or "(no status)"))
   assert(saw("gain %+10%.5 dB"), "and the status says what it did: " .. tostring(saw("gain") or "(no status)"))
   -- the amplitude really changed: save and read the file (the selection holds the strongest point, so the maximum is 10.5 dB higher)

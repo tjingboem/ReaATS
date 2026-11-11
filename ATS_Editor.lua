@@ -2041,13 +2041,13 @@ end
 -- The sines only: the noise bands are not touched. W.gain = { x, y, db, drag } while it is open (it takes every click and key).
 W.GAIN_MAX = 20
 function W.gain_open(mx, my)
-  W.gain = { x = clamp(mx - 130, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(my - 24, 4, math.max(math.floor(gfx.h) - 84, 4)), db = 0 }
+  W.gain = { x = clamp(mx - 130, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(my - 24, 4, math.max(math.floor(gfx.h) - 96, 4)), db = 0 }
   dirty = true
 end
 function W.gain_rects()
   local g = W.gain
-  return { box = { g.x, g.y, 260, 80 }, track = { g.x + 16, g.y + 34, 228, 10 },
-           reset = { g.x + 16, g.y + 54, 56, 18 }, cancel = { g.x + 120, g.y + 54, 62, 18 }, apply = { g.x + 188, g.y + 54, 56, 18 } }
+  return { box = { g.x, g.y, 260, 92 }, track = { g.x + 16, g.y + 34, 228, 10 },
+           reset = { g.x + 16, g.y + 66, 56, 18 }, cancel = { g.x + 120, g.y + 66, 62, 18 }, apply = { g.x + 188, g.y + 66, 56, 18 } }
 end
 function W.gain_single(db)
   if not sel_info then return end

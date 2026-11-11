@@ -188,7 +188,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   FROM there (`synth.render(d, {from=t})` starts at the frame at or before it and returns that start time) and the line
   moves while it plays (position = start + time since the preview started; SWS's Xen preview has no position query, so it
   is an estimate); at the end or on Space it returns to where it was set. PRINT still makes the whole sound. Not asked,
-  not built: following REAPER's edit cursor/transport, looping, audition of the selection only.
+  (Ideas of following REAPER's transport and of looping were REMOVED by tjingboem, 11 Nov 2026; the audition of the selection only is built, key A.)
 - AUDITION BLINK (tjingboem 9 Nov 2026: "it takes a few seconds before Audition actually starts playing. Make the Audition
   button blink"): the sound is now prepared in STEPS so the window can animate: `synth.render_job(d, opts)` (a coroutine; the
   render loops call `tick()`; `job.step(0.03)` per frame, `job.progress`, `job.cancel()`; result identical sample for sample to
@@ -277,7 +277,7 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 
 ## Next (not started, wait for tjingboem)
 1. (There is no Lua analysis: see DECISION above.)
-2. Ideas only, nobody has asked: zoom to selection (Z), edge-scroll for box/lasso/move, paste and move that extend the file, following REAPER's transport and looping, audition of the selection only, a ReaLayout project for the UI.
+2. No open ideas (11 Nov 2026: tjingboem removed the transport/looping idea and the noise-step fade idea; zoom to selection, edge-scroll, extending move/paste, selection audition and the ReaLayout projects are all built). Still procedural, not in a layout: the Suggested Settings view and the Analysing screen.
 
 ## Facts
 - Csound 7 opcode names are lowercase (`atsinfo`, `atsadd`); `atsadd` ignores the stored phase
@@ -844,3 +844,5 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   check_python_once itself end to end: a popup on a first failed attempt (not remembered), a popup again on a first SUCCESS
   (remembered this time), and silence on a third launch even with a search that would again fail, proving the remembered success
   really does skip the check rather than coincidentally passing again. Full suite passes.
+
+- SMALL FIXES 11 Nov 2026 (tjingboem's screenshots): the gain slider's -20 / +20 labels were hidden by the buttons (the popup is now 92 px high, buttons at +66); on the Suggested Settings view the marker labels ("highest now", "suggested", "content up to") go to the LEFT of their line when they would be cropped at the right edge of the plot.

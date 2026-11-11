@@ -896,7 +896,9 @@ function Page:draw_pre(W, H, top)
   local function marker(f, label, r, g, b, row)
     local x = fx(f)
     gfx.set(r, g, b, 0.9); gfx.line(x, Y0, x, Y0 + PH)
-    text(x + 4, Y0 + 3 + row * 14, label, r, g, b)
+    local tw = gfx.measurestr(label)
+    local tx = (x + 4 + tw > X0 + PW) and (x - 4 - tw) or (x + 4)           -- (tjingboem, 11 Nov 2026: near the right edge the label goes to the LEFT of the line, not cropped)
+    text(tx, Y0 + 3 + row * 14, label, r, g, b)
   end
   marker(self.s.lowest_frequency, string.format("lowest now %s Hz", fmt_num(self.s.lowest_frequency)), 0.85, 0.85, 0.85, 0)
   marker(self.s.highest_frequency, string.format("highest now %s Hz", fmt_num(self.s.highest_frequency)), 0.85, 0.85, 0.85, 0)
@@ -917,7 +919,10 @@ function Page:draw_pre(W, H, top)
   end
   if pre.highest and pre.highest > 0 then
     gfx.set(0.4, 0.9, 0.5, 1)
-    text(fx(pre.highest) - 30, Y0 + PH - 16, string.format("content up to %d Hz", math.floor(pre.highest)), 0.45, 0.9, 0.55)
+    local label = string.format("content up to %d Hz", math.floor(pre.highest))
+    local tw = gfx.measurestr(label)
+    local x = fx(pre.highest)
+    text((x + 4 + tw > X0 + PW) and (x - 4 - tw) or (x + 4), Y0 + PH - 16, label, 0.45, 0.9, 0.55)
   end
   -- the loudness over time
   local EY, EH = Y0 + PH + 40, 56
