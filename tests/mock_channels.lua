@@ -621,7 +621,7 @@ do
   assert(saw("^P%-STEREO$"), "a click on SPACE gives pseudo-stereo")
   click(222 + 40, by); strings = {}; frame()
   assert(saw("^VBAP$") and saw("^OUT$"), "the next click gives VBAP, with its OUT box")
-  click(222 + 262 + 50, by); click(222 + 262 + 50, by); strings = {}; frame()
+  click(222 + 272 + 50, by); click(222 + 272 + 50, by); strings = {}; frame()
   assert(saw("^6$"), "a click on the OUT box adds an output (4 -> 6)")
   local kept = reaper.GetExtState("tjingboem_ATSViewer", "space")
   assert(kept:match("^3|") and kept:match("|6$"), "the setting is remembered: " .. tostring(kept))
@@ -689,6 +689,42 @@ do
   press(27)
 end
 print("edge-scroll works for a box and a lasso")
+
+-- 12. a move and a paste that go beyond the end of the file make it longer (every channel), one undo step each
+do
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  press(102)
+  local lane1 = lanes_now()[1]
+  local y_top, y_bot = 105, 100 + lane1.h - 5
+  strings = {}; frame()
+  assert(saw("   2%.00 s   "), "the file is 2.00 s: " .. tostring(saw("partials")))
+  sweep(65, y_top, 1040, y_bot)
+  for _ = 1, 25 do press(1919379572, 4) end                       -- Ctrl+Right: ten frames, 25 times
+  strings = {}; frame()
+  assert(not saw("   2%.00 s   "), "moving the selection past the end makes the file longer: " .. tostring(saw("partials")))
+  assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "in every channel")
+  for _ = 1, 25 do press(26, 4) end
+  strings = {}; frame()
+  assert(saw("   2%.00 s   ") and not saw("^%d%*$"), "the undos make it 2.00 s again: " .. tostring(saw("partials")))
+  -- before the start: the file gets frames in front
+  sweep(65, y_top, 1040, y_bot)
+  for _ = 1, 8 do press(1818584692, 4) end                        -- Ctrl+Left
+  strings = {}; frame()
+  assert(not saw("   2%.00 s   "), "moving the selection before the start makes the file longer: " .. tostring(saw("partials")))
+  for _ = 1, 8 do press(26, 4) end
+  strings = {}; frame()
+  assert(saw("   2%.00 s   "), "and the undos take it back: " .. tostring(saw("partials")))
+  -- a paste at the end of the file
+  sweep(65, y_top, 1040, y_bot)
+  press(3)                                                         -- Ctrl+C
+  press(6647396)                                                   -- End: the playhead at the end
+  press(22); strings = {}; frame()                                 -- Ctrl+V
+  assert(saw("the file is [%d%.]+ s longer now"), "a paste at the end makes the file longer: " .. tostring(saw("pasted") or saw("paste")))
+  assert(not saw("   2%.00 s   "), "the header shows it: " .. tostring(saw("partials")))
+  press(26, 4); strings = {}; frame()
+  assert(saw("   2%.00 s   "), "one Ctrl+Z takes the paste and the length back: " .. tostring(saw("partials")))
+end
+print("a move and a paste past the ends make the file longer")
 
 clean()
 os.remove(scratch .. "mc.wav"); os.remove(scratch .. "mm_short.wav")

@@ -796,23 +796,51 @@ end
 
 -- Move the selected points by df frames in time and by `ratio` in frequency (see lib/ats_edit.lua
 -- for how colliding pieces get other rows). The selection follows the moved points.
-local function move_single(df, ratio)
-  if not sel_info then return end
-  local plan = edit.plan_move(data, sel, df, ratio)
-  if not plan then set_status("nothing to move"); return end
-  local label = string.format("move %+d frames, %+.2f st", plan.df, 12 * math.log(ratio, 2))
-  local nplan = W.noise_on(data) and edit.plan_noise_move(data, W.noise_region(data, sel_info), plan.df) or nil       -- (the noise bands go along in time)
-  do_edit(label, plan.changes, plan.rows_before, plan.rows_after, nil, nplan and nplan.changes)
-  sel = plan.sel
-  update_sel_info()
-  if plan.rows_after > plan.rows_before then
-    set_status(string.format("%s (+%d new partial rows)", label, plan.rows_after - plan.rows_before))
-  end
-end
-
 local function delete_selection() edit_on_channels(function() delete_single(false) end, "delete") end
 local function transpose_selection(semitones) edit_on_channels(function() transpose_single(semitones) end, "transpose") end
-local function move_selection(df, ratio) edit_on_channels(function() move_single(df, ratio) end, "move") end
+
+-- A move (the arrow keys or a drag): the points of every green channel go by `df` frames and a frequency factor. When they go beyond the end
+-- or before the start of the file, the file grows (every channel of a set), as for the bend box, and one undo step takes it all back.
+function W.room()
+  local rows_max = 1
+  for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
+  return math.min(chs[1].data.frames, math.floor(2e7 / rows_max))        -- at most as long again, and never more than 20 million new cells
+end
+function W.move(df, ratio)
+  if not W.busy then W.commit() end
+  local list = {}
+  for _, i in ipairs(on_channels()) do if chs[i].sel_info then list[#list + 1] = i end end
+  if #list == 0 then return end
+  local room = W.room()
+  local plans, nplans, need_end, need_front, first_plan = {}, {}, 0, 0, nil
+  for _, i in ipairs(list) do
+    with_channel(i, function()
+      local opts = { max_extra = room, max_front = room }
+      local plan = edit.plan_move(data, sel, df, ratio, opts)
+      if not plan then return end
+      plans[i], first_plan = plan, first_plan or plan
+      need_end, need_front = math.max(need_end, plan.frames_after), math.max(need_front, plan.frames_front)
+      if W.noise_on(data) then                                          -- (the noise bands go along in time)
+        local np = edit.plan_noise_move(data, W.noise_region(data, sel_info), plan.df, opts)
+        if np then
+          nplans[i] = np
+          need_end, need_front = math.max(need_end, np.frames_after), math.max(need_front, np.frames_front)
+        end
+      end
+    end)
+  end
+  if not first_plan then set_status("nothing to move"); return end
+  local label = string.format("move %+d frames, %+.2f st", first_plan.df, 12 * math.log(ratio, 2))
+  local before, rows_added = chs[1].data.frames, 0
+  for _, plan in pairs(plans) do rows_added = math.max(rows_added, plan.rows_after - plan.rows_before) end
+  W.apply_grown(label, plans, nplans, need_end, need_front)
+  W.region = nil                                                       -- (the box is the one round the selection as it is now)
+  if chs[1].data.frames == before then
+    if rows_added > 0 then set_status(string.format("%s (+%d new partial rows)", label, rows_added))
+    elseif #list > 1 then set_status(label .. " in " .. #list .. " channels") end
+  end
+end
+local function move_selection(df, ratio) W.move(df, ratio) end
 
 -- ------------------------------------------------------------ copy, cut and paste
 -- Ctrl+C copies the selected points of every channel that is on and green (their frames relative to the first copied frame, so the
@@ -863,32 +891,32 @@ local function paste_clipboard()
   for _, i in ipairs(on_channels()) do if clipboard.pieces[i] then targets[#targets + 1] = i end end
   if #targets == 0 then set_status("the channels that were copied are not editable now: switch them on and make their LED green"); return end
   clear_selection()
-  group_counter = group_counter + 1
-  edit_group = group_counter
   for _, c in ipairs(chs) do c.redo_stack = {} end
   redo_stack = {}
-  local total, dropped, at = 0, 0, 0
+  local room = W.room()
+  local plans, nplans, need_end, at = {}, {}, 0, 0
   for _, i in ipairs(targets) do
     with_channel(i, function()
       local f0 = frame_at(playhead)
       at = data.times[f0]
-      local plan = edit.plan_paste(data, clipboard.pieces[i], f0)
-      local np = W.noise_on(data) and clipboard.noise and clipboard.noise[i] and edit.plan_noise_paste(data, clipboard.noise[i], f0) or nil
-      if plan or np then
-        do_edit("paste", plan and plan.changes or {}, plan and plan.rows_before, plan and plan.rows_after, nil, np and np.changes)
-        if plan then
-          sel = plan.sel
-          update_sel_info()
-          total, dropped = total + plan.count, dropped + plan.dropped
-        end
-      end
+      local opts = { max_extra = room }                                          -- (a paste near the end makes the file longer)
+      local plan = edit.plan_paste(data, clipboard.pieces[i], f0, opts)
+      local np = W.noise_on(data) and clipboard.noise and clipboard.noise[i] and edit.plan_noise_paste(data, clipboard.noise[i], f0, opts) or nil
+      plans[i], nplans[i] = plan, np
+      if plan then need_end = math.max(need_end, plan.frames_after) end
+      if np then need_end = math.max(need_end, np.frames_after) end
     end)
   end
-  edit_group = nil
+  local total, dropped = 0, 0
+  for _, plan in pairs(plans) do total, dropped = total + plan.count, dropped + plan.dropped end
+  if total == 0 and next(nplans) == nil then set_status("nothing could be pasted there: the playhead is too near the end of the file"); return end
+  local before, dur_before = chs[1].data.frames, chs[1].data.dur
+  W.apply_grown("paste", plans, nplans, need_end, 0)
   W.region = nil
-  if total == 0 then set_status("nothing could be pasted there: the playhead is too near the end of the file"); return end
-  set_status(string.format("pasted %d points at %.3f s%s%s (they are selected now)", total, at,
+  local grown = chs[1].data.dur - dur_before
+  set_status(string.format("pasted %d points at %.3f s%s%s%s (they are selected now)", total, at,
                            #targets > 1 and (" in " .. #targets .. " channels") or "",
+                           chs[1].data.frames > before and string.format(", the file is %.2f s longer now", grown) or "",
                            dropped > 0 and (", " .. dropped .. " fell outside the file") or ""))
 end
 
@@ -1902,7 +1930,7 @@ end
 function W.space_rects()
   local x0 = MARGIN_L + 160
   local y = math.floor(gfx.h) - 26
-  return { button = { x0, y, 96, 18 }, slider = { x0 + 104, y + 4, 96, 10 }, out = { x0 + 262, y, 62, 18 } }
+  return { button = { x0, y, 96, 18 }, slider = { x0 + 104, y + 4, 96, 10 }, out = { x0 + 272, y, 62, 18 } }
 end
 function W.draw_space()
   local r, sp = W.space_rects(), W.space
@@ -2004,14 +2032,16 @@ end
 -- picture (or beyond it), the view scrolls on, faster the further in, as it does for the bend box. The view goes on only as far as the file does (so a drag
 -- to the edge of a picture that shows the whole file does not move it). Returns how many pixels the picture moved (the dragged things are kept in place by the caller).
 -- `right_ok` / `left_ok`: the drag may go on that way (a drag that began in the edge zone and goes the other way does not scroll there).
-function W.edge_scroll(mx, right_ok, left_ok)
+-- `beyond`: the view may go past the ends of the file, by the room the file may grow into (a move: the file gets longer there).
+function W.edge_scroll(mx, right_ok, left_ok, beyond)
   if not data then return 0 end
   local px0, _, pw0 = plot_rect()
   local zone = math.max(48, 0.08 * pw0)
   local right, left = px0 + pw0 - zone, px0 + zone
   local span = view.t1 - view.t0
   local tmax = data.times[data.frames] or data.dur
-  local lo, hi = 0, tmax                                                  -- (only as far as the file goes: nothing to select or move to beyond it)
+  local lo, hi = 0, tmax                                                  -- (only as far as the file goes: nothing to select beyond it)
+  if beyond then lo, hi = -tmax, 2 * tmax end                            -- (a move makes the file longer: as far as the room goes)
   local scroll = 0
   if mx > right and right_ok then scroll = span * 0.012 * clamp((mx - right) / zone, 0, 2.5)
   elseif mx < left and left_ok then scroll = -span * 0.012 * clamp((left - mx) / zone, 0, 2.5) end
@@ -2047,41 +2077,10 @@ function W.zoom_selection()
 end
 
 -- Applies the bend to the selected points of every channel that is on and green (one undo step), and opens a flat box round them.
-function W.commit()
-  local w = W.w
-  W.w = nil
-  if not w or W.m.is_flat(w) then return end
-  local peak, peak_h = W.m.max_abs(w), W.m.max_abs_h(w)
-  local map = W.m.mapper(w)
-  local parts = {}
-  if peak > 0.005 then parts[#parts + 1] = string.format("up to %.1f st", peak) end
-  if peak_h > 0.0005 then parts[#parts + 1] = string.format("in time up to %.0f ms", peak_h * 1000) end
-  local label = "bend " .. table.concat(parts, ", ")
-  -- 1. the plan of every channel that is edited together (nothing is changed yet): how far the file has to grow, at the end and in front
-  local targets, plans, nplans, need_end, need_front, rows_max = on_channels(), {}, {}, 0, 0, 1
-  local list = {}
-  for _, i in ipairs(targets) do if chs[i].sel_info then list[#list + 1] = i end end
-  if #list == 0 then return end
-  for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
-  for _, i in ipairs(list) do
-    with_channel(i, function()
-      -- the file may get longer when a stretch goes past its end or before its start: at most as long again at each side, and never more
-      -- than 20 million new cells. (What goes before the start puts frames in front: everything in the file moves later.)
-      local room = math.min(data.frames, math.floor(2e7 / math.max(rows_max, 1)))
-      plans[i] = edit.plan_warp(data, sel, map, { max_extra = room, max_front = room })
-      if plans[i] then
-        need_end = math.max(need_end, plans[i].frames_after)
-        need_front = math.max(need_front, plans[i].frames_front)
-      end
-      if W.noise_on(data) then                                          -- the noise bands in the box follow in time (they have no pitch to bend)
-        nplans[i] = edit.plan_noise_warp(data, { t0 = w.t0, t1 = w.t1, f0 = w.f0, f1 = w.f1 }, map, { max_extra = room, max_front = room })
-        if nplans[i] then
-          need_end = math.max(need_end, nplans[i].frames_after)
-          need_front = math.max(need_front, nplans[i].frames_front)
-        end
-      end
-    end)
-  end
+-- Applies the plans of every channel in one undo group, making the file (every channel of the set, so that they stay equally long) longer
+-- at the end and in front by what the plans need. plans[i] / nplans[i]: the sine and the noise plan of channel i (or nil). The cells of a plan
+-- are numbered from the old first frame: when frames go in front they are later by that many. Used by the bend box, a move and a paste.
+function W.apply_grown(label, plans, nplans, need_end, need_front)
   need_end = math.max(need_end, chs[1].data.frames)
   -- 2. one undo group: every channel gets its own entry (the edit, or just the longer file). The frames in front move all the numbers.
   W.busy = true
@@ -2138,6 +2137,44 @@ function W.commit()
   elseif dropped > 0 then
     set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped))
   end
+end
+
+function W.commit()
+  local w = W.w
+  W.w = nil
+  if not w or W.m.is_flat(w) then return end
+  local peak, peak_h = W.m.max_abs(w), W.m.max_abs_h(w)
+  local map = W.m.mapper(w)
+  local parts = {}
+  if peak > 0.005 then parts[#parts + 1] = string.format("up to %.1f st", peak) end
+  if peak_h > 0.0005 then parts[#parts + 1] = string.format("in time up to %.0f ms", peak_h * 1000) end
+  local label = "bend " .. table.concat(parts, ", ")
+  -- 1. the plan of every channel that is edited together (nothing is changed yet): how far the file has to grow, at the end and in front
+  local targets, plans, nplans, need_end, need_front, rows_max = on_channels(), {}, {}, 0, 0, 1
+  local list = {}
+  for _, i in ipairs(targets) do if chs[i].sel_info then list[#list + 1] = i end end
+  if #list == 0 then return end
+  for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
+  for _, i in ipairs(list) do
+    with_channel(i, function()
+      -- the file may get longer when a stretch goes past its end or before its start: at most as long again at each side, and never more
+      -- than 20 million new cells. (What goes before the start puts frames in front: everything in the file moves later.)
+      local room = math.min(data.frames, math.floor(2e7 / math.max(rows_max, 1)))
+      plans[i] = edit.plan_warp(data, sel, map, { max_extra = room, max_front = room })
+      if plans[i] then
+        need_end = math.max(need_end, plans[i].frames_after)
+        need_front = math.max(need_front, plans[i].frames_front)
+      end
+      if W.noise_on(data) then                                          -- the noise bands in the box follow in time (they have no pitch to bend)
+        nplans[i] = edit.plan_noise_warp(data, { t0 = w.t0, t1 = w.t1, f0 = w.f0, f1 = w.f1 }, map, { max_extra = room, max_front = room })
+        if nplans[i] then
+          need_end = math.max(need_end, nplans[i].frames_after)
+          need_front = math.max(need_front, nplans[i].frames_front)
+        end
+      end
+    end)
+  end
+  W.apply_grown(label, plans, nplans, need_end, need_front)
 end
 
 -- Pixel geometry of the box in a lane: x0, x1, yt (top), yb (bottom), pxs (pixels for one semitone). A box that is only a few pixels
@@ -2850,7 +2887,7 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
   W.draw_space()
-  local build = "build 11 Nov 09:56"                                        -- (which version of the script is running)
+  local build = "build 11 Nov 10:05"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2990,7 +3027,7 @@ local function handle_input(px, py, pw, ph)
     local fine = ((cap & 8) ~= 0) and 0.2 or 1
     mover.ex, mover.ey = mover.ex + (mx - mover.lx) * fine, mover.ey + (my - mover.ly) * fine
     mover.lx, mover.ly, mover.x, mover.y = mx, my, mx, my
-    if mover.active then mover.ex = mover.ex + W.edge_scroll(mx, mover.ex > 0, mover.ex < 0) end                -- (what the view scrolls is part of the move)
+    if mover.active then mover.ex = mover.ex + W.edge_scroll(mx, mover.ex > 0, mover.ex < 0, true) end                -- (what the view scrolls is part of the move)
     if not mover.active and (math.abs(mx - mover.x0) > 3 or math.abs(my - mover.y0) > 3) then mover.active = true end
     if (cap & 4) ~= 0 then
       if not mover.axis and math.abs(mover.ex) + math.abs(mover.ey) > 3 then

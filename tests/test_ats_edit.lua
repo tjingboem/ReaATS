@@ -409,5 +409,53 @@ do
         and d2.amp[1][9] == 0.6 and d2.amp[1][21] == 0.6, "d untouched outside selection")
 end
 
+
+-- 12. a move and a paste that make the file longer (tjingboem 11 Nov 2026: "Paste and move that extend the file, as the bend box does")
+do
+  local function rng(a, b) local t = {}; for f = a, b do t[f] = true end; return t end
+  -- without room a move still stops at the end of the file (as before)
+  local d = make(2, 20); fill(d, 1, 14, 18, 100)
+  local plan = edit.plan_move(d, { [1] = rng(14, 18) }, 10, 1)
+  check("move: without room it stops at the end of the file", plan and plan.df == 2 and plan.frames_after == 20 and plan.frames_front == 0, plan and plan.df)
+  -- with room the file grows at the end: the cells beyond frame 20 are in the plan
+  plan = edit.plan_move(d, { [1] = rng(14, 18) }, 10, 1, { max_extra = 20, max_front = 20 })
+  local top = 0
+  for _, c in ipairs(plan.changes) do if c.f > top then top = c.f end end
+  check("move: with room the points go beyond the end", plan.df == 10 and top == 28 and plan.frames_after == 28 and plan.frames_front == 0, top .. " " .. tostring(plan.frames_after))
+  check("move: every point is kept (5 written, 5 silenced)", #plan.changes == 10 and plan.count == 5, #plan.changes)
+  local nz = 0
+  for _, c in ipairs(plan.changes) do if c.na > 0 then nz = nz + 1 end end
+  check("move: 5 cells sound at the new place", nz == 5, nz)
+  -- in front: frames before 1
+  local d2 = make(2, 20); fill(d2, 1, 3, 6, 100)
+  plan = edit.plan_move(d2, { [1] = rng(3, 6) }, -6, 1, { max_extra = 20, max_front = 20 })
+  local low = 99
+  for _, c in ipairs(plan.changes) do if c.f < low then low = c.f end end
+  check("move: before the start the plan has frames in front", plan.df == -6 and low == -3 and plan.frames_front == 4, low .. " " .. tostring(plan.frames_front))
+  -- the room is limited
+  plan = edit.plan_move(d2, { [1] = rng(3, 6) }, -60, 1, { max_extra = 20, max_front = 5 })
+  check("move: the room is a limit (5 frames in front at most)", plan.frames_front == 5 and plan.df == -7, plan.df .. " " .. tostring(plan.frames_front))
+  -- a paste near the end
+  local pts = {}
+  for k = 0, 9 do pts[#pts + 1] = { p = 1, df = k, amp = 0.4, frq = 300 } end
+  local d3 = make(1, 20)
+  local pp = edit.plan_paste(d3, pts, 16)
+  check("paste: without room the points beyond the end are dropped", pp.count == 5 and pp.dropped == 5 and pp.frames_after == 20, pp.count .. " " .. pp.dropped)
+  pp = edit.plan_paste(d3, pts, 16, { max_extra = 20 })
+  check("paste: with room the file grows to hold all of it", pp.count == 10 and pp.dropped == 0 and pp.frames_after == 25, pp.count .. " " .. tostring(pp.frames_after))
+  -- noise
+  local dn = make(1, 20); dn.has_noise = true; dn.noise = {}
+  for b = 1, 25 do dn.noise[b] = {}; for f = 1, 20 do dn.noise[b][f] = 1 end end
+  dn.sr = 44100
+  local region = { t0 = 0.14, t1 = 0.18, f0 = 0, f1 = 20000 }
+  local np = edit.plan_noise_move(dn, region, 10, { max_extra = 20, max_front = 0 })
+  check("noise move: the noise goes beyond the end and says how far", np and np.frames_after == 29 and np.frames_front == 0, np and np.frames_after)
+  np = edit.plan_noise_move(dn, region, 10)
+  check("noise move: without room it is left out beyond the end", np and np.frames_after == 20, np and np.frames_after)
+  local piece = edit.noise_piece(dn, region, 15)
+  local npp = edit.plan_noise_paste(dn, piece, 18, { max_extra = 20 })
+  check("noise paste: the file grows for it", npp and npp.frames_after == 18 + piece.rel + piece.n - 1, npp and npp.frames_after)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

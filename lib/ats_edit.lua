@@ -114,9 +114,13 @@ end
 -- row when the destination cells are free, otherwise goes to the nearest row that is silent there,
 -- otherwise to a new row. Nothing is ever overwritten. Phase values are not moved (stale after editing).
 -- Returns nil (nothing to do) or a plan:
---   { changes = { {p,f,oa,na,of,nf}, ... }, sel = new selection, rows_before, rows_after, df, count }
-function M.plan_move(d, sel, df, ratio)
+--   { changes = { {p,f,oa,na,of,nf}, ... }, sel = new selection, rows_before, rows_after, df, count, frames_after, frames_front, dropped = 0 }
+-- opts: { max_extra, max_front }: the file may grow, at the end and in front, by at most that many frames (default 0: the points stay in the
+-- file). Cells that land outside the old file are numbered beyond it (frame 0, -1 ... in front, NF+1 ... after): the caller makes the file
+-- longer and numbers every cell later by `frames_front`.
+function M.plan_move(d, sel, df, ratio, opts)
   local NF, P0 = d.frames, d.partials
+  local max_extra, max_front = (opts and opts.max_extra) or 0, (opts and opts.max_front) or 0
   local ny = d.sr / 2 - 1
   local fmin, fmax, count = math.huge, -math.huge, 0
   for _, frames in pairs(sel) do
@@ -127,7 +131,7 @@ function M.plan_move(d, sel, df, ratio)
     end
   end
   if count == 0 then return nil end
-  df = clamp(df, 1 - fmin, NF - fmax)          -- keep every point inside the file
+  df = clamp(df, 1 - max_front - fmin, NF + max_extra - fmax)          -- keep every point inside the file (or the room it may grow into)
   if df == 0 and ratio == 1 then return nil end
 
   -- runs of consecutive frames, per source row
@@ -153,7 +157,7 @@ function M.plan_move(d, sel, df, ratio)
   local taken = {}
   local function free(q, f)
     if taken[q] and taken[q][f] then return false end
-    if q > P0 then return true end
+    if q > P0 or f < 1 or f > NF then return true end
     if d.amp[q][f] <= 0 then return true end
     return (sel[q] and sel[q][f]) or false     -- a selected cell is vacated by the move
   end
@@ -176,13 +180,15 @@ function M.plan_move(d, sel, df, ratio)
 
   local order, by_key = {}, {}
   local function cell(q, f)
-    local key = q * (NF + 1) + f
-    local c = by_key[key]
+    local row = by_key[q]
+    if not row then row = {}; by_key[q] = row end
+    local c = row[f]
     if not c then
-      local oa = (q <= P0) and d.amp[q][f] or 0
-      local of_ = (q <= P0) and d.frq[q][f] or 0
+      local inside = (q <= P0 and f >= 1 and f <= NF)
+      local oa = inside and d.amp[q][f] or 0
+      local of_ = inside and d.frq[q][f] or 0
       c = { p = q, f = f, oa = oa, na = oa, of = of_, nf = of_ }
-      by_key[key] = c
+      row[f] = c
       order[#order + 1] = c
     end
     return c
@@ -210,7 +216,8 @@ function M.plan_move(d, sel, df, ratio)
   for _, c in ipairs(order) do
     if c.na ~= c.oa or c.nf ~= c.of then changes[#changes + 1] = c end
   end
-  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, df = df, count = count }
+  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, df = df, count = count, dropped = 0,
+           frames_after = math.max(NF, fmax + df), frames_front = math.max(0, 1 - (fmin + df)) }
 end
 
 -- Plans pasting copied points: `pts` is a list of { p = source row, df = frames from the first copied frame, amp, frq } and the
@@ -218,13 +225,15 @@ end
 -- row when the cells there are silent, otherwise in the nearest row that is silent for the whole run, otherwise in a new row.
 -- Points that would land outside the file are dropped. Returns { changes, sel (the pasted cells), rows_before, rows_after,
 -- count, dropped }; nil when nothing is left to paste.
-function M.plan_paste(d, pts, f0)
+-- opts.max_extra: the file may grow at the end by at most that many frames (a paste near the end then makes it longer: `frames_after`).
+function M.plan_paste(d, pts, f0, opts)
   local NF, P0 = d.frames, d.partials
+  local limit = NF + ((opts and opts.max_extra) or 0)
   local ny = d.sr / 2 - 1
   local by_row, dropped, count = {}, 0, 0
   for _, pt in ipairs(pts) do
     local f = f0 + pt.df
-    if f >= 1 and f <= NF then
+    if f >= 1 and f <= limit then
       local r = by_row[pt.p]
       if not r then r = {}; by_row[pt.p] = r end
       r[#r + 1] = { f = f, amp = pt.amp, frq = pt.frq }
@@ -256,7 +265,7 @@ function M.plan_paste(d, pts, f0)
   local taken = {}
   local function free(q, f)
     if taken[q] and taken[q][f] then return false end
-    return q > P0 or d.amp[q][f] <= 0
+    return q > P0 or f > NF or d.amp[q][f] <= 0
   end
   local function run_free(q, run)
     for _, c in ipairs(run.cells) do if not free(q, c.f) then return false end end
@@ -276,7 +285,7 @@ function M.plan_paste(d, pts, f0)
     return q
   end
 
-  local changes, newsel, rows_after = {}, {}, P0
+  local changes, newsel, rows_after, frames_after = {}, {}, P0, NF
   for _, run in ipairs(runs) do
     local q = choose(run)
     if q > rows_after then rows_after = q end
@@ -285,12 +294,15 @@ function M.plan_paste(d, pts, f0)
     for _, c in ipairs(run.cells) do
       taken[q][c.f] = true
       newsel[q][c.f] = true
+      local inside = (q <= P0 and c.f <= NF)
       changes[#changes + 1] = { p = q, f = c.f,
-                                oa = (q <= P0) and d.amp[q][c.f] or 0, na = c.amp,
-                                of = (q <= P0) and d.frq[q][c.f] or 0, nf = clamp(c.frq, 1, ny) }
+                                oa = inside and d.amp[q][c.f] or 0, na = c.amp,
+                                of = inside and d.frq[q][c.f] or 0, nf = clamp(c.frq, 1, ny) }
+      if c.f > frames_after then frames_after = c.f end
     end
   end
-  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped }
+  return { changes = changes, sel = newsel, rows_before = P0, rows_after = rows_after, count = count, dropped = dropped,
+           frames_after = frames_after, frames_front = 0 }
 end
 
 -- Plans moving the selected points by a map (t, f -> t', f'): a bend or a stretch of a box (lib/ats_warp.lua). Frequencies change point by
@@ -584,20 +596,27 @@ local function noise_cells(d)
 end
 
 -- The noise of the region moved by df frames in time.
-function M.plan_noise_move(d, region, df)
+-- opts: max_extra / max_front as for plan_move; returns { changes, bands, frames_after, frames_front }.
+function M.plan_noise_move(d, region, df, opts)
   if not d.has_noise or df == 0 then return nil end
   local bands = M.noise_bands(region.f0, region.f1, d.sr / 2)
   local fa, fb = frame_span(d, region.t0, region.t1)
   if #bands == 0 or not fa then return nil end
   local cell, result = noise_cells(d)
   for _, b in ipairs(bands) do for f = fa, fb do cell(b, f).new = 0 end end            -- the old place is silent ...
+  local limit, first_ok = d.frames + ((opts and opts.max_extra) or 0), 1 - ((opts and opts.max_front) or 0)
+  local frames_after, first_frame = d.frames, 1
   for _, b in ipairs(bands) do
     for f = fa, fb do
       local f2 = f + df
-      if f2 >= 1 and f2 <= d.frames then cell(b, f2).new = cell(b, f2).new + d.noise[b][f] end    -- ... and the noise lands (added) on the new one
+      if f2 >= first_ok and f2 <= limit then                                           -- ... and the noise lands (added) on the new one
+        cell(b, f2).new = cell(b, f2).new + d.noise[b][f]
+        if f2 > frames_after then frames_after = f2 end
+        if f2 < first_frame then first_frame = f2 end
+      end
     end
   end
-  return { changes = result(), bands = bands }
+  return { changes = result(), bands = bands, frames_after = frames_after, frames_front = 1 - first_frame }
 end
 
 -- The noise of the region silenced (cut).
@@ -674,16 +693,21 @@ function M.noise_piece(d, region, ref_frame)
 end
 
 -- The noise of a piece pasted so that its reference frame is at frame f0 (added to the noise that is there).
-function M.plan_noise_paste(d, piece, f0)
+function M.plan_noise_paste(d, piece, f0, opts)
   if not d.has_noise or not piece then return nil end
+  local limit = d.frames + ((opts and opts.max_extra) or 0)
+  local frames_after = d.frames
   local cell, result = noise_cells(d)
   for b, vals in pairs(piece.bands) do
     for k, v in ipairs(vals) do
       local f = f0 + piece.rel + k - 1
-      if f >= 1 and f <= d.frames then cell(b, f).new = cell(b, f).new + v end
+      if f >= 1 and f <= limit then
+        cell(b, f).new = cell(b, f).new + v
+        if f > frames_after then frames_after = f end
+      end
     end
   end
-  return { changes = result() }
+  return { changes = result(), frames_after = frames_after, frames_front = 0 }
 end
 
 return M
