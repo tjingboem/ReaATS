@@ -336,7 +336,13 @@ end
 
 local data_rev = 0               -- counts every change of the sound data (an edit, undo, redo, a file loaded): AUDITION replays its last sound while it is unchanged
 -- How much memory the computer has free (bytes), or nil when that cannot be found out (Linux only).
-local function available_memory()
+-- How much memory the computer has free (bytes), or nil when that cannot be found out. For a large analysis the Python program is asked (the same call
+-- on Linux, Windows and macOS); the small ones, and a computer without Python, use /proc/meminfo (Linux) or skip the check.
+local function available_memory(need)
+  if need and need > 100 * 2 ^ 20 and analysis then
+    local n = analysis:available_memory()
+    if n then return n end
+  end
   local fh = io.open("/proc/meminfo", "r")
   if not fh then return nil end
   local t = fh:read("a")
@@ -380,7 +386,7 @@ local function load_file(path)
   end
   local need = 0
   for _, h in ipairs(heads) do need = need + h.bytes * 2.1 end      -- (the tables of a loaded analysis take about twice the size of the file: 16 bytes for every 8-byte number)
-  local free = available_memory()
+  local free = available_memory(need)
   if free then
     free = free + collectgarbage("count") * 1024               -- what the set that is open now gives back
     if need > free * 0.85 then
@@ -983,7 +989,7 @@ local function render_wav(wav, from)
   return #samples / sr, (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise"), t_start
 end
 
-local function tmp_dir() return (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "") end
+local function tmp_dir() return Analysis.temp_dir() end        -- (TMPDIR, else TEMP / TMP on Windows, else /tmp)
 local synth_count = 0
 local python_missing = false                   -- no Python was found for the synthesis (the Analysis page may find one later)
 
@@ -1136,7 +1142,7 @@ if reaper.atexit then reaper.atexit(cleanup_session) end
 
 local function remove_stale_temp_files()
   if not reaper.EnumerateFiles then return end
-  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+  local dir = tmp_dir()
   local now, doomed, i = os.time(), {}, 0
   while true do
     local name = reaper.EnumerateFiles(dir, i)
@@ -1180,7 +1186,7 @@ function play_from_made(m, s_r, e_r, p, fresh)
     return true
   end
   audition_count = audition_count + 1
-  local piece = string.format("%s/reaats_audition_%s_%d.wav", (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", ""), session_id, audition_count)
+  local piece = string.format("%s/reaats_audition_%s_%d.wav", tmp_dir(), session_id, audition_count)
   local ok, err = wav_info.slice(m.wav, piece, s_r - m.s, e_r - s_r)
   if not ok then set_status("audition failed: " .. tostring(err)); return false end
   slice_history[#slice_history + 1] = piece

@@ -180,5 +180,24 @@ do
   check("Defaults clears the red", next(pg.changed) == nil)
 end
 
+
+-- the folder for temporary files: TMPDIR, else TEMP or TMP (Windows), else /tmp; a trailing slash or backslash is dropped
+do
+  local real = os.getenv
+  local function with_env(t, f) os.getenv = function(k) return t[k] end; local v = f(); os.getenv = real; return v end
+  check("temp dir: TMPDIR (without REAPER), a trailing slash dropped", with_env({ TMPDIR = "/x/t/" }, page.temp_dir) == "/x/t")
+  check("temp dir: /tmp when nothing is set", with_env({}, page.temp_dir) == "/tmp")
+  check("temp dir: an empty TMPDIR counts as not set", with_env({ TMPDIR = "" }, page.temp_dir) == "/tmp")
+  -- inside REAPER the folder is named by REAPER (its resource folder), whatever the environment says; it is made once
+  local made = {}
+  reaper.GetResourcePath = function() return "C:\\Users\\First Last\\AppData\\Roaming\\REAPER\\" end
+  reaper.RecursiveCreateDirectory = function(d) made[#made + 1] = d; return 1 end
+  local d1 = with_env({ TMPDIR = "/x/t" }, page.temp_dir)
+  local d2 = with_env({}, page.temp_dir)
+  check("temp dir: REAPER's resource folder is used when REAPER names it", d1 == "C:\\Users\\First Last\\AppData\\Roaming\\REAPER/ReaATS_temp" and d2 == d1, d1)
+  check("temp dir: the folder is made once", #made == 1 and made[1] == d1, #made)
+  reaper.GetResourcePath, reaper.RecursiveCreateDirectory = nil, nil
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

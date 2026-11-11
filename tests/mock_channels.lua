@@ -777,6 +777,36 @@ do
 end
 print("a move and a paste past the ends make the file longer")
 
+-- 15. the memory guard asks the Python program how much memory is free (the same call on every operating system) before it loads a big analysis,
+-- and refuses one that does not fit; a small one is loaded without asking
+do
+  local real_exec, asked = reaper.ExecProcess, 0
+  local free_bytes = 50 * 2 ^ 20
+  reaper.ExecProcess = function(cmd, timeout)
+    if cmd:find("%-%-memory") then asked = asked + 1; return "0\nMEMORY " .. string.format("%d", free_bytes) .. "\n" end
+    return real_exec(cmd, timeout)
+  end
+  local big = scratch .. "mc_big_ch1.ats"                                         -- a sparse file with a real header: 60 MB, needs about 126 MB in the editor
+  local src = assert(io.open(scratch .. "mc_ch1.ats", "rb")); local head = src:read(80); src:close()
+  local hv = { string.unpack("<dddddddddd", head) }
+  local per_frame = 1 + 3 * hv[5] + 25
+  local frames = math.floor(60 * 2 ^ 20 / (8 * per_frame))
+  local fh = assert(io.open(big, "wb"))
+  fh:write(string.pack("<dddddddddd", hv[1], hv[2], hv[3], hv[4], hv[5], frames, hv[7], hv[8], frames * hv[3] / hv[2], hv[10]))
+  fh:seek("set", 80 + 8 * per_frame * frames - 1); fh:write("\0"); fh:close()
+  start(big); strings = {}; frame()
+  assert(asked == 1, "a big analysis: the Python program was asked how much memory is free: " .. asked)
+  local msg = nil
+  for _, s in ipairs(strings) do if s:find("is free") then msg = s end end
+  strings = {}; frame()
+  assert(saw("is free") or saw("needs about"), "and an analysis that does not fit is refused: " .. tostring(saw("analys") or "(no message)"))
+  asked = 0; start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  assert(asked == 0, "a small analysis is loaded without asking: " .. asked)
+  reaper.ExecProcess = real_exec
+  os.remove(big)
+end
+print("the memory guard asks Python and refuses what does not fit")
+
 -- 14. the messages of AUDITION are not shown (the real editor): not while the sound is prepared, not when it plays, not when Space stops it
 do
   REAATS_SHOW_AUDITION_TEXT = false

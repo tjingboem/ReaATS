@@ -2,39 +2,65 @@
 
 ## What it does
 
-ReaATS is a partial editor for REAPER, in the spirit of SPEAR. It opens ATS analysis files, the files that Csound's ATS opcodes use, and shows the sound inside them: a set of sine waves (the partials) that each follow their own frequency and loudness through time, plus the noise that is left over. You select parts of the partials, delete them, transpose them or move them, listen to the result, and put the result in your project as a new sample.
+ReaATS is a partial editor for REAPER, in the spirit of SPEAR. It opens ATS analysis files, the files that Csound's ATS opcodes use, and shows the sound inside them: a set of sine waves (the partials) that each follow their own frequency and loudness through time, plus the noise that is left over. You select parts of the partials, delete them, transpose them or move them, listen to the result, and put the result in your project as a new sample. ReaATS reads and writes standard ATS files, the ones that Csound's ATS opcodes use (see Saving and exchanging files).
 
 An ATS file is not a recording. A sound is analysed into partials, the sine waves that make up its pitched part, and a residual, the rest, stored as the energy in 25 bands. ATS can build the sound back from these two things. Because every partial is a separate line, you can change one harmonic of a saxophone and leave the rest alone, which you cannot do in an ordinary waveform.
 
 ReaATS is a Lua script that runs inside REAPER on Linux. It makes the sound itself, so it does not need any other program to play or print an edited sound.
 
-## Csound and other ATS programs: import and export
-
-ReaATS reads and writes **standard ATS files**, the format of Csound's ATS opcodes (ATSread, ATSadd, ATSaddnz, ATSsinnoi and the others). There is no format of its own and no conversion step.
-- **Into ReaATS:** any .ats file opens, whatever made it: Csound's own analyser (atsa), the ATSA and ATSH programs, pyatsyn, or the analysis in ReaATS. File types 1 to 4 are read (with or without phase, with or without the 25 noise bands), in either byte order. Use the O key, or Import .ats File on the Analysis page.
-- **Out of ReaATS:** Ctrl+S saves your edits as a new .ats file next to the original, and EXPORT .ats puts a file where you choose. They are written in the layout that Csound reads (type 4 with phase and noise bands, or type 2 without noise). The analysis in ReaATS makes the same kind of file. A stereo or multichannel sound is one file per channel, name_ch1.ats, name_ch2.ats and so on, because the Csound opcodes read one channel from one file.
-- **Csound itself is not needed** for any of this. It is only the program that other people's instruments read the files with.
-
-What has been checked with Csound 7 itself: that Csound reads the files that ReaATS saves (the ATSinfo and ATSadd opcodes), that an analysis from Csound's atsa opens in ReaATS and is saved again without change except the header value for the highest frequency, and that a test sound analysed by ReaATS (three gliding notes) plays back through ATSadd at the same pitches, within 1 Hz, and with the same loudness over time as the original (the loudness curves agreed with a correlation of 0.994). It is one small test sound, not a guarantee for every kind of sound.
-
-Three things to know when you use the files in Csound:
-- **The phase.** ReaATS keeps the phase in the file, and the programs that use it (such as pyatsyn) play it back exactly. Csound's ATSadd does not use the stored phase: its oscillators start with a phase of their own. The sound has the same partials and the same loudness, but a waveform printed from Csound will not be sample for sample the same as one printed from ReaATS.
-- **Rows are not always single partials.** With Share rows between tracks on (the default) one row of the file can hold several partials one after the other, with a silent frame between them, which keeps the file many times smaller. Played in ATSadd the result is the same as without sharing (the loudness curves of a shared and an unshared analysis of the same sound agreed to 0.9998). But an instrument that reads one row with ATSread, or that uses the number of the row as the number of a partial, will see the row jump from one partial to the next. If your Csound instrument depends on partial numbers, switch Share rows between tracks off before analysing.
-- **Edits can add rows.** A move or a paste can need a new row, so a file that you edited may have more partials than the original. Tell ATSadd the number of partials of the edited file, which the line at the bottom of the window shows.
-
-## What you need
+## What you need and installing
 
 - REAPER, with the script loaded from the action list.
 - The SWS extension, for AUDITION. PRINT does not need it.
 - An .ats file. A small example, sax.ats, comes with ReaATS in the examples folder. To make your own you need Python 3 with numpy, for the analysis program that comes with ReaATS (see the Analysis page, below). Csound is not needed for anything.
 
-Only Linux has been tried. Temporary files go to the temporary folder (TMPDIR, or /tmp).
-
-## Installing
+Only Linux has been tried. ReaATS is written so that it should also run on Windows and macOS, but that has not been tried yet. Temporary files (the sounds of AUDITION, the edits handed to the Python program) go to a folder named ReaATS_temp inside REAPER's own resource folder, which REAPER chooses on every system; they are removed when the editor closes. Before a very large analysis is loaded, ReaATS asks the Python program how much memory the computer has free, so that it can refuse an analysis that would not fit.
 
 Put the ReaATS folder (ATS_Editor.lua and the lib folder next to it) in REAPER's Scripts folder, for example Scripts/tjingboem/ReaATS. In REAPER open Actions, Show action list, choose ReaScript: Load and pick ATS_Editor.lua. Run it from the list, or give it a shortcut or a toolbar button.
 
 ReaATS starts with an empty window: it does not reopen the file you used last. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
+
+**Python.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3.8 or newer and the numpy package on your computer, and nothing else. REAPER users usually have Python already. ReaATS looks for it in the place REAPER is set to use for ReaScript (Options, Preferences, Plug-ins, ReaScript), and then in the usual places. This is checked once, automatically, the very first time ReaATS is run, with a popup saying either way: Python found (and which numpy), or what to do if it was not. Once Python has been found working, it is not checked again automatically; a failure is not remembered, so it is checked again next time, in case Python gets installed in between. When no Python is found, the Analysis page shows a red warning with a Help button for the same popup.
+
+If ReaATS cannot find a Python that will do, a window opens (the first time ReaATS runs, and again whenever you click ANALYSE with nothing found). It says what is missing: no Python, no numpy, or a Python that is too old. It tells you to download Python from python.org and install it, to install numpy (python3 -m pip install numpy) and to tell REAPER where Python is, in Options, Preferences, Plug-ins, ReaScript. It also offers to open the download page. After you have done this, open the Analysis page again, or restart REAPER, and try again. There is no analysis without Python.
+
+## The window, looking around and selecting
+
+### The window
+
+The picture is time from left to right and frequency from bottom to top, on a logarithmic scale, so every octave has the same height. The Hz labels are on the left and the note names on the right. At first the labels show only the C's, and zooming in shows more notes.
+
+- Every sine partial is a line. The brighter the line, the louder the partial at that moment. Partials more than 80 dB below the loudest are not drawn, but they stay in the file.
+- The faint orange layer behind the lines is the noise, shown in its 25 bands. The checkbox Noise layer, at the top right, switches it on and off. The checkbox Sine layer, just under it, does the same for the partial lines. The two layers can be shown alone or together. The same switches decide what you hear in AUDITION and what PRINT makes: with Sine layer off you hear only the noise, and with Noise layer off only the sines. While the sine layer is off you cannot select partials, so that no edit is made on something that is hidden.
+- The line at the bottom left gives the file name, the number of partials and frames, the length, the sample rate and the distance between frames. A star after the name means there are changes that have not been saved. For a few seconds after an action, a green message that says what it did takes the place of the numbers (the name and the star stay).
+- While you drag, a crosshair shows the time, the frequency and the note name. When the mouse is close to a partial, that partial turns white and its number, frequency and level are shown at the top.
+- Selected points are pink.
+- The playhead is a yellow line across the picture, with a marker on the time ruler and its time in a small label. It shows where AUDITION and PRINT start, and it moves while the sound plays. Home puts it at the start (the small |< button under PRINT does the same).
+- The buttons are all in the top row. From the left: ANALYSE, EXPORT .ats, MAX PARTIALS, the SPACE controls, then PRINT, AUDITION and the two layer checkboxes at the right. The selected points are summed up at the bottom right. The layout follows the window: the right group stays at the right edge, the bottom line at the bottom, and the picture takes the rest. The places of everything come from a layout made in ReaLayout.
+
+### Looking around
+
+| Control | What it does |
+|---|---|
+| Mouse wheel | Zoom in time, around the mouse. |
+| Ctrl + mouse wheel | Zoom in frequency, around the mouse. |
+| Shift + mouse wheel | Scroll in time. |
+| Right or middle mouse button, drag | Pan in time and frequency. |
+| Right-click (no drag) | Without a selection: show the whole file, like F (the same as in ReaShapeM). With a selection: open the gain slider (see Gain of the selection, under Editing). On a border dot of the bend box: remove the dot. |
+| F or Home | Fit the view to the whole file. |
+| P | Show or hide the partials. |
+| N | Show or hide the noise layer (the same as the checkbox). |
+| Z | Zoom to the selection, with some room round it (a quarter of its size at each side, at least a little). Without a selection nothing happens and the status line says so. |
+
+### Selecting
+
+Drag with the left mouse button to draw a box. Every point of every partial inside the box is selected. Hold Shift while you start the box to add to the selection. A click on empty space clears the selection, and so does Esc.
+
+A selection is made of points: one partial at one moment (one frame). This means you can select a piece of a partial and leave the rest. The header line shows how many points and partials are selected and the time and frequency range they cover.
+
+**Lasso.** Hold Ctrl and Shift and drag to draw a freehand loop. When you let go, the loop is closed and the points inside it are selected, in every channel that is on and green, like a box. A lasso always **adds** to the selection you have; to start over, press Esc or click on empty space first (with nothing selected, a lasso is simply a new selection). A lasso follows a curved line of partials much better than a box. (ReaATS does not use Alt: on many Linux desktops Alt+drag moves the window.)
+
+**The view follows a drag.** When you draw a box or a lasso, or move a selection, and the pointer is in the last stretch of the picture at the left or right (or beyond it), the view scrolls on, faster the further in, so you can select or move over more than what is on the screen. It follows only in the direction you are dragging, and only as far as the file goes: a drag to the edge of a picture that already shows the whole file does not move it. The box or loop stays on the same points of the sound while the picture scrolls.
 
 ## Making an .ats file: the Analysis page
 
@@ -78,10 +104,6 @@ The Defaults button resets the options. Your settings are remembered the next ti
 **Analysing.** Click ANALYSE. The analysis runs in the background while the page shows it at work: the page is dimmed, the big word ANALYZING... blinks, the ANALYSE button blinks, and a bar shows how far the analysis is, with the percentage and the seconds so far. Cancel stops the analysis and leaves no file behind. If the analysis program has stopped answering, for example because it crashed, the page notices after two minutes without a sign of life and says so, so the page never waits forever. A Cancel that the program does not answer ends after 8 seconds. When the analysis is done the editor is shown at once, with the first channel open and the time each step took in the status line. The ANALYSE button shows the page again with the list of files that were made. You can also leave the page with Esc while it works: the analysis goes on, and the result opens in the editor when it is done. The page then shows what was made, and the first file is open in the editor. The result is saved next to the sound as name.ats. If that name exists, name_2.ats is used. With Change... you choose another place and name, and ReaATS asks before it replaces a file.
 
 **Several channels.** With Channels to analyse set to 2 or more, each channel is analysed on its own with the same options and written to its own file: name_ch1.ats, name_ch2.ats, and so on. All the files of a set have the same frame size, number of frames and length. The channels are analysed at the same time on separate cores of your computer, so a set of channels takes much less time than one channel after the other: in a test, 8 channels of 20 seconds took 11 seconds instead of 30. The result is exactly the same files as when the channels are analysed one after the other. The files only get their real names when every channel is done, so a cancelled analysis leaves nothing behind and does not touch a file that was there before. The editor opens the first channel. The editor opens the first channel by itself, and with it the whole set. To open one of them again later, use Import .ats File or the O key.
-
-**What it needs.** The analysis is done by a small program that comes with ReaATS, python/reaats_analyse.py. It needs Python 3.8 or newer and the numpy package on your computer, and nothing else. REAPER users usually have Python already. ReaATS looks for it in the place REAPER is set to use for ReaScript (Options, Preferences, Plug-ins, ReaScript), and then in the usual places. This is checked once, automatically, the very first time ReaATS is run, with a popup saying either way: Python found (and which numpy), or what to do if it was not. Once Python has been found working, it is not checked again automatically; a failure is not remembered, so it is checked again next time, in case Python gets installed in between. The top right of the Analysis page always shows which Python it found and which numpy, or a red hint if none was found, with a Help button for the same popup.
-
-If ReaATS cannot find a Python that will do, a window opens (the first time ReaATS runs, and again whenever you click ANALYSE with nothing found). It says what is missing: no Python, no numpy, or a Python that is too old. It tells you to download Python from python.org and install it, to install numpy (python3 -m pip install numpy) and to tell REAPER where Python is, in Options, Preferences, Plug-ins, ReaScript. It also offers to open the download page. After you have done this, open the Analysis page again, or restart REAPER, and try again. There is no analysis without Python.
 
 The program also works from a terminal, for scripts:
 
@@ -146,44 +168,6 @@ The page remembers its settings from one sound to the next. A threshold that you
 - Raising the Minimum segment length and keeping Optimise on remove short, flickering tracks afterwards. That makes the result cleaner and the file smaller, but it does not make the analysis itself faster.
 - Switching Store the phase or Store the noise bands off gives a smaller file (without the noise bands also a faster analysis), but the file is no longer complete: you lose the exact phase or the noise layer.
 
-## The window
-
-The picture is time from left to right and frequency from bottom to top, on a logarithmic scale, so every octave has the same height. The Hz labels are on the left and the note names on the right. At first the labels show only the C's, and zooming in shows more notes.
-
-- Every sine partial is a line. The brighter the line, the louder the partial at that moment. Partials more than 80 dB below the loudest are not drawn, but they stay in the file.
-- The faint orange layer behind the lines is the noise, shown in its 25 bands. The checkbox Noise layer, at the top right, switches it on and off. The checkbox Sine layer, just under it, does the same for the partial lines. The two layers can be shown alone or together. The same switches decide what you hear in AUDITION and what PRINT makes: with Sine layer off you hear only the noise, and with Noise layer off only the sines. While the sine layer is off you cannot select partials, so that no edit is made on something that is hidden.
-- The line at the bottom left gives the file name, the number of partials and frames, the length, the sample rate and the distance between frames. A star after the name means there are changes that have not been saved. For a few seconds after an action, a green message that says what it did takes the place of the numbers (the name and the star stay).
-- While you drag, a crosshair shows the time, the frequency and the note name. When the mouse is close to a partial, that partial turns white and its number, frequency and level are shown at the top.
-- Selected points are pink.
-- The playhead is a yellow line across the picture, with a marker on the time ruler and its time in a small label. It shows where AUDITION and PRINT start, and it moves while the sound plays. Home puts it at the start (the small |< button under PRINT does the same).
-- The buttons are all in the top row. From the left: ANALYSE, EXPORT .ats, MAX PARTIALS, the SPACE controls, then PRINT, AUDITION and the two layer checkboxes at the right. The selected points are summed up at the bottom right. The layout follows the window: the right group stays at the right edge, the bottom line at the bottom, and the picture takes the rest. The places of everything come from a layout made in ReaLayout.
-
-## Looking around
-
-| Control | What it does |
-|---|---|
-| Mouse wheel | Zoom in time, around the mouse. |
-| Ctrl + mouse wheel | Zoom in frequency, around the mouse. |
-| Shift + mouse wheel | Scroll in time. |
-| Right or middle mouse button, drag | Pan in time and frequency. |
-| Right-click (no drag) | Without a selection: show the whole file, like F (the same as in ReaShapeM). With a selection: open the gain slider (see below). On a border dot of the bend box: remove the dot. |
-| F or Home | Fit the view to the whole file. |
-| P | Show or hide the partials. |
-| N | Show or hide the noise layer (the same as the checkbox). |
-| Z | Zoom to the selection, with some room round it (a quarter of its size at each side, at least a little). Without a selection nothing happens and the status line says so. |
-
-## Selecting
-
-**Gain of the selection.** With points selected, a right-click (without dragging) opens a small slider at the pointer, from -20 dB to +20 dB. Drag it, or press Up and Down for half a dB; it sticks at 0 dB, and the 0 dB button puts it back there. Enter or APPLY multiplies the amplitude of the selected points by that many dB, in every channel that is on and green, as one undo step; Esc, CANCEL or a click outside leaves everything as it was. Only the sines change: the noise bands are not touched. While the slider is open it takes every click and key. If the sound ends up louder than -1 dBFS, AUDITION and PRINT turn it down (see The level).
-
-**Lasso.** Hold Ctrl and Shift and drag to draw a freehand loop. When you let go, the loop is closed and the points inside it are selected, in every channel that is on and green, like a box. A lasso always **adds** to the selection you have; to start over, press Esc or click on empty space first (with nothing selected, a lasso is simply a new selection). A lasso follows a curved line of partials much better than a box. (ReaATS does not use Alt: on many Linux desktops Alt+drag moves the window.)
-
-**The view follows a drag.** When you draw a box or a lasso, or move a selection, and the pointer is in the last stretch of the picture at the left or right (or beyond it), the view scrolls on, faster the further in, so you can select or move over more than what is on the screen. It follows only in the direction you are dragging, and only as far as the file goes: a drag to the edge of a picture that already shows the whole file does not move it. The box or loop stays on the same points of the sound while the picture scrolls.
-
-Drag with the left mouse button to draw a box. Every point of every partial inside the box is selected. Hold Shift while you start the box to add to the selection. A click on empty space clears the selection, and so does Esc.
-
-A selection is made of points: one partial at one moment (one frame). This means you can select a piece of a partial and leave the rest. The header line shows how many points and partials are selected and the time and frequency range they cover.
-
 ## Editing
 
 All edits work on the selected points.
@@ -199,6 +183,10 @@ All edits work on the selected points.
 A piece of a partial that moves keeps its own row in the file if the place it moves to is empty. If that row is busy there, the piece goes into the nearest row that is silent, and if there is none it gets a new row. Nothing is ever written over other data, so two partials can sit at the same time and frequency and both sound. A move cannot take points outside the first and last frame of the file. A file can therefore end up with more partials than the original.
 
 After a move or a transposition the selection stays with the points, so you can go on with the same selection.
+
+**Gain of the selection.** With points selected, a right-click (without dragging) opens a small slider at the pointer, from -20 dB to +20 dB. Drag it, or press Up and Down for half a dB; it sticks at 0 dB, and the 0 dB button puts it back there. Enter or APPLY multiplies the amplitude of the selected points by that many dB, in every channel that is on and green, as one undo step; Esc, CANCEL or a click outside leaves everything as it was. Only the sines change: the noise bands are not touched. While the slider is open it takes every click and key. If the sound ends up louder than -1 dBFS, AUDITION and PRINT turn it down (see The level).
+
+**Copy, cut and paste.** Select points and press Ctrl+C to copy them. Ctrl+X copies and then deletes them. Put the playhead where you want the copy (click in the picture or on the time ruler) and press Ctrl+V: the points are pasted so that the first copied point lands at the playhead, with the same frequencies and amplitudes. You can paste as often as you like, at other places, and in a file you open later in the same editor window. The pasted points are selected, so you can move them, transpose them or bend them right away. A paste works like a move: it never writes over other sound. A piece goes into the same row when the place is empty, otherwise into the nearest silent row, otherwise into a new row. Points that would land after the end of the file are left out, and the status line says how many. With several channels, a copy takes the selected points of every channel that is on and green, and a paste puts every channel's points back into the channel with the same number, if that channel is on and green now. The channels keep their timing against each other. One Ctrl+Z takes a paste back from all the channels at once.
 
 **The box and its dots: bending and stretching the selection.** The selection has a box round it: the box you drew, or for a lasso the box round the loop. There is a dot in each corner of the box, and the selected points behave as if they were printed on a rubber sheet that you can bend by dragging the dots. Everything follows the sheet smoothly, so a selection can be bent, tilted, stretched or squeezed with one gesture. Up and down is frequency, and every partial keeps its harmonic relationship, because the points move by a ratio (a number of semitones), not by a number of Hz. Left and right is time: the points move later or earlier.
 - Drag a **corner dot** up or down to bend in frequency, sideways to move in time, or both at once. The upper right corner up bends the end of the selection up, and the upper points more than the lower ones.
@@ -216,16 +204,6 @@ Dragging a selected point near the edge of the box still moves the selection (se
 
 **MAX PARTIALS.** A button in the top row of the window, to the right of EXPORT .ats. With a selection, it ranks every separate selected partial (a row that holds more than one, unrelated to each other -- or simply two separate selected stretches of the same row -- is ranked as separate partials, not as one) by its total loudness over its own selected length, and asks how many to keep: a positive number keeps that many of the **loudest** (dropping the weakest), a negative number keeps that many of the **weakest** instead (dropping the loudest) -- one control to thin from either end of the loudness range, good for either cleaning the quiet clutter out of a dense analysis or, the other way, stripping away the strongest partials to hear what creative material is left underneath. Only the selected points themselves are ever touched: a partial that continues on, unselected, before or after the selection on the same row is left exactly as it was there, the same guarantee every other edit in this program gives. It applies right away (one undo step, in every channel that has a selection); Ctrl+Z takes it back. With no selection the button is greyed out and does nothing.
 
-**SPACE: pseudo-stereo and VBAP.** Three controls in the top row, to the right of MAX PARTIALS, decide how the sound is spread over the outputs when you AUDITION or PRINT. The same ideas are in SpectralTransfer. The spreading is done per partial (and per noise band), so it needs the Python program that makes the sound; with the built-in synthesis the SPACE button must stay on its first state.
-- **SPACE** cycles through three states. The first is named after what comes out: **1 channel** for a single file, **3 channels** for a set of three, and so on. It is the sound as it is made from the channels of the file, and the slider does not apply to it. The other two are **P-STEREO** and **VBAP**.
-- **P-STEREO** (pseudo-stereo): partials 1, 3, 5 ... go left and 2, 4, 6 ... go right, and the noise bands do the same by band number. The slider is the **width**: 100 % is the full split, 0 % puts everything in the middle. The sound is made 6 dB louder, because each side only gets half of the partials.
-- **VBAP**: every partial gets a position between the outputs and is panned between the two outputs that lie next to it (constant power, so the loudness does not change as a partial sits between two speakers). The width of the position grows with the number of the partial (the first partial is in the middle, the last one is the widest), odd partials go to the left and even ones to the right, and a partial below 100 Hz always stays in the middle so that the bass is steady. The slider is the **spread** (0 % puts everything in the middle). The **OUT** box is the number of outputs, 2 to 8: click for one more, right-click for one less.
-- AUDITION always plays stereo: a VBAP sound is mixed down to two channels for listening. PRINT writes every output as a channel of the WAV and gives the track enough channels.
-- With a set of several channels (for example a stereo analysis) the channels are added together and the outputs are made from the partials, so the left and right of the original are not kept in this mode. Put SPACE on its first state to keep them.
-- The setting is remembered for the next time.
-
-**Copy, cut and paste.** Select points and press Ctrl+C to copy them. Ctrl+X copies and then deletes them. Put the playhead where you want the copy (click in the picture or on the time ruler) and press Ctrl+V: the points are pasted so that the first copied point lands at the playhead, with the same frequencies and amplitudes. You can paste as often as you like, at other places, and in a file you open later in the same editor window. The pasted points are selected, so you can move them, transpose them or bend them right away. A paste works like a move: it never writes over other sound. A piece goes into the same row when the place is empty, otherwise into the nearest silent row, otherwise into a new row. Points that would land after the end of the file are left out, and the status line says how many. With several channels, a copy takes the selected points of every channel that is on and green, and a paste puts every channel's points back into the channel with the same number, if that channel is on and green now. The channels keep their timing against each other. One Ctrl+Z takes a paste back from all the channels at once.
-
 ## Stereo and multichannel sounds
 
 A stereo or multichannel analysis gives one .ats file per channel: name_ch1.ats, name_ch2.ats and so on (see the Analysis page). When you open one of them in the editor, with O or with Import .ats File on the Analysis page, ReaATS finds the others and opens the whole set at the channel you picked. The files must have the same frame size, the same number of frames and the same length, as they do when they come from one analysis. If they do not fit together, or one is missing, ReaATS opens the file you chose alone and the status line says why.
@@ -240,27 +218,21 @@ A stereo or multichannel analysis gives one .ats file per channel: name_ch1.ats,
 
 **Editing channels together.** A selection box selects the same time and frequency region in every channel that is on, each channel selecting its own points. Delete, transpose and move (with the arrow keys or by dragging a selected point) then apply to all those channels at once, and the header shows the total. Switch channels off to edit only some of them. An edit in several channels is one step for Ctrl+Z and Ctrl+Y: one press undoes it in every channel it touched.
 
-**Listening: AUDITION.** AUDITION plays all channels together, from the playhead. REAPER's preview is stereo, so a set with more than two channels is mixed down to stereo for listening: channel 1 goes to the left, the last channel to the right, and the channels in between are spread evenly between them. The level is set so that the mixdown is not louder than one channel would be. A set of exactly two channels is played as it is, channel 1 left and channel 2 right. The status line says "3 channels mixed down to stereo" when this happens. The partials and noise switches count for all channels.
+## Listening, output and printing
 
-**Printing: PRINT.** PRINT keeps all the channels. It makes one multichannel WAV file, one channel of sound for each channel file, from the playhead, and puts it on the selected track. A track needs room for the channels, so ReaATS raises the number of channels of that track to the next even number that is large enough, for example 4 for a sound of 3 channels. REAPER itself must be set up for multichannel use: route the track's channels to where you want them, for example to the outputs of your interface. The item remembers all the files of the set, and ReaSnap brings the whole set back.
+### AUDITION: playing the sound
 
-## Saving
-
-Ctrl+S saves the changes next to the original as a new file, name_edit.ats. If that file exists, the next one is name_edit2.ats, and so on. The original is never overwritten. For a set of channels, every channel is saved, as name_edit_ch1.ats, name_edit_ch2.ats and so on, so that the saved set opens as a set again.
-
-The saved file keeps the phase information (file type 4 when the file has noise bands). Pieces of partials that you did not touch keep the phase of the original. A piece that you changed gets new phases that follow its new frequencies, so the file stays consistent: programs that use the phase, such as pyatsyn, play the edited partials correctly, and Csound reads the file as well. If the opened file had no phase, phases are made for every partial. The largest amplitude and frequency in the file header are recalculated from the edited data.
-
-The EXPORT button, at the top left, or Ctrl+Shift+S, lets you choose the folder and the name of the .ats file. It uses a file dialog (this needs the JS_ReaScriptAPI extension, which most REAPER installations with ReaPack have) or, without it, a box in which you type the full path. The ending .ats is added if you leave it out, and ReaATS asks before it replaces a file that already exists. Use it to export a file for Csound or another program, and to put the file where you want it. Like Ctrl+S, it keeps the phase. For a set of channels you choose one name, and every channel is written from it: choose mysound.ats and you get mysound_ch1.ats, mysound_ch2.ats and so on. ReaATS asks before it replaces any of them.
-
-The saved files are standard ATS files. Csound reads them with its ATS opcodes, and so do other ATS programs. Opening works the other way round: O opens any ATS file, including the files Csound's own analyser makes.
-
-O opens another file. R loads the file you opened again from disk and drops all changes since.
-
-## Listening: AUDITION
+The AUDITION button plays the edited sound. ReaATS builds the sound from the current data, the sines from the partials and the noise from the 25 noise bands, writes it to a temporary WAV file and plays that through REAPER's preview. Your project is not touched. The sound is made first, which takes a moment. How long depends on how the sound is made (see below). While it is being made, the AUDITION button blinks, a small bar with the percentage shows under the button, and the status line shows how far it is, so you know the sound will start soon. The sound starts by itself when it is ready. Space stops the sound, and cancels the sound that is still being made. If you change the data while the sound is being made, it is cancelled too, because it would not match any more.
 
 **Audition of the selection only.** Press A while points are selected and only those points sound: from just before the first selected frame to just after the last, the sines only (no noise), in every channel, through the SPACE setting. Use it to hear what a box or a lasso has caught, one partial or a few, without the rest of the sound. The sound is always made again, by the Python program, and does not replace the sound that AUDITION keeps for replaying. To hear the whole sound with a selection in place, use the AUDITION button.
 
-The AUDITION button plays the edited sound. ReaATS builds the sound from the current data, the sines from the partials and the noise from the 25 noise bands, writes it to a temporary WAV file and plays that through REAPER's preview. Your project is not touched. The sound is made first, which takes a moment. How long depends on how the sound is made (see below). While it is being made, the AUDITION button blinks, a small bar with the percentage shows under the button, and the status line shows how far it is, so you know the sound will start soon. The sound starts by itself when it is ready. Space stops the sound, and cancels the sound that is still being made. If you change the data while the sound is being made, it is cancelled too, because it would not match any more.
+What you hear follows what you see. With P off you hear only the noise, with N off only the sines, and with both off nothing is played. This lets you listen to the two parts of a sound separately.
+
+The sines come out at the level of the original. The noise is made from the 25 noise bands in the file, as filtered noise.
+
+**Listening: AUDITION.** AUDITION plays all channels together, from the playhead. REAPER's preview is stereo, so a set with more than two channels is mixed down to stereo for listening: channel 1 goes to the left, the last channel to the right, and the channels in between are spread evenly between them. The level is set so that the mixdown is not louder than one channel would be. A set of exactly two channels is played as it is, channel 1 left and channel 2 right. The status line says "3 channels mixed down to stereo" when this happens. The partials and noise switches count for all channels.
+
+**The playhead.** AUDITION starts at the playhead. Click anywhere in the picture, on empty space, to put the playhead there. That click also clears the selection. You can also click on the time ruler, the strip with the seconds under the picture, or drag along the ruler to move the playhead. While the sound plays, the playhead moves along the picture. When the sound ends, or when you stop it with Space, the playhead goes back to where you put it, so you can listen to the same place again. The sound starts at the beginning of the analysis frame that holds the playhead, which is at most one frame, 10 ms in the example file, before it. PRINT also starts at the playhead (see below).
 
 **How fast it is made.** If Python with numpy is installed (it is needed for the Analysis page anyway), ReaATS makes the sound in a program that runs in the background (python/reaats_synth.py). Your edited data is handed to it in temporary files, and the window does not freeze. Without Python, or if that program fails, ReaATS makes the sound itself, in small steps (the status line says what happened and which one made the sound: "Python synthesis" or "Lua synthesis"). Both give the same sound: the sines are identical, and the noise has the same level (it is made from random numbers, so it is a different realisation each time you analyse, but it sounds the same). Three things make repeated listening quick:
 - The noise does not change when you edit partials, so ReaATS keeps it. The first AUDITION of a sound makes the noise, the next ones, after you edit, only make the sines. The Python program keeps it in a folder reaats_noise_cache in the temporary folder (at most 40 files, 400 MB), the built-in synthesis keeps it in memory (about 21 MB for 30 seconds of one channel).
@@ -270,23 +242,55 @@ The AUDITION button plays the edited sound. ReaATS builds the sound from the cur
 
 For a 30 second sound with 69 partials: the built-in synthesis needs about 9 seconds the first time and 1.6 seconds after that; the Python program 2.7 seconds the first time and 0.9 seconds after that.
 
+### Output and level
+
+**SPACE: pseudo-stereo and VBAP.** Three controls in the top row, to the right of MAX PARTIALS, decide how the sound is spread over the outputs when you AUDITION or PRINT. The same ideas are in SpectralTransfer. The spreading is done per partial (and per noise band), so it needs the Python program that makes the sound; with the built-in synthesis the SPACE button must stay on its first state.
+- **SPACE** cycles through three states. The first is named after what comes out: **1 channel** for a single file, **3 channels** for a set of three, and so on. It is the sound as it is made from the channels of the file, and the slider does not apply to it. The other two are **P-STEREO** and **VBAP**.
+- **P-STEREO** (pseudo-stereo): partials 1, 3, 5 ... go left and 2, 4, 6 ... go right, and the noise bands do the same by band number. The slider is the **width**: 100 % is the full split, 0 % puts everything in the middle. The sound is made 6 dB louder, because each side only gets half of the partials.
+- **VBAP**: every partial gets a position between the outputs and is panned between the two outputs that lie next to it (constant power, so the loudness does not change as a partial sits between two speakers). The width of the position grows with the number of the partial (the first partial is in the middle, the last one is the widest), odd partials go to the left and even ones to the right, and a partial below 100 Hz always stays in the middle so that the bass is steady. The slider is the **spread** (0 % puts everything in the middle). The **OUT** box is the number of outputs, 2 to 8: click for one more, right-click for one less.
+- AUDITION always plays stereo: a VBAP sound is mixed down to two channels for listening. PRINT writes every output as a channel of the WAV and gives the track enough channels.
+- With a set of several channels (for example a stereo analysis) the channels are added together and the outputs are made from the partials, so the left and right of the original are not kept in this mode. Put SPACE on its first state to keep them.
+- The setting is remembered for the next time.
+
 **The level.** After copying and pasting, or moving partials onto each other, the sound can become louder than full scale (0 dB). AUDITION and PRINT therefore turn the whole sound down, by one gain for all channels, when its highest peak is above -1 dBFS, so that the peak lands exactly on -1 dBFS. A sound that is quieter is left as it is: it is not turned up. That is on purpose: when you print the sines and the noise separately and mix them in REAPER, each print keeps its own level and the balance between them stays what the analysis made. When PRINT turns a sound down, the status line says by how many dB. AUDITION shows no message of its own (not while it prepares the sound, not while it plays, not when you stop it), only when something goes wrong. The Python program has the options --peak-limit (another level) and --no-limit.
 
-**The playhead.** AUDITION starts at the playhead. Click anywhere in the picture, on empty space, to put the playhead there. That click also clears the selection. You can also click on the time ruler, the strip with the seconds under the picture, or drag along the ruler to move the playhead. While the sound plays, the playhead moves along the picture. When the sound ends, or when you stop it with Space, the playhead goes back to where you put it, so you can listen to the same place again. The sound starts at the beginning of the analysis frame that holds the playhead, which is at most one frame, 10 ms in the example file, before it. PRINT also starts at the playhead (see below).
+**The level of the noise.** The ATS analysis stores for each noise band the average power per FFT bin, not the power of the whole band. A wide band, such as 3700-4400 Hz, holds much more energy than a narrow one, such as 200-300 Hz, with the same stored value. Csound's ATS synthesis plays the stored values as they are, so the narrow low bands come out too loud and the wide high bands too soft: in a test with a real recording the noise was 7 dB too loud at 200-800 Hz and 5 dB too soft above 4 kHz, and 3.7 dB too loud overall. The low bands are where most music lives, which makes the noise sound much too loud and dark. ReaATS therefore corrects it: every band's power is multiplied by its width, divided by the mean width of that moment, so that the energy of the moment stays the same and every band gets its right share. The overall level is set so that the synthesized noise has the same power as the real residual of the sound (the part that the partials did not describe): in two tests it came within 0.3 dB, and the spread between the bands went from 4.2 dB to 1.8 dB. If you want the Csound level and shape, the Python program can be given --noise-shape classic, and the synthesis of the editor can be told noise_shape = "classic"; this is what the sound would be in Csound's own ATS synthesis, within a tenth of a dB. There are no controls to filter or tilt the noise: the settings that the Analysis page suggests for a sound (lowest and highest frequency, threshold) give a balanced noise, and the noise follows the sines in time but is never moved in frequency (see The noise follows the sines, under Editing). AUDITION needs the SWS extension. If it is missing, the status message says so, and the WAV is still made.
 
-What you hear follows what you see. With P off you hear only the noise, with N off only the sines, and with both off nothing is played. This lets you listen to the two parts of a sound separately.
-
-The sines come out at the level of the original. The noise is made from the 25 noise bands in the file, as filtered noise.
-
-**The level of the noise.** The ATS analysis stores for each noise band the average power per FFT bin, not the power of the whole band. A wide band, such as 3700-4400 Hz, holds much more energy than a narrow one, such as 200-300 Hz, with the same stored value. Csound's ATS synthesis plays the stored values as they are, so the narrow low bands come out too loud and the wide high bands too soft: in a test with a real recording the noise was 7 dB too loud at 200-800 Hz and 5 dB too soft above 4 kHz, and 3.7 dB too loud overall. The low bands are where most music lives, which makes the noise sound much too loud and dark. ReaATS therefore corrects it: every band's power is multiplied by its width, divided by the mean width of that moment, so that the energy of the moment stays the same and every band gets its right share. The overall level is set so that the synthesized noise has the same power as the real residual of the sound (the part that the partials did not describe): in two tests it came within 0.3 dB, and the spread between the bands went from 4.2 dB to 1.8 dB. If you want the Csound level and shape, the Python program can be given --noise-shape classic, and the synthesis of the editor can be told noise_shape = "classic"; this is what the sound would be in Csound's own ATS synthesis, within a tenth of a dB. There are no controls to filter or tilt the noise: the settings that the Analysis page suggests for a sound (lowest and highest frequency, threshold) give a balanced noise, and the noise follows the sines in time but is never moved in frequency (see the noise paragraph above under editing). AUDITION needs the SWS extension. If it is missing, the status message says so, and the WAV is still made.
-
-## Putting the result in the project: PRINT
+### PRINT: putting the result in the project
 
 The PRINT button, or Ctrl+P, turns the current sound into a sample on a track. The sound is made first, as for AUDITION: the PRINT button blinks and a bar with the percentage shows under it. Esc cancels a print that is still being made, and so does a change to the data. ReaATS first saves unsaved changes as name_edit.ats, then renders a permanent WAV next to the .ats file, called name_print1.wav, and puts it on the selected track at the edit cursor. If no track is selected, a new track called ReaATS is made. Each press makes a new numbered file, and nothing is overwritten.
 
 **Important: PRINT starts at the playhead, like AUDITION.** The printed sound runs from the playhead to the end of the sound, so only with the playhead at 0 do you get the whole sound. A click on empty space in the picture, or on the time ruler, moves the playhead, so check it before you print: the small button under PRINT, marked |<, shows where the playhead is ("|< 62.3 s", in amber, when it is not at the start, and "|< start" when it is). Click that button, or press Home, to put the playhead back at 0. End puts it at the end. When you press PRINT with the playhead away from the start, the status line says "preparing the print FROM 62.30 s". The status line says where the print started, for example "printed 1.2 s from 1.00 s". As for AUDITION, the sound starts at the beginning of the analysis frame that holds the playhead. ReaATS remembers the start with the item, and when ReaSnap restores a snapshot the playhead comes back to it.
 
+**Printing: PRINT.** PRINT keeps all the channels. It makes one multichannel WAV file, one channel of sound for each channel file, from the playhead, and puts it on the selected track. A track needs room for the channels, so ReaATS raises the number of channels of that track to the next even number that is large enough, for example 4 for a sound of 3 channels. REAPER itself must be set up for multichannel use: route the track's channels to where you want them, for example to the outputs of your interface. The item remembers all the files of the set, and ReaSnap brings the whole set back.
+
 The WAV lives next to the .ats file and not inside the project. Copy it with the project if you move the project to another computer.
+
+## Saving and exchanging files
+
+### Saving
+
+Ctrl+S saves the changes next to the original as a new file, name_edit.ats. If that file exists, the next one is name_edit2.ats, and so on. The original is never overwritten. For a set of channels, every channel is saved, as name_edit_ch1.ats, name_edit_ch2.ats and so on, so that the saved set opens as a set again.
+
+The saved file keeps the phase information (file type 4 when the file has noise bands). Pieces of partials that you did not touch keep the phase of the original. A piece that you changed gets new phases that follow its new frequencies, so the file stays consistent: programs that use the phase, such as pyatsyn, play the edited partials correctly, and Csound reads the file as well. If the opened file had no phase, phases are made for every partial. The largest amplitude and frequency in the file header are recalculated from the edited data.
+
+The EXPORT button, at the top left, or Ctrl+Shift+S, lets you choose the folder and the name of the .ats file. It uses a file dialog (this needs the JS_ReaScriptAPI extension, which most REAPER installations with ReaPack have) or, without it, a box in which you type the full path. The ending .ats is added if you leave it out, and ReaATS asks before it replaces a file that already exists. Use it to export a file for Csound or another program, and to put the file where you want it. Like Ctrl+S, it keeps the phase. For a set of channels you choose one name, and every channel is written from it: choose mysound.ats and you get mysound_ch1.ats, mysound_ch2.ats and so on. ReaATS asks before it replaces any of them.
+
+O opens another file. R loads the file you opened again from disk and drops all changes since.
+
+### Csound and other ATS programs
+
+ReaATS reads and writes **standard ATS files**, the format of Csound's ATS opcodes (ATSread, ATSadd, ATSaddnz, ATSsinnoi and the others). There is no format of its own and no conversion step.
+- **Into ReaATS:** any .ats file opens, whatever made it: Csound's own analyser (atsa), the ATSA and ATSH programs, pyatsyn, or the analysis in ReaATS. File types 1 to 4 are read (with or without phase, with or without the 25 noise bands), in either byte order. Use the O key, or Import .ats File on the Analysis page.
+- **Out of ReaATS:** Ctrl+S saves your edits as a new .ats file next to the original, and EXPORT .ats puts a file where you choose. They are written in the layout that Csound reads (type 4 with phase and noise bands, or type 2 without noise). The analysis in ReaATS makes the same kind of file. A stereo or multichannel sound is one file per channel, name_ch1.ats, name_ch2.ats and so on, because the Csound opcodes read one channel from one file.
+- **Csound itself is not needed** for any of this. It is only the program that other people's instruments read the files with.
+
+What has been checked with Csound 7 itself: that Csound reads the files that ReaATS saves (the ATSinfo and ATSadd opcodes), that an analysis from Csound's atsa opens in ReaATS and is saved again without change except the header value for the highest frequency, and that a test sound analysed by ReaATS (three gliding notes) plays back through ATSadd at the same pitches, within 1 Hz, and with the same loudness over time as the original (the loudness curves agreed with a correlation of 0.994). It is one small test sound, not a guarantee for every kind of sound.
+
+Three things to know when you use the files in Csound:
+- **The phase.** ReaATS keeps the phase in the file, and the programs that use it (such as pyatsyn) play it back exactly. Csound's ATSadd does not use the stored phase: its oscillators start with a phase of their own. The sound has the same partials and the same loudness, but a waveform printed from Csound will not be sample for sample the same as one printed from ReaATS.
+- **Rows are not always single partials.** With Share rows between tracks on (the default) one row of the file can hold several partials one after the other, with a silent frame between them, which keeps the file many times smaller. Played in ATSadd the result is the same as without sharing (the loudness curves of a shared and an unshared analysis of the same sound agreed to 0.9998). But an instrument that reads one row with ATSread, or that uses the number of the row as the number of a partial, will see the row jump from one partial to the next. If your Csound instrument depends on partial numbers, switch Share rows between tracks off before analysing.
+- **Edits can add rows.** A move or a paste can need a new row, so a file that you edited may have more partials than the original. Tell ATSadd the number of partials of the edited file, which the line at the bottom of the window shows.
 
 ## A side use: removing noise
 
@@ -302,7 +306,7 @@ Set the Lowest frequency a little below the lowest note you want to keep (for a 
 
 **Step 3: remove what is left in the partials.** Even with a high threshold some noise stays in the sine layer. You see it as faint, short, scattered lines, often in the high frequencies, and as long straight lines that never change: a hum at 50 or 60 Hz and its multiples, or the whine of a fan. Drag a box around them and press Delete. Zoom in with the mouse wheel to separate them from the notes you want. The box selects only the points inside it, so a note that crosses the box is not deleted as a whole. With a stereo or multichannel sound the box and Delete apply to every channel whose LED is green, and Ctrl+Z undoes it in all of them at once. AUDITION again after each step: the data is the only thing you change, the recording is never touched.
 
-**Step 4: print it.** With the Noise layer switched off, press Ctrl+P or the PRINT button. The clean sound is made as a WAV file next to the .ats file and put on the selected track (or a new track) at the edit cursor as a new item. The original item stays where it is: put the new one on another track, or mute the original, to compare. Put the ReaATS playhead at 0 if you want the whole sound. ReaATS saves your edits as name_edit.ats first, so you can come back to them, and ReaSnap brings the settings back (see PRINT).
+**Step 4: print it.** With the Noise layer switched off, press Ctrl+P or the PRINT button. The clean sound is made as a WAV file next to the .ats file and put on the selected track (or a new track) at the edit cursor as a new item. The original item stays where it is: put the new one on another track, or mute the original, to compare. Put the ReaATS playhead at 0 if you want the whole sound. ReaATS saves your edits as name_edit.ats first, so you can come back to them, and ReaSnap brings the settings back (see PRINT: putting the result in the project).
 
 **What to expect.**
 - The result is a resynthesis. What is not a partial is gone: breath, the consonants of speech, the pluck of a string, the click of a key and other noisy parts of the sound that belong to it. If the sound feels thin, dry or "watery", the noise layer is carrying too much of the character to be left out. The noise layer is all or nothing at present: there is no control for a part of its level, so you cannot yet keep it 12 dB down.
@@ -342,7 +346,7 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Ctrl+S | Save as name_edit.ats. |
 | EXPORT .ats, Ctrl+Shift+S | Export an .ats file: choose the folder and the name. |
 | ANALYSE | Open the Analysis page. |
-| A | With a selection: play the **selection only** (see below). Without one: play the edited sound from the playhead, like the AUDITION button. |
+| A | With a selection: play the **selection only** (see AUDITION: playing the sound). Without one: play the edited sound from the playhead, like the AUDITION button. |
 | AUDITION button | Play the edited sound, from the playhead. |
 | Click on the picture, or click or drag on the time ruler | Set the playhead. |
 | Space | Stop the sound. |
@@ -357,10 +361,10 @@ ReaATS is in ReaSnap's list of tools. The command ID in that list depends on whe
 | Esc | Clear the selection. |
 
 ## Good to know
+
 - Long, dense analyses used to be enormous, because every track got a row of its own in the file. With Share rows between tracks (on by default) the file only has as many rows as there are tracks at the same moment, so a long sound is no longer a problem in the file. The editor holds all the numbers of the analysis in memory, about twice the size of the .ats files. Opening a new analysis first lets go of the one that is open. On Linux, ReaATS looks at how much memory the computer has free before it loads, and if the analysis does not fit it does not load it and tells you how much it needs. In that case analyse again with a higher Amplitude threshold (-50 or -40 dB) or a higher Lowest frequency, or analyse one channel at a time. The same measures make the analysis faster.
 
 - The file stores one value per frame, and the frames are evenly spaced. In the example file they are 10 ms apart. Moves in time snap to whole frames.
 - ReaATS never overwrites the original .ats file. Saved changes always go to a new file.
 - The temporary WAV files of AUDITION are kept in the temporary folder, numbered. The older ones are deleted after four auditions.
-- Not built yet: analysis straight from an item in REAPER, playing only the selection, changing amplitudes, copy and paste, and stretching in time.
 - Keep the original .ats file. A saved file is a new file, but the phases of changed partials are calculated and not measured.

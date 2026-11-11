@@ -281,6 +281,29 @@ class Engine(unittest.TestCase):
         self.assertIn("partials=", last)
         self.assertTrue(os.path.exists(out), "a path with a space must work")
 
+    def test_args_file_as_a_separate_word_with_a_space_in_every_path(self):
+        """The Analysis page starts the engine with `--args-file PATH` (not @PATH, whose quotes stay glued to the path in some ways of starting a program):
+        a folder with a space in its name, as in a Windows user name, works for the sound, the result and the arguments file."""
+        folder = os.path.join(self.dir, "First Last")
+        os.makedirs(folder)
+        w = os.path.join(folder, "in put.wav")
+        shutil.copy(self.wav("plain.wav", [tone(440, seconds=1.0)]), w)
+        out = os.path.join(folder, "out put.ats")
+        argfile = os.path.join(folder, "the args.txt")
+        write_bytes(argfile, "\r\n".join([w, out, "--lowest-frequency", "100", "--summary-format", "lua"]).encode())      # (CRLF: a Windows text file)
+        r = run_cli("--args-file", argfile)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(out), "the result is where the arguments file said")
+
+    def test_memory_says_how_much_is_free(self):
+        """--memory (the editor asks it before it loads a big analysis: no operating system specific code on its side) prints MEMORY <bytes>."""
+        r = run_cli("--memory")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.strip().splitlines()[-1]
+        self.assertTrue(line.startswith("MEMORY "), line)
+        if sys.platform.startswith("linux"):
+            self.assertGreater(int(line.split()[1]), 50 * 1024 * 1024)
+
     def test_check_says_whether_this_python_can_analyse(self):
         r = run_cli("--check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

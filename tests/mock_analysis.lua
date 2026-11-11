@@ -400,7 +400,7 @@ print("an engine that never starts is reported")
 
 -- 7c. every job has files of its own; a dead program is noticed; a Cancel that nobody answers ends
 local function job_files()                                          -- the result file of the job that was just started
-  local argsfile = last_cmd:match("@(%S+)")
+  local argsfile = last_cmd:match("%-%-args%-file (%S+)")
   local lines = {}
   for line in io.lines(argsfile) do lines[#lines + 1] = line end
   for i, l in ipairs(lines) do if l == "--result-file" then return argsfile, lines[i + 1] end end

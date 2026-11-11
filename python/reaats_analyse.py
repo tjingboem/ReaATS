@@ -44,6 +44,43 @@ def check_environment():
     sys.exit(0)
 
 
+def available_memory_bytes():
+    """The memory that is free for programs, in bytes, or None when it cannot be found out. The same call on Linux, Windows and macOS: the editor asks
+    this program (--memory) so that it needs no operating system specific code of its own. (Only Linux has been tried.)"""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/meminfo") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) * 1024
+        elif sys.platform == "win32":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return int(st.ullAvailPhys)
+        elif sys.platform == "darwin":
+            import re
+            import subprocess
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+            page = int(re.search(r"page size of (\d+) bytes", out).group(1))
+            pages = sum(int(m.group(1)) for m in re.finditer(r"Pages (?:free|inactive|speculative):\s+(\d+)", out))
+            return pages * page
+    except Exception:
+        return None
+    return None
+
+
+if "--memory" in sys.argv[1:]:
+    mem = available_memory_bytes()
+    print("MEMORY %s" % (mem if mem is not None else "unknown"))
+    sys.exit(0)
+
 if "--check" in sys.argv[1:]:
     check_environment()
 
@@ -319,9 +356,18 @@ def run_parallel(tasks, jobs):
         pool.join()
 
 
+def expand_args(argv):
+    """`--args-file PATH` as the only argument: the arguments are read from that file, one per line. (A separate word, so that no quote ends up
+    glued to a path: with a space in a Windows user name, `@"C:\\Users\\First Last\\..."` is not understood by every way of starting a program.)"""
+    if len(argv) == 2 and argv[0] == "--args-file":
+        with open(argv[1], encoding="utf-8") as fh:
+            return [line.rstrip("\r\n") for line in fh if line.strip()]
+    return argv
+
+
 def main(argv=None):
     global RESULT_FILE
-    a = build_parser().parse_args(argv)
+    a = build_parser().parse_args(expand_args(sys.argv[1:] if argv is None else argv))
     RESULT_FILE = a.result_file
     if RESULT_FILE:
         # (the editor removes old result/cancel files before it starts the program, so a Cancel clicked at once is kept)

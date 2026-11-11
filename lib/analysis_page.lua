@@ -276,6 +276,27 @@ M.open_url = open_url
 
 local function q(path) return path:find("%s") and ('"' .. path .. '"') or path end      -- quote only when needed
 
+-- The folder for temporary files, without a trailing slash. REAPER names it (a ReaATS_temp folder inside its own resource folder, which REAPER writes to
+-- on every operating system), so that no code of ours depends on Linux, Windows or macOS folders. Without REAPER's answer (only the tests): TMPDIR, else /tmp.
+local temp_made = {}
+function M.temp_dir()
+  if reaper.GetResourcePath then
+    local base = reaper.GetResourcePath()
+    if base and base ~= "" then
+      local dir = base:gsub("[/\\]+$", "") .. "/ReaATS_temp"
+      if not temp_made[dir] then
+        if reaper.RecursiveCreateDirectory then reaper.RecursiveCreateDirectory(dir, 0) end
+        temp_made[dir] = true
+      end
+      return dir
+    end
+  end
+  local d = os.getenv("TMPDIR")
+  if not d or d == "" then d = "/tmp" end
+  d = d:gsub("[/\\]+$", "")
+  return d ~= "" and d or "/tmp"
+end
+
 -- ------------------------------------------------------------------ the page
 local Page = {}
 Page.__index = Page
@@ -362,6 +383,15 @@ function M.check_python_once(script_dir, ext_section)
 end
 
 -- Finds a Python that can run the engine; remembers it. Returns true, or false after setting self.python_problem.
+-- The memory that is free (bytes), asked of the Python program (the same call on every operating system), or nil.
+function Page:available_memory()
+  if not self:find_python() then return nil end
+  local engine = self.env.script_dir .. "/python/reaats_analyse.py"
+  local reply = reaper.ExecProcess(string.format("%s %s --memory", q(self.python.exe), q(engine)), 10000) or ""
+  local n = reply:match("MEMORY (%d+)")
+  return n and tonumber(n) or nil
+end
+
 function Page:find_python(force)
   if self.python and not force then return true end
   self.python, self.python_problem = M.check_python(self.env.script_dir, self.env.ext_section, force)
@@ -629,7 +659,7 @@ function Page:run()
       if reaper.MB("Replace this file?\n\n" .. p, "ReaATS: analysis", 4) ~= 6 then self:say("Not analysed (the file was kept)."); return end
     end
   end
-  local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+  local dir = M.temp_dir()
   -- Every job has files of its own (a second editor, a second page or another program must never read or delete them).
   local id = string.format("%d_%d", os.time(), math.random(100000, 999999))
   local argsfile = dir .. "/reaats_" .. id .. "_args.txt"
@@ -647,7 +677,7 @@ function Page:run()
   if not fh then self:say("Cannot write " .. argsfile, true); return end
   fh:write(table.concat(M.build_args(s, self.wav, out, result), "\n"), "\n")
   fh:close()
-  reaper.ExecProcess(string.format("%s %s @%s", q(self.python.exe), q(engine), q(argsfile)), -1)
+  reaper.ExecProcess(string.format("%s %s --args-file %s", q(self.python.exe), q(engine), q(argsfile)), -1)
   self.job = { result = result, started = result .. ".started", cancel = result .. ".cancel", argsfile = argsfile,
                t0 = reaper.time_precise(), progress = 0, seen_start = false, cancelling = false }
   self:say(nil)
