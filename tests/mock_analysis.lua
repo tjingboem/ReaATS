@@ -98,7 +98,7 @@ local pump
 local function expire_status() fake_now = fake_now + 100; strings = {}; frame() end        -- an older status message goes by
 local function pump_done()                                           -- waits until the analysis is done (the editor shows it), then opens the page again
   pump("^analysed ", 60)
-  click(640, 16)                                                     -- the small ANALYSE button, top right (a file is open)
+  click(90, 16)                                                     -- the small ANALYSE button, top right (a file is open)
   strings = {}; frame()
 end
 function pump(pattern, max_seconds)
@@ -183,7 +183,7 @@ end
 -- 1. open the page by clicking ANALYSE
 start(sax); strings = {}; frame()
 assert(saw("ANALYSE"), "the ANALYSE button should be in the header")
-click(640, 16); strings = {}; frame(); frame()
+click(90, 16); strings = {}; frame(); frame()
 assert(saw("^SOURCE$"), "clicking ANALYSE should open the Analysis page")
 assert(saw("No sound chosen yet"), "no sound yet")
 print("page opens by clicking ANALYSE")
@@ -267,7 +267,7 @@ local n_colours = 0; for _ in pairs(colours) do n_colours = n_colours + 1 end
 assert(n_colours >= 2, "the ANALYSE button should blink between two colours, saw " .. n_colours)
 print("while it runs: big word, blinking button, progress line, Cancel")
 strings = {}; frame()
-click(640, 16); frame()                                      -- the page again, with its result
+click(90, 16); frame()                                      -- the page again, with its result
 strings = {}; frame()
 assert(saw("^Analysed in") or true)
 assert(saw("^channel 1: an_stereo_ch1%.ats") and saw("^channel 2: an_stereo_ch2%.ats"), "both channel files should be listed; drawn: " .. table.concat(strings, " / ", 1, math.min(#strings, 50)))
@@ -284,7 +284,7 @@ assert(not saw("^ANALYSIS"), "Esc should leave the page")
 print("Esc returns to the editor with channel 1 open")
 
 -- 4. the settings are remembered
-start(sax); click(640, 16); strings = {}; frame(); frame()
+start(sax); click(90, 16); strings = {}; frame(); frame()
 assert(saw("^100$") and saw("^2$"), "lowest frequency 100 and 2 channels should have been remembered")
 print("settings remembered")
 
@@ -357,7 +357,7 @@ print("an item that runs past the end of the file is cut to the file")
 
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts
 local function start_long_job()
-  start(sax); click(640, 16); strings = {}; frame(); frame()
+  start(sax); click(90, 16); strings = {}; frame(); frame()
   chosen_file = long_wav; click(550, 116)
   enter(260, 264, "1")
   enter(260, 314, "100")
@@ -384,7 +384,7 @@ assert(saw("^an_sax%.ats"), "Import should open the file in the editor")
 assert(not saw("^SOURCE$"), "and return to the editor")
 print("Import .ats File opens a file and returns to the editor")
 skip_background = true                                              -- an engine that never starts
-start(sax); click(640, 16); strings = {}; frame(); frame()
+start(sax); click(90, 16); strings = {}; frame(); frame()
 chosen_file = long_wav; click(550, 116); click(600, 614)
 fake_now = fake_now + 25
 strings = {}; frame(); strings = {}; frame()
@@ -400,7 +400,7 @@ local function job_files()                                          -- the resul
   for i, l in ipairs(lines) do if l == "--result-file" then return argsfile, lines[i + 1] end end
 end
 skip_background = true
-start(sax); click(640, 16); strings = {}; frame(); frame()
+start(sax); click(90, 16); strings = {}; frame(); frame()
 chosen_file = long_wav; click(550, 116); click(600, 614)
 local args1, result1 = job_files()
 assert(result1:match("reaats_%d+_%d+_result%.txt$") and args1:match("reaats_%d+_%d+_args%.txt$"), "files with an id of their own: " .. result1)
@@ -428,7 +428,7 @@ skip_background = false
 -- 8. no usable Python: a popup says what to do, nothing is analysed
 local function fresh_page()
   ext[key("tjingboem_ATSViewer", "python_exe")] = nil
-  start(sax); click(640, 16); strings = {}; frame(); frame()
+  start(sax); click(90, 16); strings = {}; frame(); frame()
 end
 local function popup_after_analyse()
   mb_log = {}

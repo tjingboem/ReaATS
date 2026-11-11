@@ -191,7 +191,7 @@ script.keys = { 30064 }; strings = {}; frame(); frame()
 assert(saw("^transpose %+1%.00 st"), "transpose status missing")
 script.keys = { 6579564 }; strings = {}; frame(); frame()
 assert(saw("^delete: "), "delete status missing")
-assert(saw(" %*   |"), "modified marker missing")
+assert(saw(" %*$"), "modified marker missing")
 gfx.mouse_cap = 4
 script.keys = { 26 }; strings = {}; frame(); frame()
 assert(saw("^undo delete"), "undo status missing")
@@ -450,7 +450,7 @@ do
   -- the EXPORT .ats button does the same as Ctrl+Shift+S
   reaper.JS_Dialog_BrowseForSaveFile = function() return save_rv, save_choice end
   save_rv, save_choice = 1, target .. "_button.ats"; os.remove(target .. "_button.ats")
-  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = gfx.w - 128 - 96 - 72 - 112 + 20, 16, 1; strings = {}; frame()
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 126 + 20, 16, 1; strings = {}; frame()
   gfx.mouse_cap = 0; frame(); frame()
   assert(saw("^exported saveas_test_button%.ats") and size(target .. "_button.ats"), "the EXPORT button should open the export")
   os.remove(target .. ".ats"); os.remove(target .. "_typed.ats"); os.remove(target .. "_button.ats")

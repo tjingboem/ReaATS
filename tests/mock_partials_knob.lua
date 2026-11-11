@@ -70,8 +70,8 @@ local function saw(pattern) for _, s in ipairs(strings) do if s:find(pattern) th
 -- the exact plot geometry for one channel at 1100x640 (ATS_Editor.lua's own MARGIN_L/T/R/B), and the view fit_view() lands on
 local px, py, pw, ph = 62, 70, 988, 516
 
--- the button's own geometry: bottom left (W.max_partials_rect), MARGIN_L, gfx.h - 26, 150 x 18
-local bx, by = px + 10, math.floor(gfx.h) - 26 + 9
+-- the button's own geometry (W.max_partials_rect, from the layout): (284, 6), 150 x 18, in the top row
+local bx, by = 284 + 10, 6 + 9
 local function click_button()
   dialog_calls = 0
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = bx, by; strings = {}; frame()
@@ -102,19 +102,19 @@ assert(saw("MAX PARTIALS"), "the button is drawn: " .. tostring(saw("MAX")))
 dialog_ok, dialog_text = false, ""
 click_button()
 assert(dialog_calls == 1, "the dialog opened with a selection")
-assert(not saw(" %*   |"), "Cancel applied nothing: no modified marker")
+assert(not saw(" %*$"), "Cancel applied nothing: no modified marker")
 
 -- a non-numeric answer is refused, nothing changes
 dialog_ok, dialog_text = true, "abc"
 click_button()
 assert(saw("^max partials: not a number$"), "non-numeric input refused: " .. tostring(saw("max partials")))
-assert(not saw(" %*   |"), "a refused answer applied nothing")
+assert(not saw(" %*$"), "a refused answer applied nothing")
 
 -- a positive count keeps the N LOUDEST (200 Hz amp .9 = energy 45, 1600 Hz amp .7 = energy 35), silencing the 2 quietest
 dialog_ok, dialog_text = true, "2"
 click_button()
 assert(saw("^kept the 2 loudest, silenced 2$"), "positive count keeps the loudest: " .. tostring(saw("kept") or saw("loudest")))
-assert(saw(" %*   |"), "modified marker after applying")
+assert(saw(" %*$"), "modified marker after applying")
 
 script.keys = { 19 }; strings = {}; frame(); frame()
 assert(saw("^saved pk_test_edit%.ats"), "save status missing: " .. table.concat(strings, " / ", 1, math.min(#strings, 20)))

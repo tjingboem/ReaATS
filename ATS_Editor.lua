@@ -65,8 +65,9 @@ local closecheck_last = 0
 local TITLE = "ATS Editor" .. (reasnap_instance_number and (" #" .. reasnap_instance_number) or "")
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
-local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 50, 70, 54
-local CHAN_ROW = 30                 -- the extra header height with several channels: LEDs above, buttons and sliders below
+-- The picture's margins and the channel row's height come from the layout (lib/layout.lua, made by tools/gen_layout.py from the ReaLayout file):
+-- left, right, top, bottom of the picture; CHAN_ROW is the extra header height with several channels: LEDs above, buttons and sliders below.
+local MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B, CHAN_ROW = table.unpack(dofile(script_dir .. "/lib/layout.lua").margins)
 local ANALYSIS_TOP = 40             -- the Analysis/Suggested pages have no channel row of their own: just room for the one plain header line above them
 local EXT_SECTION, EXT_LAST = "tjingboem_ATSViewer", "last_file"
 
@@ -108,7 +109,27 @@ local amp_thresh = 0
 -- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
 -- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
 -- chunk of this file is at Lua's limit of 200 local variables).
-local W = { m = dofile(script_dir .. "/lib/ats_warp.lua") }
+local W = { m = dofile(script_dir .. "/lib/ats_warp.lua"), layout = dofile(script_dir .. "/lib/layout.lua") }
+-- The place of an element of the layout (lib/layout.lua) in the window as it is now: x, y, w, h. An element hangs on the edge that the layout says
+-- (right: its distance to the right edge stays what it was in the default window, 1100 wide; bottom: likewise for the height, 640).
+function W.lay(id)
+  local e = W.layout.el[id]
+  local x, y = e.x, e.y
+  if e.ax == "r" then x = math.floor(gfx.w) - (W.layout.ref_w - e.x) end
+  if e.ay == "b" then y = math.floor(gfx.h) - (W.layout.ref_h - e.y) end
+  return x, y, e.w, e.h
+end
+-- The size of a font in which `label` fits in `w` pixels (13 or the given size at most, 9 at least).
+function W.fit(label, w, size)
+  size = size or 14
+  while size > 9 do
+    gfx.setfont(1, "Arial", size)
+    if gfx.measurestr(label) <= w - 6 then break end
+    size = size - 1
+  end
+  gfx.setfont(1, "Arial", size)
+  return size
+end
 local last_audition = nil      -- the last sound AUDITION made (see start_preview)
 
 local LOG = math.log
@@ -1884,9 +1905,7 @@ end
 -- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
 -- tjingboem 10 Nov 2026). A field of W, like W.pk_ranks/W.pk_apply, rather than its own local: this file is already at Lua's
 -- 200-local-variable limit for its main chunk (see the comment near "local W =" above), so a plain new local here fails to compile.
-function W.max_partials_rect()
-  return MARGIN_L, math.floor(gfx.h) - 26, 150, 18
-end
+function W.max_partials_rect() return W.lay("btn_maxpart_s") end
 
 function W.draw_max_partials_button()
   local x, y, w, h = W.max_partials_rect()
@@ -1928,9 +1947,7 @@ function W.space_key()                                          -- part of the k
   return o and string.format("%s%.3f%d", o.mode, o.amount, o.channels) or "-"
 end
 function W.space_rects()
-  local x0 = MARGIN_L + 160
-  local y = math.floor(gfx.h) - 26
-  return { button = { x0, y, 96, 18 }, slider = { x0 + 104, y + 4, 96, 10 }, out = { x0 + 272, y, 62, 18 } }
+  return { button = { W.lay("btn_space_s") }, slider = { W.lay("space_slider_s") }, out = { W.lay("space_out_s") }, pct = { W.lay("space_pct_s") } }
 end
 function W.draw_space()
   local r, sp = W.space_rects(), W.space
@@ -1940,8 +1957,8 @@ function W.draw_space()
   gfx.rect(x, y, w, h, 1)
   gfx.set(on and (sp.mode == 3 and 0.45 or 0.95) or 0.45, on and (sp.mode == 3 and 0.85 or 0.75) or 0.48, on and (sp.mode == 3 and 1 or 0.35) or 0.52, 1)
   gfx.rect(x, y, w, h, 0)
-  gfx.setfont(1, "Arial", 13)
   local label = W.space_names[sp.mode]
+  W.fit(label, w, 13)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
@@ -1953,7 +1970,7 @@ function W.draw_space()
   gfx.rect(sx, sy, sw, sh, 0)
   gfx.setfont(1, "Arial", 11)
   gfx.set(0.7, 0.74, 0.8, on and 1 or 0.5)
-  gfx.x, gfx.y = sx + sw + 6, sy - 2
+  gfx.x, gfx.y = r.pct[1], r.pct[2]
   gfx.drawstr(string.format("%s %d%%", sp.mode == 3 and "spread" or "width", math.floor(sp.amount * 100 + 0.5)))
   if sp.mode == 3 then
     local ox, oy, ow, oh = table.unpack(r.out)
@@ -2438,28 +2455,13 @@ end
 
 -- Noise-layer checkbox, top right of the header.
 local function checkbox_rect()
-  return math.floor(gfx.w) - 128, 8, 118, 16
+  return W.lay("chk_noise_s")
 end
 
-local function audition_rect()
-  local x, y, w, h = checkbox_rect()
-  return x - 96, y - 2, 86, 20
-end
-
-local function start_rect()                                    -- under PRINT: the playhead goes back to the start
-  local x, y, w, h = audition_rect()
-  return x - 72, y + 26, 62, 16
-end
-
-local function print_rect()
-  local x, y, w, h = audition_rect()
-  return x - 72, y, 62, h
-end
-
-local function export_rect()
-  local x, y, w, h = print_rect()
-  return x - 112, y, 102, h
-end
+local function audition_rect() return W.lay("btn_audition_s") end
+local function start_rect() return W.lay("btn_start_s") end            -- under PRINT: the playhead goes back to the start
+local function print_rect() return W.lay("btn_print_s") end
+local function export_rect() return W.lay("btn_export_s") end
 
 local function draw_export_button()
   local x, y, w, h = export_rect()
@@ -2467,18 +2469,15 @@ local function draw_export_button()
   gfx.rect(x, y, w, h, 1)
   gfx.set(0.90, 0.72, 0.45, 1)
   gfx.rect(x, y, w, h, 0)
-  gfx.setfont(1, "Arial", 14)
-  local label = "EXPORT .ats"
+  local label = (w >= 96) and "EXPORT .ats" or "EXPORT"                 -- (the layout may make the button narrow)
+  W.fit(label, w, 14)
   gfx.set(1, 0.96, 0.90, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
 end
 
-local function analyse_rect()
-  local x, y, w, h = export_rect()
-  return x - 98, y, 88, h
-end
+local function analyse_rect() return W.lay("btn_analyse_s") end
 
 local function draw_analyse_button()
   local x, y, w, h = analyse_rect()
@@ -2486,8 +2485,8 @@ local function draw_analyse_button()
   gfx.rect(x, y, w, h, 1)
   gfx.set(0.50, 0.85, 0.78, 1)
   gfx.rect(x, y, w, h, 0)
-  gfx.setfont(1, "Arial", 14)
   local label = "ANALYSE"
+  W.fit(label, w, 14)
   gfx.set(0.93, 1, 0.98, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
@@ -2556,22 +2555,33 @@ end
 
 -- The channel row (only when there are several channels): per channel an ON/OFF button (a star marks unsaved changes)
 -- and a visibility slider (20-100 %), then the STACK/OVERLAY button.
+-- (the places come from the layout: channel 1's button, slider and LED, and the distance between channels 1 and 2)
 local function chan_pitch()
-  return math.max(math.min(104, math.floor((gfx.w - MARGIN_L - 130) / math.max(#chs, 1))), 44)
+  local base = W.layout.el.ch2_btn.x - W.layout.el.ch1_btn.x
+  return math.max(math.min(base, math.floor((gfx.w - MARGIN_L - 130) / math.max(#chs, 1))), 44)
 end
 local function channel_button_rect(i)
-  return MARGIN_L + (i - 1) * chan_pitch(), MARGIN_T + 8, 30, 18
+  local x, y, w, h = W.lay("ch1_btn")
+  return x + (i - 1) * chan_pitch(), y, w, h
 end
 local function slider_rect(i)
-  local pitch = chan_pitch()
-  return MARGIN_L + (i - 1) * pitch + 34, MARGIN_T + 12, pitch - 42, 10
+  local bx, by = channel_button_rect(i)
+  local b1x, _, _, _ = W.lay("ch1_btn")
+  local sx, sy, sw, sh = W.lay("ch1_slider")
+  local shrink = (W.layout.el.ch2_btn.x - W.layout.el.ch1_btn.x) - chan_pitch()          -- (a narrow window makes the channels closer: the slider gets shorter)
+  return bx + (sx - b1x), sy, sw - shrink, sh
 end
 local function led_rect(i)
-  local bx, by, bw = channel_button_rect(i)
-  return bx + (bw - 10) // 2, MARGIN_T - 1, 10
+  local bx = channel_button_rect(i)
+  local b1x = W.lay("ch1_btn")
+  local lx, ly, lw = W.lay("ch1_led")
+  return bx + (lx - b1x), ly, lw
 end
 local function mode_rect()
-  return MARGIN_L + #chs * chan_pitch() + 4, MARGIN_T + 8, 100, 18
+  local b1x = W.lay("ch1_btn")
+  local mx, my, mw, mh = W.lay("btn_stackmode")
+  local base = W.layout.el.ch2_btn.x - W.layout.el.ch1_btn.x
+  return b1x + #chs * chan_pitch() + (mx - (b1x + 3 * base)), my, mw, mh      -- (in the layout the button sits after three channels)
 end
 
 local function draw_channel_buttons()
@@ -2725,8 +2735,8 @@ local function draw_start_button()
   gfx.rect(x, y, w, h, 1)
   gfx.set(away and 0.95 or 0.4, away and 0.75 or 0.43, away and 0.35 or 0.5, 1)
   gfx.rect(x, y, w, h, 0)
-  gfx.setfont(1, "Arial", 12)
-  local label = away and string.format("|< %.1f s", playhead) or "|< start"
+  local label = (w < 44) and "|<" or (away and string.format("|< %.1f s", playhead) or "|< start")     -- (a small button in the layout: only the arrow)
+  W.fit(label, w, 12)
   gfx.set(1, away and 0.9 or 0.65, away and 0.6 or 0.7, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 1
@@ -2735,10 +2745,7 @@ local function draw_start_button()
 end
 
 -- The sine layer checkbox sits under the noise layer checkbox.
-local function sine_checkbox_rect()
-  local x, y, w, h = checkbox_rect()
-  return x, y + 21, w, h
-end
+local function sine_checkbox_rect() return W.lay("chk_sine_s") end
 
 local function draw_sine_checkbox()
   local x, y = sine_checkbox_rect()
@@ -2804,11 +2811,21 @@ local function draw_header(px, py, pw, ph, plain)
   end
   local name = fname:match("([^/\\]+)$") or fname
   local hop_ms = data.frame_size / data.sr * 1000
-  local info = string.format("%s%s   |   %d partials   %d frames   %.2f s%s   %d Hz   hop %.1f ms   type %d%s%s",
-    name, any_modified() and " *" or "", data.partials, data.frames, data.dur,
+  local head = string.format("%s%s", name, any_modified() and " *" or "")
+  local tail = string.format("   |   %d partials   %d frames   %.2f s%s   %d Hz   hop %.1f ms   type %d%s%s",
+    data.partials, data.frames, data.dur,
     (data.dur >= 59.5) and (" (" .. Analysis.clock(data.dur) .. ")") or "", data.sr, hop_ms, data.type,
     data.has_phase and " (phase)" or "", data.has_noise and " (noise)" or "")
-  text_at(px, 8, info)
+  -- With a sound in it the window follows the layout (lib/layout.lua): the file line is at the bottom, and a message of the last action takes the place of
+  -- its numbers for a few seconds (the name and the star stay; there is no line of its own for messages). The Analysis page (plain) keeps the old lines at the top.
+  local ix, iy = px, 8
+  if not plain then ix, iy = W.lay("hdr_info_s") end
+  text_at(ix, iy, head)
+  if (not plain) and status_msg and reaper.time_precise() < status_until then
+    text_at(ix + gfx.measurestr(head) + 16, iy, status_msg, 0.6, 0.95, 0.6)
+  else
+    text_at(ix + gfx.measurestr(head), iy, tail)
+  end
   if not plain then
     draw_checkbox()
     draw_sine_checkbox()
@@ -2825,8 +2842,9 @@ local function draw_header(px, py, pw, ph, plain)
       draw_progress_under(x, w, y + h + 2, pending.job.progress, rgb)
     end
   end
-  if status_msg and reaper.time_precise() < status_until then
-    text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- third header row: what the last action did
+  gfx.setfont(1, "Arial", 14)
+  if plain and status_msg and reaper.time_precise() < status_until then
+    text_at(px, 48, status_msg, 0.6, 0.95, 0.6)                       -- (the Analysis page: third header row, what the last action did)
   end
   if plain then return end
   if any_sel() then
@@ -2840,7 +2858,8 @@ local function draw_header(px, py, pw, ph, plain)
     end
     local msg = string.format("selected: %d points in %d partials%s   %.3f-%.3f s   %s - %s",
       pts, parts, nch > 1 and (" (" .. nch .. " channels)") or "", t0, t1, fmt_freq(f0), fmt_freq(f1))
-    text_at(math.max(px + 560, gfx.w - gfx.measurestr(msg) - 14), 48, msg, 1, 0.5, 0.82)
+    local sx, sy, sw = W.lay("hdr_selinfo_s")
+    text_at(sx + sw - gfx.measurestr(msg), sy, msg, 1, 0.5, 0.82)                  -- (right aligned in its place of the layout)
   end
   -- hover readout (the lane under the mouse; in the overlay every channel that is on)
   local mx, my = gfx.mouse_x, gfx.mouse_y
@@ -2849,8 +2868,6 @@ local function draw_header(px, py, pw, ph, plain)
     local lpy, lph = py + lane.off, lane.h
     local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
     local f = view.f0 * (view.f1 / view.f0) ^ ((lpy + lph - my) / lph)
-    local line = string.format("t = %.3f s    f = %s  (%s)", t, fmt_freq(f), ats.note_name(f))
-    text_at(px, 28, line, 0.7, 0.75, 0.8)
     local best, bestd, bestch, bestfi = nil, 9, nil, nil
     if show_partials then
       for _, ci in ipairs(lane.chans) do
@@ -2869,7 +2886,8 @@ local function draw_header(px, py, pw, ph, plain)
       as_channel(bestch, function()
         local fi = bestfi
         local db = 20 * math.log(data.amp[best][fi] / data.ampmax, 10)
-        text_at(px + 330, 28, string.format("%spartial %d: %s (%s)   %.1f dB   frame %d",
+        local hx, hy = W.lay("hdr_partial_s")
+        text_at(hx, hy, string.format("%spartial %d: %s (%s)   %.1f dB   frame %d",
           #chs > 1 and ("ch " .. bestch .. "  ") or "", best, fmt_freq(data.frq[best][fi]), ats.note_name(data.frq[best][fi]), db, fi), 1, 0.95, 0.6)
         -- highlight the whole partial
         local times, amp, frq = data.times, data.amp[best], data.frq[best]
@@ -2887,9 +2905,6 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
   W.draw_space()
-  local build = "build 11 Nov 10:05"                                        -- (which version of the script is running)
-  local bw = gfx.measurestr(build)
-  text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
 
 -- --------------------------------------------------------------- interaction
