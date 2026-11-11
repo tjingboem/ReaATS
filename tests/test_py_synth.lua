@@ -135,6 +135,19 @@ do
   check("edits: and differs from the original", dc ~= db)
   local m2 = run("--out " .. a .. " --edits " .. ep .. " --edits - " .. sax_path)
   check("edits: --edits must be given for every file", m2:find("ERROR"), m2)
+  -- the spatial output: pseudo-stereo keeps two channels, VBAP makes the number asked for, a mixdown brings it back to two
+  do
+    local function channels_of(args)
+      local w = scratch .. "/ps_sp_" .. math.random(100000, 999999) .. ".wav"
+      run("--out " .. w .. " --no-noise " .. args .. " " .. sax_path)
+      local fh = io.open(w, "rb"); local raw = fh:read(24); fh:close()
+      return string.unpack("<I2", raw, 23)
+    end
+    check("spatial: plain is one channel", channels_of("") == 1)
+    check("spatial: pseudo-stereo is two channels", channels_of("--spatial pseudo --spatial-amount 0.7") == 2)
+    check("spatial: VBAP makes 5 outputs", channels_of("--spatial vbap --spatial-channels 5") == 5)
+    check("spatial: VBAP mixed down is two channels", channels_of("--spatial vbap --spatial-channels 5 --mixdown stereo") == 2)
+  end
   -- edits of the NOISE (partial = -band): the noise cells changed in the editor are sounded like the data written out
   if ed.has_noise then
     local ncells = {}

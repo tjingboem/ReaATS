@@ -413,6 +413,13 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
   The engine/synth `to` option (`--to`, `opts.to`) stays (tested) but has no UI. HOME/END "did nothing" for tjingboem because the editor window was still the OLD script: a running Lua script keeps its
   old code, so every change needs the editor to be CLOSED AND STARTED AGAIN. A `build DD Mon HH:MM` stamp is now drawn bottom right (update it at every install) to see which version runs.
 
+- SPATIAL OUTPUT BUILT (tjingboem 10 Nov 2026: "we still need pseudo stereo and VBAP as we have in SpectralTransfer"; his answers: even/odd PARTIAL number, VBAP only in PRINT with AUDITION stereo, pan position as in SpectralTransfer): see docs/spatial_output.md.
+  Engine: `reaats_synth.py` class `Spatial` (modes off/pseudo/vbap; `gains(j,count,freq)` gives (output,gain) pairs), `--spatial --spatial-amount --spatial-channels`; every partial row and noise band is added to its outputs
+  (`add_to`), output arrays [output,sample] float32 (the plain path is unchanged, bit-identical); noise cache fingerprint includes the spatial key and caches (outputs x n); the channels of a set are SUMMED (outputs made from partials);
+  `--mixdown stereo` brings K>2 outputs to two (AUDITION). Pseudo: row j even left, `angle = pi/4*(1-amount)`, +6 dB (PSEUDO_MAKEUP_DB), default amount 100 %. VBAP: pan = (even -1 / odd +1) * j/(count-1) * spread, below 100 Hz (mean
+  frequency of the partial; noise: band centre) centred, pairwise sine/cosine. Lua: `W.space` (mode, amount, channels; ExtState "space"), `W.space_opts/space_key/space_rects/draw_space/space_click/space_to`; bottom row right of MAX PARTIALS;
+  the replay key of AUDITION includes `W.space_key()`; the Lua fallback synthesis refuses (status) when SPACE is not STEREO. Tests: python/tests/test_spatial.py (9), test_py_synth.lua (channel counts), mock_channels section 9.
+
 - NOISE FOLLOWS THE SINES (tjingboem 10 Nov 2026: "when noise is active, it should follow the movements of the sines"): when `show_noise` and the file has noise (`W.noise_on(d)`), the 25 noise-band energies follow
   TIME movements of the sines: move, bend/stretch (`W.commit`), copy/paste, cut (Ctrl+X; plain Delete leaves noise; transpose never moves noise). Planners in lib/ats_edit.lua: `noise_bands` (band included
   when >50% of its width is inside the region's frequencies), `plan_noise_move/clear/warp`, `noise_piece`, `plan_noise_paste`; a noise change is `{b,f,old,new}`; landing energies are ADDED, source silenced.

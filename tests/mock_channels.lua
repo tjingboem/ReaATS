@@ -608,6 +608,26 @@ start(scratch .. "mc.ats"); strings = {}; frame()
 assert(not saw("^3$") and not saw("^STACK$"), "a file that is not name_chK.ats has no channel buttons")
 print("mismatching channel files and single files open alone")
 
+-- 9. SPACE: pseudo-stereo and VBAP (the button cycles, the slider sets the amount, the OUT box the outputs; PRINT writes every output)
+do
+  start(scratch .. "mc_ch1.ats"); strings = {}; frame()
+  local by = math.floor(gfx.h) - 26 + 9
+  assert(saw("^STEREO$"), "SPACE starts on STEREO")
+  click(222 + 40, by); strings = {}; frame()
+  assert(saw("^P%-STEREO$"), "a click on SPACE gives pseudo-stereo")
+  click(222 + 40, by); strings = {}; frame()
+  assert(saw("^VBAP$") and saw("^OUT$"), "the next click gives VBAP, with its OUT box")
+  click(222 + 262 + 50, by); click(222 + 262 + 50, by); strings = {}; frame()
+  assert(saw("^6$"), "a click on the OUT box adds an output (4 -> 6)")
+  local kept = reaper.GetExtState("tjingboem_ATSViewer", "space")
+  assert(kept:match("^3|") and kept:match("|6$"), "the setting is remembered: " .. tostring(kept))
+  click(222 + 104 + 24, by); strings = {}; frame()
+  assert(saw("spread 2[0-9]%%") or saw("spread 3[0-9]%%") or saw("spread 24%%"), "the slider sets the spread: " .. tostring(saw("spread") or saw("width")))
+  click(222 + 40, by); strings = {}; frame()
+  assert(saw("^STEREO$"), "and a third click is back at STEREO")
+end
+print("SPACE: pseudo-stereo and VBAP controls OK")
+
 clean()
 os.remove(scratch .. "mc.wav"); os.remove(scratch .. "mm_short.wav")
 print("channel sets OK")

@@ -227,7 +227,66 @@ def fill_zeros(f):
     return out
 
 
-def add_sines(a, out, fs, j0, n, base, span):
+# ---------------------------------------------------------------------------------------------------- spatial output
+# Pseudo-stereo and VBAP, as in SpectralTransfer: every partial (and every noise band) is sent to the outputs with its own gains.
+#   pseudo: partial 1, 3, 5 ... lean left and 2, 4, 6 ... lean right; `amount` 1 = the full split, 0 = no width; +6 dB makeup.
+#   vbap:   a pan position from -1 to +1 between `channels` outputs (constant-power sine/cosine between the two neighbouring ones):
+#           the width grows with the number of the partial (0 for the first, 1 for the last) times `amount` (the spread), the
+#           direction alternates (odd partials left, even right), and a partial below 100 Hz stays in the centre.
+PSEUDO_MAKEUP_DB = 6.0
+LOW_END_HZ = 100.0
+
+
+class Spatial:
+    def __init__(self, mode="off", amount=1.0, channels=2):
+        self.mode = mode if mode in ("pseudo", "vbap") else "off"
+        self.amount = min(max(float(amount), 0.0), 1.0)
+        self.channels = 2 if self.mode == "pseudo" else (min(max(int(channels), 2), 8) if self.mode == "vbap" else 1)
+
+    def key(self):
+        return (self.mode, round(self.amount, 6), self.channels)
+
+    def pair_gains(self, pan):
+        """[(output, gain), ...] for a pan position -1..1: the two outputs that bracket it (constant power)."""
+        n = self.channels
+        pan = min(max(pan, -1.0), 1.0)
+        step = 2.0 / (n - 1)
+        k = min(max(int((pan + 1.0) / step), 0), n - 2)
+        lo = -1.0 + k * step
+        u = min(max((pan - lo) / step, 0.0), 1.0)
+        return [(k, float(np.cos(u * np.pi / 2))), (k + 1, float(np.sin(u * np.pi / 2)))]
+
+    def gains(self, j, count, freq):
+        """The (output, gain) pairs of the unit number j (0-based) of `count` units whose mean frequency is `freq`."""
+        if self.mode == "pseudo":
+            angle = np.pi * 0.25 * (1.0 - self.amount)
+            makeup = 10 ** (PSEUDO_MAKEUP_DB / 20.0)
+            c, sn = float(np.cos(angle)) * makeup, float(np.sin(angle)) * makeup
+            return [(0, c), (1, sn)] if j % 2 == 0 else [(0, sn), (1, c)]
+        pan = 0.0
+        if freq >= LOW_END_HZ and count > 1:
+            pan = (-1.0 if j % 2 == 0 else 1.0) * (j / (count - 1.0)) * self.amount
+        return self.pair_gains(pan)
+
+
+def new_out(n, spatial):
+    """The output buffer: one array for the plain sound (unchanged), or one row per output."""
+    if spatial is None or spatial.mode == "off":
+        return np.zeros(n)
+    return np.zeros((spatial.channels, n), dtype=np.float32)
+
+
+def add_to(out, x0, x1, sig, gains):
+    """Add `sig` at x0:x1 to a plain output, or to the outputs of `gains` ((output, gain) pairs)."""
+    if gains is None:
+        out[x0:x1] += sig
+    else:
+        for k, g in gains:
+            if g != 0.0:
+                out[k, x0:x1] += g * sig
+
+
+def add_sines(a, out, fs, j0, n, base, span, spatial=None):
     two_pi_sr = 2 * np.pi / a.sr
     nf = a.frames
     xs_all = (np.arange(nf) - j0) * fs                           # sample position of every frame
@@ -236,6 +295,10 @@ def add_sines(a, out, fs, j0, n, base, span):
         amp_c, frq_c = chunk(a, c0, c1)
         for p in range(c1 - c0):
             amp, frq = amp_c[p], frq_c[p]
+            gains = None
+            if spatial is not None and spatial.mode != "off":
+                on = (amp > 0) & (frq > 0)
+                gains = spatial.gains(c0 + p, a.rows, float(frq[on].mean()) if on.any() else 0.0)
             seg = (amp[j0:nf - 1] > 0) | (amp[j0 + 1:nf] > 0)         # segment j -> j+1 sounds
             seg &= (frq[j0:nf - 1] > 0) | (frq[j0 + 1:nf] > 0)
             if not seg.any():
@@ -258,7 +321,7 @@ def add_sines(a, out, fs, j0, n, base, span):
                 am = np.interp(i, xf, amp[s:e + 1])
                 w = fr * two_pi_sr
                 ph = np.cumsum(w) - w + phase0
-                out[x0:x1] += am * np.sin(ph)
+                add_to(out, x0, x1, am * np.sin(ph), gains)
                 phase0 = float((ph[-1] + w[-1]) % (2 * np.pi))
         progress(base + span * c1 / a.rows)
     progress(base + span)
@@ -294,7 +357,7 @@ def band_response(freqs, lo, hi, nyq):
     return h
 
 
-def add_noise(a, out, fs, j0, n, seed, base, span):
+def add_noise(a, out, fs, j0, n, seed, base, span, spatial=None):
     nf = a.frames
     xs = (np.arange(nf) - j0) * fs
     nyq = a.sr / 2
@@ -342,7 +405,10 @@ def add_noise(a, out, fs, j0, n, seed, base, span):
             continue
         carrier /= rms
         env_s = np.interp(np.arange(x_first, x_last), xs[j0:nf], env)
-        out[x_first:x_last] += carrier * env_s
+        gains = None
+        if spatial is not None and spatial.mode != "off":
+            gains = spatial.gains(b, BANDS, 0.5 * (lo + min(hi, nyq)))
+        add_to(out, x_first, x_last, carrier * env_s, gains)
         progress(base + span * (b + 1) / BANDS)
     progress(base + span)
 
@@ -351,12 +417,14 @@ CACHE_KEEP_FILES = 40
 CACHE_KEEP_BYTES = 400 * 1024 * 1024
 
 
-def cache_path(cache_dir, a, j0, n, seed):
+def cache_path(cache_dir, a, j0, n, seed, spatial=None):
     """The noise does not depend on the partials, so what is made from it is kept between renders. The file name is a
     fingerprint of everything the noise is made from: the noise data, the grid, the part and the seed."""
     h = hashlib.sha1()
     h.update(np.ascontiguousarray(a.noise).tobytes())
     h.update(repr((a.sr, a.frame_size, a.window_size, a.frames, j0, n, seed, NOISE_SHAPE, NOISE_GAIN, NOISE_GAIN_CORRECTED, "v2")).encode())
+    if spatial is not None and spatial.mode != "off":
+        h.update(repr(spatial.key()).encode())
     return os.path.join(cache_dir, "reaats_noise_" + h.hexdigest() + ".f32")
 
 
@@ -373,19 +441,20 @@ def prune_cache(cache_dir):
         pass
 
 
-def noise_signal(a, fs, j0, n, seed, base, span, cache_dir):
-    """The noise of the part, from the cache when it was made before."""
-    path = cache_path(cache_dir, a, j0, n, seed) if cache_dir else None
+def noise_signal(a, fs, j0, n, seed, base, span, cache_dir, spatial=None):
+    """The noise of the part, from the cache when it was made before (with a spatial output: one row per output)."""
+    path = cache_path(cache_dir, a, j0, n, seed, spatial) if cache_dir else None
+    rows = 1 if (spatial is None or spatial.mode == "off") else spatial.channels
     if path and os.path.exists(path):
         try:
             nz = np.fromfile(path, dtype="<f4")
-            if len(nz) == n:
+            if len(nz) == n * rows:
                 os.utime(path, None)                           # (used lately: pruned last)
-                return nz.astype(np.float64)
+                return nz.astype(np.float64) if rows == 1 else nz.reshape(rows, n)
         except OSError:
             pass
-    nz = np.zeros(n)
-    add_noise(a, nz, fs, j0, n, seed, base, span)
+    nz = new_out(n, spatial)
+    add_noise(a, nz, fs, j0, n, seed, base, span, spatial)
     if path:
         try:
             os.makedirs(cache_dir, exist_ok=True)
@@ -398,15 +467,16 @@ def noise_signal(a, fs, j0, n, seed, base, span, cache_dir):
     return nz
 
 
-def render_channel(a, start, end, use_sines, use_noise, seed, base, span, cache_dir=None):
+def render_channel(a, start, end, use_sines, use_noise, seed, base, span, cache_dir=None, spatial=None):
+    """One channel: a plain array, or with a spatial output an array [output, sample]."""
     fs, j0, n = grid(a, start, end)
-    out = np.zeros(n)
+    out = new_out(n, spatial)
     both = use_sines and use_noise and a.has_noise
     if use_sines:
-        add_sines(a, out, fs, j0, n, base, span * (0.15 if both else 1.0))
+        add_sines(a, out, fs, j0, n, base, span * (0.15 if both else 1.0), spatial)
     if use_noise and a.has_noise:
         b0, sp = base + (span * 0.15 if both else 0.0), span * (0.85 if both else 1.0)
-        out += noise_signal(a, fs, j0, n, seed, b0, sp, cache_dir)
+        out += noise_signal(a, fs, j0, n, seed, b0, sp, cache_dir, spatial)
         progress(b0 + sp)
     return out, j0 * fs / a.sr
 
@@ -462,7 +532,7 @@ def synth_task(t):
     NOISE_SHAPE = t["shape"]
     a = load_ats(t["path"])
     apply_edits(a, load_edits(t["edits"]))
-    out, t_start = render_channel(a, t["start"], t["end"], t["sines"], t["noise"], t["seed"], 0.0, 1.0, t["cache"])
+    out, t_start = render_channel(a, t["start"], t["end"], t["sines"], t["noise"], t["seed"], 0.0, 1.0, t["cache"], t.get("spatial"))
     _SHARED[_IDX] = 1.0
     return out, t_start
 
@@ -520,6 +590,11 @@ def build_parser():
                         "values are used as they are, as Csound's ATS synthesis does")
     p.add_argument("--mixdown", choices=("none", "stereo"), default="none",
                    help="stereo: mix more than two channels down to a stereo file (for listening)")
+    p.add_argument("--spatial", choices=("off", "pseudo", "vbap"), default="off",
+                   help="pseudo: the partials (and noise bands) are divided over left and right (even/odd); vbap: they are panned over "
+                        "--spatial-channels outputs. The channels of a set are then added together (the output is made from the partials)")
+    p.add_argument("--spatial-amount", type=float, default=1.0, help="pseudo: the amount 0..1 (1 = the full split); vbap: the spread 0..1")
+    p.add_argument("--spatial-channels", type=int, default=2, help="vbap: the number of outputs, 2 to 8")
     p.add_argument("--result-file", default=None)
     return p
 
@@ -555,18 +630,26 @@ def main(argv=None):
             if f.frames != first.frames or abs(f.sr - first.sr) > 1e-6 or abs(f.frame_size - first.frame_size) > 1e-6:
                 fail("the channel files do not have the same frame grid")
         chans, t_start = [], 0.0
+        spatial = Spatial(a.spatial, a.spatial_amount, a.spatial_channels)
+        spatial = spatial if spatial.mode != "off" else None
         jobs = choose_jobs(a.jobs, len(files))
         if jobs > 1:
             tasks = [{"k": k, "path": p, "start": a.start, "end": a.end, "sines": not a.no_sines, "noise": not a.no_noise,
-                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None}
+                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None, "spatial": spatial}
                      for k, p in enumerate(a.ats)]
             done = run_parallel(tasks, jobs)
             chans, t_start = [d[0] for d in done], done[0][1]
         else:
             for k, f in enumerate(files):
                 out, t_start = render_channel(f, a.start, a.end, not a.no_sines, not a.no_noise, a.seed + k,
-                                              k / len(files), 1.0 / len(files), a.cache_dir)
+                                              k / len(files), 1.0 / len(files), a.cache_dir, spatial)
                 chans.append(out)
+        if spatial is not None:                                    # the channels of a set are added: the outputs are made from the partials
+            length = max(c.shape[1] for c in chans)
+            total = np.zeros((spatial.channels, length), dtype=np.float32)
+            for c in chans:
+                total[:, :c.shape[1]] += c
+            chans = [total[k].astype(np.float64) for k in range(spatial.channels)]
         if a.mixdown == "stereo":
             chans = mix_to_stereo(chans)
         write_wav(a.out, chans, first.sr)

@@ -3,7 +3,7 @@
 tjingboem: "Like we did in SpectralTransfer, i hope to create a pseudo stereo output by dividing the analysed channels
 over a stereo output. Also VBAP. Add that to the list."
 
-NOT built, on the list. What SpectralTransfer does (the model to follow; see ~/Claude/SpectralTransfer/CLAUDE.md):
+BUILT 10 Nov 2026 (see CLAUDE.md, "SPATIAL OUTPUT BUILT"; the text below is the original note). What SpectralTransfer does (the model to follow; see ~/Claude/SpectralTransfer/CLAUDE.md):
 - Three exclusive modes: STEREO, PSEUDO-STEREO, VBAP.
 - Pseudo-stereo: the units (there: the filter bands) are divided over left and right by even/odd number; an amount knob
   blends between the full split and no width (default 50 %, because 100 % sounds hollow), with +6 dB makeup so the

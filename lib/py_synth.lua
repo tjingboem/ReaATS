@@ -30,7 +30,7 @@ function M.sweep()
 end
 
 -- opts: exe, script, files (the .ats files, one per channel), temp (those of the files to delete afterwards), wav, dir, id,
--- from, to, sines, noise, seed, mixdown ("stereo" or nil). Returns the job, or nil and a message.
+-- from, to, sines, noise, seed, mixdown ("stereo" or nil), spatial ({ mode = "pseudo"|"vbap", amount, channels } or nil). Returns the job, or nil and a message.
 function M.start(opts)
   local result = string.format("%s/reaats_%s_synth_result.txt", opts.dir, opts.id)
   local argsfile = string.format("%s/reaats_%s_synth_args.txt", opts.dir, opts.id)
@@ -43,6 +43,11 @@ function M.start(opts)
   if opts.noise == false then args[#args + 1] = "--no-noise" end
   if opts.cache_dir then args[#args + 1] = "--cache-dir"; args[#args + 1] = opts.cache_dir end
   if opts.mixdown then args[#args + 1] = "--mixdown"; args[#args + 1] = opts.mixdown end
+  if opts.spatial and opts.spatial.mode ~= "off" then
+    args[#args + 1] = "--spatial"; args[#args + 1] = opts.spatial.mode
+    args[#args + 1] = "--spatial-amount"; args[#args + 1] = string.format("%.4f", opts.spatial.amount or 1)
+    args[#args + 1] = "--spatial-channels"; args[#args + 1] = tostring(opts.spatial.channels or 2)
+  end
   if opts.edits then for i = 1, #opts.files do args[#args + 1] = "--edits"; args[#args + 1] = opts.edits[i] or "-" end end
   for _, f in ipairs(opts.files) do args[#args + 1] = f end
   local fh = io.open(argsfile, "w")

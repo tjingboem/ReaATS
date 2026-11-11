@@ -993,7 +993,7 @@ local function start_synth(wav, o)
   end
   if not any_edits then edits = nil end
   local job = py_synth.start({ exe = analysis.python.exe, script = script, files = files, edits = edits, temp = temp, wav = wav, dir = dir, id = id,
-                               from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown,
+                               from = o.from, to = o.to, sines = o.sines, noise = o.noise, seed = 12345, mixdown = o.mixdown, spatial = o.spatial,
                                cache_dir = dir .. "/reaats_noise_cache" })
   if not job then discard(); return lua_job() end
   return job, "Python", req
@@ -1019,7 +1019,7 @@ local function audition()
   local s_r = (k0 - 1) * fs                                        -- the part asked for, in samples of the sound
   local e_r = to and math.min(n_total, math.floor(to * sr)) or n_total
   if e_r - s_r < 1 then set_status("nothing to play after this point"); return end
-  local state = string.format("%d|%s|%s|%d", data_rev, tostring(use_sines), tostring(use_noise), #chs)
+  local state = string.format("%d|%s|%s|%d|%s", data_rev, tostring(use_sines), tostring(use_noise), #chs, W.space_key())
   local la = last_audition
   if la and la.state == state and la.s <= s_r and e_r <= la.e and reaper.file_exists(la.wav) then
     -- nothing has changed since a sound was made that holds this part: play it (or a piece of it) without making it again
@@ -1032,7 +1032,9 @@ local function audition()
   local from = playhead
   if not to and d1.dur <= 120 then from = 0 end
   local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = from, to = to,
-                                              mixdown = (#chs > 2) and "stereo" or nil })
+                                              mixdown = (#chs > 2 or (W.space_opts() and W.space_opts().channels > 2)) and "stereo" or nil,
+                                              spatial = W.space_opts() })
+  if engine == "Lua" and W.space_opts() then job.cancel(); set_status("P-STEREO and VBAP need the Python program (see ANALYSE): put SPACE on STEREO to use the built-in synthesis"); return end
   pending = { kind = "audition", mode = mode, channels = #chs, wav = wav, engine = engine, req = req, job = job, state = state,
               span_s = s_r, span_e = e_r }
   set_status("preparing the sound ... 0 %")
@@ -1302,7 +1304,8 @@ local function print_to_track()
   local use_noise = show_noise and data.has_noise
   if not use_sines and not use_noise then set_status("nothing to print (partials and noise are both off)"); return end
   local mode = (use_sines and use_noise) and "sines + noise" or (use_sines and "sines" or "noise")
-  local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = playhead })           -- from the playhead
+  local job, engine, req = start_synth(wav, { sines = use_sines, noise = use_noise, from = playhead, spatial = W.space_opts() })           -- from the playhead
+  if engine == "Lua" and W.space_opts() then job.cancel(); set_status("P-STEREO and VBAP need the Python program (see ANALYSE): put SPACE on STEREO to use the built-in synthesis"); return end
   pending = { kind = "print", mode = mode, wav = wav, ats_path = ats_path, files = files, channels = #chs,
               engine = engine, req = req, job = job }
   set_status(playhead > 0.0005 and string.format("preparing the print FROM %.2f s (the playhead) ... 0 %%   Esc cancels, Home puts the playhead at the start", playhead)
@@ -1838,6 +1841,100 @@ function W.draw_max_partials_button()
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
+end
+
+-- SPATIAL OUTPUT (tjingboem 10 Nov 2026: "we still need pseudo stereo and VBAP as we have in SpectralTransfer"): the sound's partials and
+-- noise bands are divided over the outputs by the Python synthesis. SPACE cycles STEREO (as before) / P-STEREO (odd partials left, even right)
+-- / VBAP (panned over 2-8 outputs); the slider is the amount (P-STEREO) or the spread (VBAP); the OUT box (VBAP) is the number of outputs.
+-- AUDITION is always stereo (a VBAP sound is mixed down to two); PRINT writes every output as a channel. The state is in W (the main chunk is
+-- at Lua's 200-local limit) and is remembered between sessions.
+W.space_names = { "STEREO", "P-STEREO", "VBAP" }
+W.space = { mode = 1, amount = 1.0, channels = 4 }
+do
+  local raw = reaper.GetExtState(EXT_SECTION, "space")
+  local m, a, c = tostring(raw):match("^(%d)|([%d%.]+)|(%d)$")
+  if m then W.space.mode, W.space.amount, W.space.channels = math.min(math.max(tonumber(m), 1), 3), math.min(math.max(tonumber(a), 0), 1), math.min(math.max(tonumber(c), 2), 8) end
+end
+function W.space_save()
+  reaper.SetExtState(EXT_SECTION, "space", string.format("%d|%.3f|%d", W.space.mode, W.space.amount, W.space.channels), true)
+end
+function W.space_opts()                                         -- what the synthesis needs, or nil for plain stereo
+  local sp = W.space
+  if sp.mode == 1 then return nil end
+  return { mode = sp.mode == 2 and "pseudo" or "vbap", amount = sp.amount, channels = sp.channels }
+end
+function W.space_key()                                          -- part of the key of a sound that can be played again
+  local o = W.space_opts()
+  return o and string.format("%s%.3f%d", o.mode, o.amount, o.channels) or "-"
+end
+function W.space_rects()
+  local x0 = MARGIN_L + 160
+  local y = math.floor(gfx.h) - 26
+  return { button = { x0, y, 96, 18 }, slider = { x0 + 104, y + 4, 96, 10 }, out = { x0 + 262, y, 62, 18 } }
+end
+function W.draw_space()
+  local r, sp = W.space_rects(), W.space
+  local on = sp.mode > 1
+  local x, y, w, h = table.unpack(r.button)
+  gfx.set(on and 0.30 or 0.18, on and 0.26 or 0.20, on and 0.12 or 0.23, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(on and (sp.mode == 3 and 0.45 or 0.95) or 0.45, on and (sp.mode == 3 and 0.85 or 0.75) or 0.48, on and (sp.mode == 3 and 1 or 0.35) or 0.52, 1)
+  gfx.rect(x, y, w, h, 0)
+  gfx.setfont(1, "Arial", 13)
+  local label = W.space_names[sp.mode]
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+  local sx, sy, sw, sh = table.unpack(r.slider)
+  gfx.set(0.14, 0.16, 0.19, on and 1 or 0.5)
+  gfx.rect(sx, sy, sw, sh, 1)
+  gfx.set(on and 0.55 or 0.3, on and 0.72 or 0.34, on and 0.95 or 0.38, 1)
+  gfx.rect(sx, sy, sw * sp.amount, sh, 1)
+  gfx.rect(sx, sy, sw, sh, 0)
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(0.7, 0.74, 0.8, on and 1 or 0.5)
+  gfx.x, gfx.y = sx + sw + 6, sy - 2
+  gfx.drawstr(string.format("%s %d%%", sp.mode == 3 and "spread" or "width", math.floor(sp.amount * 100 + 0.5)))
+  if sp.mode == 3 then
+    local ox, oy, ow, oh = table.unpack(r.out)
+    gfx.set(0.18, 0.2, 0.23, 1)
+    gfx.rect(ox + 36, oy, ow - 36, oh, 1)
+    gfx.set(0.45, 0.85, 1, 1)
+    gfx.rect(ox + 36, oy, ow - 36, oh, 0)
+    gfx.setfont(1, "Arial", 13)
+    gfx.x, gfx.y = ox, oy + 2
+    gfx.drawstr("OUT")
+    gfx.x, gfx.y = ox + 44, oy + 2
+    gfx.drawstr(tostring(sp.channels))
+  end
+end
+-- A click on the SPACE controls. Returns true when it was one (and starts the slider drag).
+function W.space_click(mx, my, cap)
+  local r, sp = W.space_rects(), W.space
+  local function inside(rc) return mx >= rc[1] and mx < rc[1] + rc[3] and my >= rc[2] and my < rc[2] + rc[4] end
+  if inside(r.button) then
+    sp.mode = sp.mode % 3 + 1
+    W.space_save()
+    set_status(sp.mode == 1 and "output: plain stereo" or (sp.mode == 2 and "output: pseudo-stereo (odd partials left, even right); AUDITION and PRINT make it with the Python program"
+      or string.format("output: VBAP over %d outputs (AUDITION mixes it down to stereo, PRINT writes %d channels)", sp.channels, sp.channels)))
+    return true
+  elseif inside({ r.slider[1] - 3, r.slider[2] - 4, r.slider[3] + 6, r.slider[4] + 8 }) then
+    W.space_drag = true
+    W.space_to(mx)
+    return true
+  elseif sp.mode == 3 and inside(r.out) then
+    sp.channels = ((cap & 2) ~= 0) and (sp.channels <= 2 and 8 or sp.channels - 1) or (sp.channels >= 8 and 2 or sp.channels + 1)
+    W.space_save()
+    set_status(string.format("VBAP over %d outputs (click: more, right-click: fewer)", sp.channels))
+    return true
+  end
+  return false
+end
+function W.space_to(mx)
+  local r = W.space_rects()
+  W.space.amount = math.min(math.max((mx - r.slider[1]) / r.slider[3], 0), 1)
+  W.space_save()
+  dirty = true
 end
 
 -- Applies the bend to the selected points of every channel that is on and green (one undo step), and opens a flat box round them.
@@ -2642,7 +2739,8 @@ local function draw_header(px, py, pw, ph, plain)
   end
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
-  local build = "build 10 Nov 22:34"                                        -- (which version of the script is running)
+  W.draw_space()
+  local build = "build 10 Nov 22:50"                                        -- (which version of the script is running)
   local bw = gfx.measurestr(build)
   text_at(gfx.w - bw - 6, gfx.h - 17, build, 0.45, 0.48, 0.52)
 end
@@ -2748,6 +2846,8 @@ local function handle_input(px, py, pw, ph)
         return any_sel() and mx >= mx2 and mx < mx2 + mw2 and my >= my2 and my < my2 + mh2
       end)() then
       W.pk_apply()
+    elseif data and W.space_click(mx, my, cap) then
+      -- (the SPACE controls: handled above)
     elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
       ruler_drag = true                                          -- a click (or drag) on the time ruler sets the playhead
       set_playhead(view.t0 + (mx - px) / pw * (view.t1 - view.t0))
@@ -2768,6 +2868,8 @@ local function handle_input(px, py, pw, ph)
         box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
       end
     end
+  elseif down and W.space_drag then
+    W.space_to(mx)
   elseif down and slider_drag then
     set_slider_from_mouse(slider_drag, mx)
   elseif down and ruler_drag then
@@ -2832,7 +2934,7 @@ local function handle_input(px, py, pw, ph)
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
     end
   end
-  if not down then ruler_drag = false; slider_drag = nil; W.drag = nil end
+  if not down then ruler_drag = false; slider_drag = nil; W.drag = nil; W.space_drag = nil end
   prev_down = down
 
   local ch = gfx.getchar()
