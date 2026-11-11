@@ -5,7 +5,7 @@ local function check(name, cond, extra)
 end
 local L = dofile("lib/layout.lua")
 check("reference size", L.ref_w == 1100 and L.ref_h == 640)
-local need = { "hdr_info_s", "hdr_partial_s", "hdr_selinfo_s", "btn_analyse_s", "btn_export_s", "btn_print_s", "btn_start_s", "btn_audition_s", "chk_noise_s",
+local need = { "hdr_info_s", "hdr_partial_s", "hdr_selinfo_s", "btn_analyse_s", "btn_export_s", "btn_notes_s", "btn_print_s", "btn_start_s", "btn_audition_s", "chk_noise_s",
                "chk_sine_s", "ch1_led", "ch1_btn", "ch1_slider", "ch2_btn", "btn_stackmode", "plot", "plot_s", "btn_maxpart_s", "btn_space_s",
                "space_slider_s", "space_pct_s", "space_out_s" }
 for _, id in ipairs(need) do

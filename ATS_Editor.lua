@@ -29,6 +29,7 @@
           Tab / the channel buttons  switch the channel of a set (name_ch1.ats, name_ch2.ats ...; AUDITION and PRINT play all channels)
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
           EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
+          EXPORT NOTES  the strongest partials (up to 15) as MPE notes: a .mid file and a MIDI item (see the end of the file)
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
           Esc           clear the selection
 --------------------------------------------------------------------------------]]
@@ -109,7 +110,8 @@ local amp_thresh = 0
 -- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
 -- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
 -- chunk of this file is at Lua's limit of 200 local variables).
-local W = { m = dofile(script_dir .. "/lib/ats_warp.lua"), layout = dofile(script_dir .. "/lib/layout.lua") }
+local W = { m = dofile(script_dir .. "/lib/ats_warp.lua"), layout = dofile(script_dir .. "/lib/layout.lua"),
+            notes = dofile(script_dir .. "/lib/ats_notes.lua") }
 -- The place of an element of the layout (lib/layout.lua) in the window as it is now: x, y, w, h. An element hangs on the edge that the layout says
 -- (right: its distance to the right edge stays what it was in the default window, 1100 wide; bottom: likewise for the height, 640).
 function W.lay(id)
@@ -1941,6 +1943,174 @@ function W.draw_max_partials_button()
   gfx.drawstr(label)
 end
 
+-- EXPORT NOTES (tjingboem, 11 Nov 2026): the strongest partials as MPE notes (lib/ats_notes.lua says how: one note per track of a partial,
+-- on a channel of its own, pitch bend = its deviation from the semitone, pressure = its amplitude). Works on the selection if there is
+-- one, otherwise on the whole sound of the channel that is shown. A panel with two sliders (as the gain of the selection) asks how many
+-- partials (1 to 15) and how much to favour low partials (neutral = by energy only ... 2; both remembered, the preference starts at 0.5), writes <name>_notes<N>.mid
+-- next to the .ats file (never over an existing file) and puts the same notes on a new track "ReaATS notes" at the edit cursor.
+function W.notes_rect() return W.lay("btn_notes_s") end
+
+function W.draw_notes_button()
+  local x, y, w, h = W.notes_rect()
+  gfx.set(0.30, 0.22, 0.40, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.72, 0.60, 0.92, 1)
+  gfx.rect(x, y, w, h, 0)
+  local label = "EXPORT NOTES"
+  W.fit(label, w, 14)
+  gfx.set(0.97, 0.94, 1, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
+function W.notes_to_reaper(res)
+  local pos = reaper.GetCursorPosition()
+  reaper.Undo_BeginBlock()
+  local idx = reaper.CountTracks(0)
+  reaper.InsertTrackAtIndex(idx, true)
+  local track = reaper.GetTrack(0, idx)
+  reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS notes", true)
+  local item = reaper.CreateNewMIDIItemInProj(track, pos, pos + res.dur + 0.1, false)
+  local take = item and reaper.GetActiveTake(item)
+  if not take then reaper.Undo_EndBlock("ReaATS: export notes", -1); return false end
+  local buf = W.notes.reaper_buffer(res, function(t) return reaper.MIDI_GetPPQPosFromProjTime(take, pos + t) end, res.dur + 0.05)
+  reaper.MIDI_SetAllEvts(take, buf)
+  reaper.UpdateItemInProject(item)
+  reaper.Undo_EndBlock("ReaATS: export notes", -1)
+  return true
+end
+
+-- The panel: the same kind of slider as the gain of the selection (right-click). W.np = { x, y, max, bias, tracks, sel, drag } while it is open
+-- (it takes every click and key). Max notes 1..15; "favour": from neutral (0, by energy only) to low partials (2); both are remembered.
+-- The line under the sliders is live: the tracks are found once when the panel opens, and what a setting would keep is counted again
+-- (only when the setting changes) from them.
+function W.export_notes()
+  if not data or not fname then return end
+  W.commit()
+  local use_sel = (sel_info and next(sel)) and sel or nil
+  local last = tonumber(reaper.GetExtState(EXT_SECTION, "notes_max")) or 15
+  local last_bias = tonumber(reaper.GetExtState(EXT_SECTION, "notes_bias")) or 0.5
+  local bx, by, bw, bh = W.notes_rect()
+  W.np = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 304, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 164, 4)),
+           max = clamp(math.floor(last + 0.5), 1, 15), bias = clamp(math.floor(last_bias * 20 + 0.5) / 20, 0, 2),
+           sel = use_sel, tracks = W.notes.tracks(data, use_sel) }
+  dirty = true
+end
+function W.notes_rects()
+  local g = W.np
+  return { box = { g.x, g.y, 300, 162 }, max = { g.x + 16, g.y + 40, 268, 10 }, bias = { g.x + 16, g.y + 88, 268, 10 },
+           cancel = { g.x + 150, g.y + 134, 62, 18 }, apply = { g.x + 218, g.y + 134, 66, 18 } }
+end
+function W.notes_slider_to(which, mx)
+  local g, r = W.np, W.notes_rects()[which]
+  local frac = math.min(math.max((mx - r[1]) / r[3], 0), 1)
+  if which == "max" then g.max = 1 + math.floor(frac * 14 + 0.5) else g.bias = math.floor(frac * 2 * 20 + 0.5) / 20 end
+  dirty = true
+end
+function W.notes_apply()
+  local g = W.np
+  W.np = nil
+  dirty = true
+  reaper.SetExtState(EXT_SECTION, "notes_max", tostring(g.max), true)
+  reaper.SetExtState(EXT_SECTION, "notes_bias", tostring(g.bias), true)
+  local res = W.notes.build(data, { max = g.max, sel = g.sel, bias = g.bias, tracks = g.tracks })
+  local use_sel = g.sel
+  if #res.notes == 0 then
+    set_status(use_sel and "export notes: no partial sounds long enough in the selection" or "export notes: no partial sounds long enough")
+    return
+  end
+  local here = current_file or fname
+  local stem = here:gsub("%.[^./\\]+$", ""):gsub("_ch%d+$", "")
+  local k, path = 1, nil
+  repeat path = string.format("%s_notes%d.mid", stem, k); k = k + 1 until not reaper.file_exists(path)
+  local fh, err = io.open(path, "wb")
+  if not fh then set_status("export notes: cannot write " .. tostring(err)); return end
+  fh:write(W.notes.smf(res))
+  fh:close()
+  local placed = W.notes_to_reaper(res)
+  set_status(string.format("%d notes (%d partials found%s) on %d MPE channels%s -> %s", #res.notes, res.found,
+    res.dropped > 0 and string.format(", %d weaker left out", res.dropped) or "", res.members,
+    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and " and a MIDI item on a new track" or "")))
+end
+-- Mouse and key while the panel is open.
+function W.notes_input(mx, my, cap, ch)
+  local g, r = W.np, W.notes_rects()
+  local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
+  local down = (cap & 1) ~= 0
+  if ch == 27 then W.np = nil; dirty = true; set_status("export notes cancelled"); return end
+  if ch == 13 then W.notes_apply(); return end
+  if ch == 30064 then g.max = math.min(g.max + 1, 15); dirty = true
+  elseif ch == 1685026670 then g.max = math.max(g.max - 1, 1); dirty = true
+  elseif ch == 1919379572 then g.bias = math.min(g.bias + 0.05, 2); dirty = true
+  elseif ch == 1818584692 then g.bias = math.max(g.bias - 0.05, 0); dirty = true end
+  if down and not prev_down then
+    if inside(r.max, 6) then g.drag = "max"; W.notes_slider_to("max", mx)
+    elseif inside(r.bias, 6) then g.drag = "bias"; W.notes_slider_to("bias", mx)
+    elseif inside(r.apply) then W.notes_apply()
+    elseif inside(r.cancel) or not inside(r.box) then W.np = nil; dirty = true; set_status("export notes cancelled") end
+  elseif down and g.drag then
+    W.notes_slider_to(g.drag, mx)
+  end
+  if not down then g.drag = nil end
+end
+function W.draw_notes_panel()
+  local g = W.np
+  if not g then return end
+  local r = W.notes_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.72, 0.60, 0.92, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr(g.sel and "Export notes (the selection)" or "Export notes (the whole sound)")
+  local function slider(rc, label, value, frac, left, right)
+    gfx.setfont(1, "Arial", 13)
+    gfx.set(0.9, 0.92, 0.96, 1)
+    gfx.x, gfx.y = rc[1], rc[2] - 18; gfx.drawstr(label)
+    gfx.set(1, 0.9, 0.5, 1)
+    gfx.x = rc[1] + rc[3] - gfx.measurestr(value); gfx.drawstr(value)
+    gfx.set(0.16, 0.18, 0.22, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(0.55, 0.45, 0.80, 0.6)
+    gfx.rect(rc[1], rc[2], rc[3] * frac, rc[4], 1)
+    gfx.set(1, 1, 1, 0.95)
+    gfx.rect(rc[1] + math.floor((rc[3] - 3) * frac), rc[2] - 2, 3, rc[4] + 4, 1)
+    gfx.set(0.35, 0.38, 0.43, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.setfont(1, "Arial", 11)
+    gfx.set(0.6, 0.64, 0.7, 1)
+    gfx.x, gfx.y = rc[1], rc[2] + 12; gfx.drawstr(left)
+    gfx.x = rc[1] + rc[3] - gfx.measurestr(right); gfx.drawstr(right)
+  end
+  slider(r.max, "Max notes", tostring(g.max), (g.max - 1) / 14, "1", "15")
+  slider(r.bias, "Favour", g.bias < 0.025 and "neutral" or string.format("low partials %.2f", g.bias), g.bias / 2, "Neutral", "Low partials")
+  local key = g.max .. "|" .. string.format("%.2f", g.bias)
+  if g.key ~= key then
+    g.key = key
+    g.kept, g.dropped, g.members = W.notes.count(g.tracks, g.max, data.frames, g.bias)
+  end
+  gfx.setfont(1, "Arial", 12)
+  gfx.set(0.75, 0.78, 0.84, 1)
+  gfx.x, gfx.y = bx + 16, by + 112
+  gfx.drawstr(string.format("found %d partials: %d notes on %d channels, %d left out", #g.tracks, g.kept, g.members, g.dropped))
+  local function button(rc, text, rgb)
+    gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(rgb[1], rgb[2], rgb[3], 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.setfont(1, "Arial", 12)
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "EXPORT", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
+end
+
 -- SPATIAL OUTPUT (tjingboem 10 Nov 2026: "we still need pseudo stereo and VBAP as we have in SpectralTransfer"): the sound's partials and
 -- noise bands are divided over the outputs by the Python synthesis. SPACE cycles STEREO (as before) / P-STEREO (odd partials left, even right)
 -- / VBAP (panned over 2-8 outputs); the slider is the amount (P-STEREO) or the spread (VBAP); the OUT box (VBAP) is the number of outputs.
@@ -2606,7 +2776,7 @@ local function draw_export_button()
   gfx.rect(x, y, w, h, 1)
   gfx.set(0.90, 0.72, 0.45, 1)
   gfx.rect(x, y, w, h, 0)
-  local label = (w >= 96) and "EXPORT .ats" or "EXPORT"                 -- (the layout may make the button narrow)
+  local label = "EXPORT .ats FILE"
   W.fit(label, w, 14)
   gfx.set(1, 0.96, 0.90, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
@@ -2970,6 +3140,7 @@ local function draw_header(px, py, pw, ph, plain)
     draw_start_button()
     draw_print_button()
     draw_export_button()
+    W.draw_notes_button()
     draw_analyse_button()
     draw_channel_buttons()
     if pending then                                              -- how far the sound is, under the button it belongs to
@@ -3068,11 +3239,11 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
-  if W.gain then                                                 -- the gain slider is open: it takes the mouse and the keys
+  if W.gain or W.np then                                         -- the gain slider or the export-notes panel is open: it takes the mouse and the keys
     local ch = gfx.getchar()
     if ch < 0 then stop_audition(); return false end
     gfx.mouse_wheel = 0
-    W.gain_input(mx, my, cap, ch)
+    if W.gain then W.gain_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
     prev_down = (cap & 1) ~= 0
     return true
   end
@@ -3152,6 +3323,8 @@ local function handle_input(px, py, pw, ph)
         return mx >= ax2 and mx < ax2 + aw2 and my >= ay2 and my < ay2 + ah2
       end)() then
       showing_analysis = true
+    elseif data and (function() local nx, ny, nw, nh = W.notes_rect(); return mx >= nx and mx < nx + nw and my >= ny and my < ny + nh end)() then
+      W.export_notes()
     elseif data and (function()
         local mx2, my2, mw2, mh2 = W.max_partials_rect()
         return any_sel() and mx >= mx2 and mx < mx2 + mw2 and my >= my2 and my < my2 + mh2
@@ -3371,6 +3544,7 @@ local function loop()
   draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)
   W.draw_gain()
+  W.draw_notes_panel()
   gfx.update()
   if keep then reaper.defer(loop) end
 end

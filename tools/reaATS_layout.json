@@ -47,11 +47,22 @@
     "panel": "editor",
     "state": "set",
     "id": "btn_export_s",
-    "label": "EXPORT .ats",
+    "label": "EXPORT .ats FILE",
     "shape": "box",
     "x": 126,
     "y": 8,
-    "w": 52,
+    "w": 116,
+    "h": 18
+  },
+  {
+    "panel": "editor",
+    "state": "set",
+    "id": "btn_notes_s",
+    "label": "EXPORT NOTES (MPE: the strongest partials as MIDI)",
+    "shape": "box",
+    "x": 126,
+    "y": 30,
+    "w": 116,
     "h": 18
   },
   {
@@ -370,7 +381,7 @@
     "shape": "box",
     "x": 284,
     "y": 6,
-    "w": 150,
+    "w": 104,
     "h": 18
   },
   {
