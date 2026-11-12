@@ -224,5 +224,50 @@ do
   check("bias nil = 0", kept(nil) == high)
 end
 
+-- the envelope: the number of notes allowed changes over time (12 Nov 2026)
+do
+  local d = make(10, 100)
+  for p = 1, 10 do fill(d, p, 1, 100, 200 * p, 0.05 * p) end                  -- ten steady partials, the higher the stronger
+  local c = notes.caps(d, nil, 6)
+  check("caps: flat", c[1] == 6 and c[100] == 6)
+  local ramp = { { t = 0, n = 1 }, { t = 0.99, n = 10 } }                    -- from 1 note to 10 notes over the whole file
+  c = notes.caps(d, ramp, 15)
+  check("caps: a ramp from 1 to 10", c[1] == 1 and c[100] == 10 and c[50] > 3 and c[50] < 8, c[1] .. " " .. c[50] .. " " .. c[100])
+  check("caps: before the first and after the last point the values stay", notes.caps(d, { { t = 0.3, n = 4 }, { t = 0.6, n = 9 } }, 15)[1] == 4 and notes.caps(d, { { t = 0.3, n = 4 }, { t = 0.6, n = 9 } }, 15)[100] == 9)
+  check("caps: limited to 1..15", notes.caps(d, { { t = 0, n = -3 }, { t = 0.5, n = 40 } }, 15)[1] == 1 and notes.caps(d, { { t = 0, n = -3 }, { t = 0.5, n = 40 } }, 15)[100] == 15)
+  -- with the ramp the notes are cut short where there is no room, the strongest keep their places and start earliest
+  local r = notes.build(d, { curve = ramp })
+  local sounding = {}                                                         -- how many notes sound at the start, the middle and the end
+  for _, n in ipairs(r.notes) do
+    for _, probe in ipairs({ 0.05, 0.5, 0.95 }) do
+      local tt = probe + notes.LEAD
+      if n.t0 <= tt and tt < n.t1 then sounding[probe] = (sounding[probe] or 0) + 1 end
+    end
+  end
+  check("envelope: 1 note at the start", sounding[0.05] == 1, sounding[0.05])
+  check("envelope: 10 notes at the end", sounding[0.95] == 10, sounding[0.95])
+  check("envelope: in between about half", sounding[0.5] >= 4 and sounding[0.5] <= 7, sounding[0.5])
+  -- the strongest partial (10) is the one note at the start
+  local first_pitch
+  for _, n in ipairs(r.notes) do if n.t0 < 0.05 then first_pitch = n.pitch end end
+  check("envelope: the strongest partial sounds at the start", first_pitch == math.floor(69 + 12 * math.log(2000 / 440) / math.log(2) + 0.5), first_pitch)
+  -- no more than the room at any moment, whatever the channels do
+  check("envelope: never more than 10 channels", r.members <= 10, r.members)
+  -- without a curve it is as before: a flat number refuses a track whole, nothing is cut short
+  local flat = notes.build(d, { max = 4 })
+  check("flat: 4 notes", #flat.notes == 4)
+  -- a flat envelope gives the same notes as the number
+  local flat2 = notes.build(d, { max = 4, curve = { { t = 0, n = 4 }, { t = 1, n = 4 } } })
+  check("a flat envelope gives the same as the number", #flat2.notes == 4)
+  -- a dip: 8 notes, then 2, then 8 again: the weaker notes stop at the dip and new pieces start after it
+  local dip = notes.build(d, { curve = { { t = 0, n = 8 }, { t = 0.3, n = 8 }, { t = 0.31, n = 2 }, { t = 0.6, n = 2 }, { t = 0.61, n = 8 } } })
+  local at = function(tt) local c = 0 for _, n in ipairs(dip.notes) do if n.t0 <= tt + notes.LEAD and tt + notes.LEAD < n.t1 then c = c + 1 end end return c end
+  check("dip: 8 notes before, 2 in the dip, 8 after", at(0.15) == 8 and at(0.45) == 2 and at(0.8) == 8, at(0.15) .. " " .. at(0.45) .. " " .. at(0.8))
+  -- M.count agrees
+  local tr = notes.tracks(d, nil)
+  local kept, dropped, members = notes.count(tr, notes.caps(d, ramp, 15), d.frames, 0, true)
+  check("count follows the envelope", kept == #r.notes, kept .. " vs " .. #r.notes)
+end
+
 print(string.format("ats_notes: %d checks passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

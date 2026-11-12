@@ -11,7 +11,8 @@
 -- Which tracks are kept: the tracks are ranked by their total energy (the sum of their amplitudes, as the MAX PARTIALS button does; with a
 -- bias the energy is divided by (mean frequency / 500 Hz) ^ bias, so the fundamental and the low harmonics win voices from the formant region) and
 -- admitted one by one, strongest first, as long as fewer than `max` tracks sound at any frame of their length. No note is ever cut
--- short or stolen; a weaker track that would be the 16th voice is simply left out.
+-- short or stolen; a weaker track that would be the 16th voice is simply left out. With an ENVELOPE (the number of notes allowed changes over
+-- time) a track is cut short where the room ends instead (M.allocate, `cut`).
 -- Without a selection the whole file is used; with one (sel[p][f] = true, as in the editor) only the selected cells, so a track
 -- is cut to the selected stretch of it.
 
@@ -66,10 +67,42 @@ function M.tracks(d, sel, min_frames)
   return out
 end
 
--- Admits the strongest tracks, at most `max` sounding at any frame, and gives each a member channel (2..16 as 1..15 here: ch is 1-based
--- among the member channels). Returns the admitted tracks (each with .ch) and how many were left out.
-function M.allocate(tracks, max, frames, bias)
+-- The number of notes allowed at every frame. spec = nil gives the flat number `max`; spec = a list of points { t = seconds, n = notes }, sorted
+-- by time (the ENVELOPE drawn over the picture: 15 at the top, 1 at the bottom), is followed in straight lines between its points, and
+-- before the first and after the last point it keeps their values. Returns the caps (one whole number from 1 to 15 for every frame).
+function M.caps(d, spec, max)
+  local caps = {}
+  if not spec or #spec == 0 then
+    local m = clamp(math.floor((max or 15) + 0.5), 1, 15)
+    for f = 1, d.frames do caps[f] = m end
+    return caps
+  end
+  local i = 1
+  for f = 1, d.frames do
+    local t = d.times[f]
+    while i < #spec and spec[i + 1].t <= t do i = i + 1 end
+    local a, b = spec[i], spec[i + 1]
+    local v
+    if t <= spec[1].t then v = spec[1].n
+    elseif not b then v = a.n
+    else v = a.n + (b.n - a.n) * (t - a.t) / math.max(b.t - a.t, 1e-9) end
+    caps[f] = clamp(math.floor(v + 0.5), 1, 15)
+  end
+  return caps
+end
+
+-- Admits the strongest tracks, at most as many sounding at a frame as caps[f] (or the flat number caps) allows, and gives each a member channel
+-- (1..15 here: ch is 1-based among the member channels 2..16). Returns the admitted tracks (each with .ch) and how many were left out.
+-- Without `cut` a track that would be one too many at any frame of its length is left out whole, and no note is ever cut short. With `cut`
+-- (an envelope: the number of notes falls and rises) a track is admitted for the stretches of its length where there is room: it is cut
+-- short at the frame where the room ends (the strongest keep their places), and a stretch of fewer than MIN_FRAMES is left out.
+function M.allocate(tracks, caps, frames, bias, cut)
   bias = bias or 0
+  if type(caps) == "number" then
+    local m = caps
+    caps = {}
+    for f = 1, frames do caps[f] = m end
+  end
   for _, t in ipairs(tracks) do
     t.score = (bias > 0) and t.energy * (math.max(t.freq, 50) / M.BIAS_REF) ^ (-bias) or t.energy
   end
@@ -78,14 +111,35 @@ function M.allocate(tracks, max, frames, bias)
     if a.f0 ~= b.f0 then return a.f0 < b.f0 end
     return a.p < b.p
   end)
-  local occ, kept = {}, {}
+  local occ, kept, used = {}, {}, 0
   for f = 1, frames do occ[f] = 0 end
   for _, t in ipairs(tracks) do
-    local ok = true
-    for f = t.f0, t.f1 do if occ[f] >= max then ok = false; break end end
-    if ok then
-      for f = t.f0, t.f1 do occ[f] = occ[f] + 1 end
-      kept[#kept + 1] = t
+    if not cut then
+      local ok = true
+      for f = t.f0, t.f1 do if occ[f] >= caps[f] then ok = false; break end end
+      if ok then
+        for f = t.f0, t.f1 do occ[f] = occ[f] + 1 end
+        kept[#kept + 1] = t
+        used = used + 1
+      end
+    else
+      local got = false
+      local f = t.f0
+      while f <= t.f1 do
+        if occ[f] < caps[f] then
+          local a = f
+          while f <= t.f1 and occ[f] < caps[f] do f = f + 1 end
+          local b = f - 1
+          if b - a + 1 >= M.MIN_FRAMES then
+            for g = a, b do occ[g] = occ[g] + 1 end
+            kept[#kept + 1] = { p = t.p, f0 = a, f1 = b, energy = t.energy, freq = t.freq, score = t.score }
+            got = true
+          end
+        else
+          f = f + 1
+        end
+      end
+      if got then used = used + 1 end
     end
   end
   table.sort(kept, function(a, b) if a.f0 ~= b.f0 then return a.f0 < b.f0 end return a.p < b.p end)
@@ -96,12 +150,13 @@ function M.allocate(tracks, max, frames, bias)
     t.ch = ch
     busy[ch] = t.f1
   end
-  return kept, #tracks - #kept
+  return kept, #tracks - used
 end
 
 -- How many notes a setting would give, without making them (for the panel's live line): kept, dropped, members (channels in use).
-function M.count(tracks, max, frames, bias)
-  local kept, dropped = M.allocate(tracks, clamp(math.floor(max + 0.5), 1, 15), frames, bias)
+function M.count(tracks, spec, frames, bias, cut)
+  if type(spec) == "number" then spec = clamp(math.floor(spec + 0.5), 1, 15) end
+  local kept, dropped = M.allocate(tracks, spec, frames, bias, cut)
   local members = 0
   for _, t in ipairs(kept) do if t.ch > members then members = t.ch end end
   return #kept, dropped, members
@@ -109,7 +164,7 @@ end
 
 -- The notes and the controller moves.
 --   d    the loaded ATS data (amp, frq, times, frames, partials, ampmax)
---   opts { max = 1..15, sel = selection or nil, bias = 0 (energy only) .. 2 (strongly prefers low partials) }
+--   opts { max = 1..15, curve = envelope points { t, n } or nil (then max is the flat number), sel = selection or nil, bias = 0 (energy only) .. 2 }
 -- Returns { notes = { {ch, pitch, vel, t0, t1} }, ccs = { {t, ch, kind = "bend"|"press"|"cc", a, b} }, members, found, dropped, dur }
 -- ch is the MIDI channel 0..15 (member channels are 1..15). Times in seconds, from 0 (everything starts LEAD later).
 function M.build(d, opts)
@@ -117,7 +172,8 @@ function M.build(d, opts)
   local max = clamp(math.floor((opts.max or 15) + 0.5), 1, 15)
   local tracks = opts.tracks or M.tracks(d, opts.sel, opts.min_frames)      -- (opts.tracks: found before by M.tracks; M.allocate reorders them)
   local found = #tracks
-  local kept, dropped = M.allocate(tracks, max, d.frames, opts.bias)
+  local cut = opts.curve ~= nil and #opts.curve > 0
+  local kept, dropped = M.allocate(tracks, cut and M.caps(d, opts.curve, max) or max, d.frames, opts.bias, cut)
   local ref = d.ampmax
   if not ref or ref <= 0 then
     ref = 0

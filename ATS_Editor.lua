@@ -30,7 +30,8 @@
           Tab / the channel buttons  switch the channel of a set (name_ch1.ats, name_ch2.ats ...; AUDITION and PRINT play all channels)
           Ctrl+S        save as <name>_edit.ats (with phase; never overwrites)
           EXPORT .ats / Ctrl+Shift+S  export an .ats file: choose the folder and name (Csound-compatible; asks before replacing a file)
-          EXPORT NOTES  the strongest partials (up to 15) as MPE notes: a .mid file and a MIDI item (see the end of the file)
+          EXPORT NOTES  the strongest partials (up to 15, or as many as the red envelope drawn over the picture allows: 15 at the top, 1 at the bottom) as MPE notes: a
+                        .mid file and a MIDI item on the selected track; AUDITION in its panel (A) plays a temporary MIDI item on that track
           O open   R reload   F or Home fit view   P partials on/off   N noise on/off
           Esc           clear the selection
 --------------------------------------------------------------------------------]]
@@ -2024,40 +2025,193 @@ function W.notes_to_reaper(res)
   return true, made_track
 end
 
--- The panel: the same kind of slider as the gain of the selection (right-click). W.np = { x, y, max, bias, tracks, sel, drag } while it is open
--- (it takes every click and key). Max notes 1..15; "favour": from neutral (0, by energy only) to low partials (2); both are remembered.
--- The line under the sliders is live: the tracks are found once when the panel opens, and what a setting would keep is counted again
--- (only when the setting changes) from them.
+-- The panel: the same kind of slider as the gain of the selection (right-click). W.np = { x, y, max, bias, curve, tracks, sel, drag, aud } while it is open
+-- (it takes every key; a click in the picture belongs to the ENVELOPE). "favour": from neutral (0, by energy only) to low partials (2), remembered.
+-- (There is no Max notes slider any more, tjingboem 12 Nov 2026: the red line says it; without a point it is flat at 2, W.NOTES_DEFAULT.) The ENVELOPE (tjingboem, 12 Nov 2026: "draw an envelope over the ATS Editor, like we have in ReaMaskM, where the
+-- top is 15 partials, the bottom is 1 partial"; "make that envelope red"): a red line over the picture, 15 notes at the top and 1 at the bottom, drawn
+-- with clicks (a click in the picture adds a point, dragging moves it, a right-click removes it). It says how many notes are allowed at every moment;
+-- a note is cut short where there is no room any more (lib/ats_notes.lua, `cut`). Until a point is added the line is flat at 2 notes
+-- (W.NOTES_DEFAULT); FLAT takes the envelope away. The line under the slider is live: the tracks are found once when the panel opens and what a setting
+-- would keep is counted again (only when a setting changes) from them.
+-- AUDITION (tjingboem, 12 Nov 2026: "Audition would make the temp midi item as we see in ReaMaskM"): a temporary MIDI item, tagged
+-- P_EXT:REAATS_NOTES_AUDITION, on the selected track at the edit cursor, rewritten live (every 0.25 s while something changes) as the sliders and the
+-- envelope change; the transport plays it in a loop (Repeat on, the time selection set to the item). STOP, Esc, EXPORT or leaving the panel stops the
+-- transport, puts Repeat, the time selection and the edit cursor back and deletes the item (also when the script ends).
+W.AUD_TAG = "REAATS_NOTES_AUDITION"
+W.NOTES_DEFAULT = 2                                                -- the red line starts flat at 2 notes (tjingboem, 12 Nov 2026: "set red line default on 2")
 function W.export_notes()
   if not data or not fname then return end
   W.commit()
   local use_sel = (sel_info and next(sel)) and sel or nil
-  local last = tonumber(reaper.GetExtState(EXT_SECTION, "notes_max")) or 15
   local last_bias = tonumber(reaper.GetExtState(EXT_SECTION, "notes_bias")) or 0.5
   local bx, by, bw, bh = W.notes_rect()
-  W.np = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 304, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 164, 4)),
-           max = clamp(math.floor(last + 0.5), 1, 15), bias = clamp(math.floor(last_bias * 20 + 0.5) / 20, 0, 2),
+  W.np = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 304, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 130, 4)),
+           max = W.NOTES_DEFAULT, bias = clamp(math.floor(last_bias * 20 + 0.5) / 20, 0, 2),
            sel = use_sel, tracks = W.notes.tracks(data, use_sel) }
   dirty = true
 end
 function W.notes_rects()
   local g = W.np
-  return { box = { g.x, g.y, 300, 162 }, max = { g.x + 16, g.y + 40, 268, 10 }, bias = { g.x + 16, g.y + 88, 268, 10 },
-           cancel = { g.x + 150, g.y + 134, 62, 18 }, apply = { g.x + 218, g.y + 134, 66, 18 } }
+  return { box = { g.x, g.y, 300, 124 }, bias = { g.x + 16, g.y + 42, 268, 10 },
+           aud = { g.x + 16, g.y + 96, 76, 18 }, flat = { g.x + 100, g.y + 96, 44, 18 },
+           cancel = { g.x + 152, g.y + 96, 56, 18 }, apply = { g.x + 216, g.y + 96, 68, 18 } }
+end
+-- The envelope: the time range it starts and ends in (the selection, else the whole sound), pixels <-> (seconds, notes), the points.
+function W.notes_env_range()
+  local g = W.np
+  if g.sel and sel_info then return sel_info.t0, sel_info.t1 end
+  return data.times[1], data.times[data.frames]
+end
+function W.notes_env_xy(t, n)
+  local px, py, pw, ph = plot_rect()
+  return px + (t - view.t0) / (view.t1 - view.t0) * pw, py + ph - (n - 1) / 14 * ph
+end
+function W.notes_env_from_xy(mx, my)
+  local px, py, pw, ph = plot_rect()
+  local t = view.t0 + (clamp(mx, px, px + pw) - px) / pw * (view.t1 - view.t0)
+  local n = 1 + math.floor(clamp((py + ph - my) / ph, 0, 1) * 14 + 0.5)
+  return t, n
+end
+function W.notes_env_hit(mx, my)
+  local g = W.np
+  if not g.curve then return nil end
+  local best, bestd = nil, 9
+  for i, pt in ipairs(g.curve) do
+    local x, y = W.notes_env_xy(pt.t, pt.n)
+    local d = math.max(math.abs(x - mx), math.abs(y - my))
+    if d < bestd then best, bestd = i, d end
+  end
+  return best
+end
+function W.notes_env_touch(g)                                   -- something changed: the live line is counted again, the audition is rewritten
+  g.key = nil
+  g.changed = true
+  dirty = true
+end
+function W.notes_env_add(mx, my)
+  local g = W.np
+  if not g.curve then
+    local lo, hi = W.notes_env_range()
+    g.curve = { { t = lo, n = g.max }, { t = hi, n = g.max } }
+  end
+  local t, n = W.notes_env_from_xy(mx, my)
+  local at = #g.curve + 1
+  for i, pt in ipairs(g.curve) do if t < pt.t then at = i; break end end
+  table.insert(g.curve, at, { t = t, n = n })
+  g.dragpt = at
+  W.notes_env_touch(g)
+end
+function W.notes_env_drag(mx, my)
+  local g = W.np
+  local i = g.dragpt
+  if not (g.curve and g.curve[i]) then return end
+  local t, n = W.notes_env_from_xy(mx, my)
+  local lo = g.curve[i - 1] and g.curve[i - 1].t + 1e-3 or -math.huge
+  local hi = g.curve[i + 1] and g.curve[i + 1].t - 1e-3 or math.huge
+  g.curve[i].t, g.curve[i].n = clamp(t, lo, hi), n
+  W.notes_env_touch(g)
+end
+function W.notes_env_remove(mx, my)
+  local g = W.np
+  local i = W.notes_env_hit(mx, my)
+  if not i then return end
+  if #g.curve <= 2 then g.curve = nil else table.remove(g.curve, i) end       -- (with 2 points left the next removal gives the flat line back)
+  W.notes_env_touch(g)
 end
 function W.notes_slider_to(which, mx)
   local g, r = W.np, W.notes_rects()[which]
   local frac = math.min(math.max((mx - r[1]) / r[3], 0), 1)
-  if which == "max" then g.max = 1 + math.floor(frac * 14 + 0.5) else g.bias = math.floor(frac * 2 * 20 + 0.5) / 20 end
+  g.bias = math.floor(frac * 2 * 20 + 0.5) / 20
+  W.notes_env_touch(g)
+end
+-- AUDITION: the temporary item, as in ReaMaskM.
+function W.notes_aud_delete()
+  local n = reaper.CountMediaItems and reaper.CountMediaItems(0) or 0
+  local removed = 0
+  for i = n - 1, 0, -1 do
+    local it = reaper.GetMediaItem(0, i)
+    if it then
+      local _, tag = reaper.GetSetMediaItemInfo_String(it, "P_EXT:" .. W.AUD_TAG, "", false)
+      if tag == "1" then
+        local tr = reaper.GetMediaItem_Track(it)
+        if tr then reaper.DeleteTrackMediaItem(tr, it); removed = removed + 1 end
+      end
+    end
+  end
+  if removed > 0 then reaper.UpdateArrange() end
+end
+function W.notes_aud_write()
+  local g = W.np
+  local a = g and g.aud
+  if not a then return false end
+  g.changed = false
+  a.last = reaper.time_precise()
+  local res = W.notes.build(data, { max = g.max, curve = g.curve, sel = g.sel, bias = g.bias, tracks = g.tracks })
+  local len = math.max(res.dur + 0.1, 0.2)
+  if not a.item then
+    a.item = reaper.CreateNewMIDIItemInProj(a.track, a.pos, a.pos + len, false)
+    if not a.item then return false end
+    reaper.GetSetMediaItemInfo_String(a.item, "P_EXT:" .. W.AUD_TAG, "1", true)
+    local t0 = reaper.GetActiveTake(a.item)
+    if t0 then reaper.GetSetMediaItemTakeInfo_String(t0, "P_NAME", "ReaATS notes audition", true) end
+    if reaper.ColorToNative then reaper.SetMediaItemInfo_Value(a.item, "I_CUSTOMCOLOR", reaper.ColorToNative(200, 60, 60) | 0x1000000) end
+  else
+    reaper.SetMediaItemInfo_Value(a.item, "D_LENGTH", len)
+  end
+  local take = reaper.GetActiveTake(a.item)
+  if not take then return false end
+  if #res.notes > 0 then
+    reaper.MIDI_SetAllEvts(take, W.notes.reaper_buffer(res, function(t) return reaper.MIDI_GetPPQPosFromProjTime(take, a.pos + t) end, res.dur + 0.05))
+  else
+    reaper.MIDI_SetAllEvts(take, "")
+  end
+  if a.loop_set then reaper.GetSet_LoopTimeRange(true, false, a.pos, a.pos + len, false) end
+  reaper.UpdateArrange()
+  a.count = #res.notes
+  return true
+end
+function W.notes_aud_start()
+  local g = W.np
+  local track = reaper.GetSelectedTrack(0, 0)
+  if not track then set_status("audition: select a track with an instrument first"); return end
+  stop_audition()
+  local ls, le = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
+  g.aud = { track = track, pos = reaper.GetCursorPosition(), prev_repeat = (reaper.GetSetRepeatEx(0, -1) or 0) ~= 0,
+            prev_cursor = reaper.GetCursorPosition(), prev_ls = ls, prev_le = le, loop_set = true, started = false }
+  if not W.notes_aud_write() then g.aud = nil; set_status("audition: the MIDI item could not be made"); return end
+  reaper.GetSetRepeatEx(0, 1)
+  reaper.SetEditCurPos(g.aud.pos, false, false)
+  reaper.OnPlayButton()
+  set_status("audition: the notes play on the selected track, in a loop; the item is rewritten while you change things")
   dirty = true
+end
+function W.notes_aud_stop()
+  local g = W.np
+  local a = g and g.aud
+  if a then
+    reaper.OnStopButton()
+    reaper.GetSetRepeatEx(0, a.prev_repeat and 1 or 0)
+    if a.prev_ls and a.prev_le then reaper.GetSet_LoopTimeRange(true, false, a.prev_ls, a.prev_le, false) end
+    reaper.SetEditCurPos(a.prev_cursor, false, false)
+    g.aud = nil
+  end
+  W.notes_aud_delete()
+  dirty = true
+end
+if reaper.atexit then reaper.atexit(function() if W.np and W.np.aud then W.notes_aud_stop() else W.notes_aud_delete() end end) end
+function W.notes_close(msg)
+  if W.np and W.np.aud then W.notes_aud_stop() end
+  W.np = nil
+  dirty = true
+  if msg then set_status(msg) end
 end
 function W.notes_apply()
   local g = W.np
+  if g.aud then W.notes_aud_stop() end
   W.np = nil
   dirty = true
-  reaper.SetExtState(EXT_SECTION, "notes_max", tostring(g.max), true)
   reaper.SetExtState(EXT_SECTION, "notes_bias", tostring(g.bias), true)
-  local res = W.notes.build(data, { max = g.max, sel = g.sel, bias = g.bias, tracks = g.tracks })
+  local res = W.notes.build(data, { max = g.max, curve = g.curve, sel = g.sel, bias = g.bias, tracks = g.tracks })
   local use_sel = g.sel
   if #res.notes == 0 then
     set_status(use_sel and "export notes: no partial sounds long enough in the selection" or "export notes: no partial sounds long enough")
@@ -2075,32 +2229,97 @@ function W.notes_apply()
   local placed, made_track = W.notes_to_reaper(res)
   set_status(string.format("%d notes (%d partials found%s) on %d MPE channels%s -> %s", #res.notes, res.found,
     res.dropped > 0 and string.format(", %d weaker left out", res.dropped) or "", res.members,
-    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and (made_track and " and a MIDI item on a new track" or " and a MIDI item on the selected track") or "")) .. Analysis.unsaved_note())
+    (use_sel and ", from the selection" or "") .. (g.curve and ", following the envelope" or ""),
+    (path:match("([^/\\]+)$") or path) .. (placed and (made_track and " and a MIDI item on a new track" or " and a MIDI item on the selected track") or "")) .. Analysis.unsaved_note())
 end
 -- Mouse and key while the panel is open.
 function W.notes_input(mx, my, cap, ch)
   local g, r = W.np, W.notes_rects()
   local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
-  local down = (cap & 1) ~= 0
-  if ch == 27 then W.np = nil; dirty = true; set_status("export notes cancelled"); return end
+  local down, right = (cap & 1) ~= 0, (cap & 2) ~= 0
+  local px, py, pw, ph = plot_rect()
+  local in_plot = mx >= px and mx < px + pw and my >= py and my < py + ph
+  if ch == 27 then W.notes_close("export notes cancelled"); return end
   if ch == 13 then W.notes_apply(); return end
-  if ch == 30064 then g.max = math.min(g.max + 1, 15); dirty = true
-  elseif ch == 1685026670 then g.max = math.max(g.max - 1, 1); dirty = true
-  elseif ch == 1919379572 then g.bias = math.min(g.bias + 0.05, 2); dirty = true
-  elseif ch == 1818584692 then g.bias = math.max(g.bias - 0.05, 0); dirty = true end
+  if ch == 97 or ch == 65 then if g.aud then W.notes_aud_stop() else W.notes_aud_start() end end
+  if ch == 1919379572 then g.bias = math.min(g.bias + 0.05, 2); W.notes_env_touch(g)
+  elseif ch == 1818584692 then g.bias = math.max(g.bias - 0.05, 0); W.notes_env_touch(g) end
   if down and not prev_down then
-    if inside(r.max, 6) then g.drag = "max"; W.notes_slider_to("max", mx)
-    elseif inside(r.bias, 6) then g.drag = "bias"; W.notes_slider_to("bias", mx)
-    elseif inside(r.apply) then W.notes_apply()
-    elseif inside(r.cancel) or not inside(r.box) then W.np = nil; dirty = true; set_status("export notes cancelled") end
+    if inside(r.bias, 6) then g.drag = "bias"; W.notes_slider_to("bias", mx)
+    elseif inside(r.apply) then W.notes_apply(); return
+    elseif inside(r.aud) then if g.aud then W.notes_aud_stop() else W.notes_aud_start() end
+    elseif inside(r.flat) then g.curve = nil; W.notes_env_touch(g)
+    elseif inside(r.cancel) then W.notes_close("export notes cancelled"); return
+    elseif inside(r.box) then -- (the panel itself)
+    elseif in_plot then
+      local i = W.notes_env_hit(mx, my)
+      if i then g.dragpt = i else W.notes_env_add(mx, my) end
+      g.drag = "pt"
+    else W.notes_close("export notes cancelled"); return end
+  elseif down and g.drag == "pt" then
+    W.notes_env_drag(mx, my)
   elseif down and g.drag then
     W.notes_slider_to(g.drag, mx)
   end
-  if not down then g.drag = nil end
+  if right and not g.prev_right and in_plot and not inside(r.box) then W.notes_env_remove(mx, my) end
+  g.prev_right = right
+  if not down then g.drag, g.dragpt = nil, nil end
+  -- the audition follows the panel: rewritten (at most four times a second) when something changed, stopped when the transport was stopped by hand
+  local a = g.aud
+  if a then
+    if g.changed and reaper.time_precise() - (a.last or 0) >= 0.25 then W.notes_aud_write() end
+    local playing = (reaper.GetPlayState() & 1) ~= 0
+    if playing then a.started = true elseif a.started then W.notes_aud_stop() end
+  end
+end
+function W.draw_notes_envelope()
+  local g = W.np
+  if not g or not data then return end
+  local px, py, pw, ph = plot_rect()
+  local red_r, red_g, red_b = 1, 0.18, 0.15
+  local pts = g.curve
+  if not pts then
+    local lo, hi = W.notes_env_range()
+    pts = { { t = lo, n = g.max }, { t = hi, n = g.max } }
+  end
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(red_r, red_g, red_b, 0.35)                                   -- the top (15) and the bottom (1)
+  gfx.line(px, py, px + pw, py)
+  gfx.line(px, py + ph - 1, px + pw, py + ph - 1)
+  gfx.x, gfx.y = px + pw - gfx.measurestr("15 notes") - 4, py + 2; gfx.drawstr("15 notes")
+  gfx.x, gfx.y = px + pw - gfx.measurestr("1 note") - 4, py + ph - 14; gfx.drawstr("1 note")
+  gfx.set(red_r, red_g, red_b, g.curve and 1 or 0.7)
+  local function seg(x0, y0, x1, y1) gfx.line(x0, y0, x1, y1); gfx.line(x0, y0 + 1, x1, y1 + 1) end
+  local x_first, y_first = W.notes_env_xy(pts[1].t, pts[1].n)
+  local x_last, y_last = W.notes_env_xy(pts[#pts].t, pts[#pts].n)
+  if x_first > px then seg(px, y_first, x_first, y_first) end
+  if x_last < px + pw then seg(x_last, y_last, px + pw, y_last) end
+  local prev_x, prev_y
+  for _, pt in ipairs(pts) do
+    local x, y = W.notes_env_xy(pt.t, pt.n)
+    if prev_x then seg(prev_x, prev_y, x, y) end
+    prev_x, prev_y = x, y
+  end
+  if g.curve then
+    for _, pt in ipairs(pts) do
+      local x, y = W.notes_env_xy(pt.t, pt.n)
+      if x >= px - 4 and x <= px + pw + 4 then
+        gfx.set(red_r, red_g, red_b, 1)
+        gfx.rect(x - 4, y - 4, 9, 9, 1)
+        gfx.set(1, 1, 1, 0.9)
+        gfx.rect(x - 4, y - 4, 9, 9, 0)
+        gfx.set(1, 0.7, 0.65, 1)
+        gfx.x, gfx.y = x + 7, y - 14
+        gfx.drawstr(tostring(pt.n))
+      end
+    end
+  end
+  gfx.setfont(1, "Arial", 14)
 end
 function W.draw_notes_panel()
   local g = W.np
   if not g then return end
+  W.draw_notes_envelope()
   local r = W.notes_rects()
   local bx, by, bw, bh = table.unpack(r.box)
   gfx.set(0.10, 0.11, 0.14, 0.97)
@@ -2111,17 +2330,17 @@ function W.draw_notes_panel()
   gfx.set(0.9, 0.92, 0.96, 1)
   gfx.x, gfx.y = bx + 16, by + 8
   gfx.drawstr(g.sel and "Export notes (the selection)" or "Export notes (the whole sound)")
-  local function slider(rc, label, value, frac, left, right)
+  local function slider(rc, label, value, frac, left, right, grey)
     gfx.setfont(1, "Arial", 13)
-    gfx.set(0.9, 0.92, 0.96, 1)
+    gfx.set(grey and 0.5 or 0.9, grey and 0.52 or 0.92, grey and 0.56 or 0.96, 1)
     gfx.x, gfx.y = rc[1], rc[2] - 18; gfx.drawstr(label)
-    gfx.set(1, 0.9, 0.5, 1)
+    gfx.set(grey and 0.7 or 1, grey and 0.65 or 0.9, grey and 0.5 or 0.5, 1)
     gfx.x = rc[1] + rc[3] - gfx.measurestr(value); gfx.drawstr(value)
     gfx.set(0.16, 0.18, 0.22, 1)
     gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
-    gfx.set(0.55, 0.45, 0.80, 0.6)
+    gfx.set(0.55, 0.45, 0.80, grey and 0.25 or 0.6)
     gfx.rect(rc[1], rc[2], rc[3] * frac, rc[4], 1)
-    gfx.set(1, 1, 1, 0.95)
+    gfx.set(1, 1, 1, grey and 0.4 or 0.95)
     gfx.rect(rc[1] + math.floor((rc[3] - 3) * frac), rc[2] - 2, 3, rc[4] + 4, 1)
     gfx.set(0.35, 0.38, 0.43, 1)
     gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
@@ -2130,16 +2349,17 @@ function W.draw_notes_panel()
     gfx.x, gfx.y = rc[1], rc[2] + 12; gfx.drawstr(left)
     gfx.x = rc[1] + rc[3] - gfx.measurestr(right); gfx.drawstr(right)
   end
-  slider(r.max, "Max notes", tostring(g.max), (g.max - 1) / 14, "1", "15")
   slider(r.bias, "Favour", g.bias < 0.025 and "neutral" or string.format("low partials %.2f", g.bias), g.bias / 2, "Neutral", "Low partials")
-  local key = g.max .. "|" .. string.format("%.2f", g.bias)
+  local key = (g.curve and "c" or "f") .. g.max .. "|" .. string.format("%.2f", g.bias)
+  if g.curve then for _, pt in ipairs(g.curve) do key = key .. string.format("|%.3f:%d", pt.t, pt.n) end end
   if g.key ~= key then
     g.key = key
-    g.kept, g.dropped, g.members = W.notes.count(g.tracks, g.max, data.frames, g.bias)
+    if g.curve then g.kept, g.dropped, g.members = W.notes.count(g.tracks, W.notes.caps(data, g.curve, g.max), data.frames, g.bias, true)
+    else g.kept, g.dropped, g.members = W.notes.count(g.tracks, g.max, data.frames, g.bias, false) end
   end
   gfx.setfont(1, "Arial", 12)
   gfx.set(0.75, 0.78, 0.84, 1)
-  gfx.x, gfx.y = bx + 16, by + 112
+  gfx.x, gfx.y = bx + 16, by + 70
   gfx.drawstr(string.format("found %d partials: %d notes on %d channels, %d left out", #g.tracks, g.kept, g.members, g.dropped))
   local function button(rc, text, rgb)
     gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
@@ -2150,6 +2370,8 @@ function W.draw_notes_panel()
     gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
     gfx.drawstr(text)
   end
+  button(r.aud, g.aud and "STOP" or "AUDITION", { 0.95, 0.75, 0.4 })
+  button(r.flat, "FLAT", { 1, 0.45, 0.4 })
   button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
   button(r.apply, "EXPORT", { 0.45, 0.85, 0.6 })
   gfx.setfont(1, "Arial", 14)
