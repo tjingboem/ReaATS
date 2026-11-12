@@ -1917,24 +1917,51 @@ function W.pk_ranks()
   return { per = per, max = max_count }
 end
 
--- Asks how many partials to keep (positive: that many loudest; negative: that many weakest) and applies it right away, as one
--- undo group across every channel with a ranking in the box's own region. plan_keep_loudest always keeps the FRONT of the list
--- it is given, loudest-first ranked -- keeping the weakest instead just hands it that list reversed (quietest-first), so lib/
--- ats_edit.lua needs no separate "weak" mode of its own.
+-- MAX PARTIALS opens a slider panel like the other panels (gain, slant, export notes; tjingboem, 12 Nov 2026: "the only thing that is out of tune with
+-- the rest of the design is when you press the MAX PARTIALS button. That popup is not like the rest"): one slider for how many separate partials of the
+-- selection to keep (1 up to how many there are, it starts at all of them: nothing changes), two buttons for which ones (the LOUDEST or the WEAKEST), a
+-- line that says what will happen. APPLY (or Enter) silences the others as one undo group across every channel with a ranking in the box's own region;
+-- Esc, CANCEL or a click outside leaves everything as it was. Up and Down change the count by one, Left and Right by ten, L and W choose.
+-- plan_keep_loudest always keeps the FRONT of the list it is given, loudest-first ranked -- keeping the weakest instead just hands it that list reversed
+-- (quietest-first), so lib/ats_edit.lua needs no separate "weak" mode of its own. W.pk = { x, y, n, total, weak, ranks, drag } while it is open.
 function W.pk_apply()
   local ranks = W.pk_ranks()
   if not ranks then set_status("nothing selected to thin"); return end
-  local ok, text = reaper.GetUserInputs("Max partials", 1,
-    string.format("keep this many loudest (negative: weakest instead; up to %d here),extrawidth=60", ranks.max), "")
-  if not ok then return end
-  local n = tonumber(text)
-  if not n then set_status("max partials: not a number"); return end
-  local weak = n < 0
-  n = math.floor(math.abs(n) + 0.5)
+  local bx, by, bw, bh = W.max_partials_rect()
+  W.pk = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 142, 4)),
+           n = ranks.max, total = ranks.max, weak = false, ranks = ranks }
+  dirty = true
+end
+function W.pk_rects()
+  local g = W.pk
+  return { box = { g.x, g.y, 260, 138 }, track = { g.x + 16, g.y + 38, 228, 10 },
+           loud = { g.x + 16, g.y + 66, 108, 18 }, weak = { g.x + 136, g.y + 66, 108, 18 },
+           cancel = { g.x + 120, g.y + 112, 62, 18 }, apply = { g.x + 188, g.y + 112, 56, 18 } }
+end
+function W.pk_set(n)
+  local g = W.pk
+  g.n = math.min(math.max(math.floor(n + 0.5), 1), g.total)
+  dirty = true
+end
+function W.pk_to(mx)
+  local g, r = W.pk, W.pk_rects().track
+  local frac = math.min(math.max((mx - r[1]) / r[3], 0), 1)
+  W.pk_set(1 + frac * (g.total - 1))
+end
+function W.pk_close(msg)
+  W.pk = nil
+  dirty = true
+  if msg then set_status(msg) end
+end
+function W.pk_do()
+  local g = W.pk
+  W.pk = nil
+  dirty = true
+  local n, weak = g.n, g.weak
   group_counter = group_counter + 1
   edit_group = group_counter
   local dropped, touched = 0, 0
-  for i, runs in pairs(ranks.per) do
+  for i, runs in pairs(g.ranks.per) do
     with_channel(i, function()
       local use = runs
       if weak then
@@ -1956,6 +1983,81 @@ function W.pk_apply()
   else
     set_status("max partials: nothing to silence at that count")
   end
+end
+function W.pk_input(mx, my, cap, ch)
+  local g, r = W.pk, W.pk_rects()
+  local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
+  local down = (cap & 1) ~= 0
+  if ch == 27 then W.pk_close("max partials cancelled"); return end
+  if ch == 13 then W.pk_do(); return end
+  if ch == 30064 then W.pk_set(g.n + 1) elseif ch == 1685026670 then W.pk_set(g.n - 1)
+  elseif ch == 1919379572 then W.pk_set(g.n + 10) elseif ch == 1818584692 then W.pk_set(g.n - 10)
+  elseif ch == 108 or ch == 76 then g.weak = false; dirty = true
+  elseif ch == 119 or ch == 87 then g.weak = true; dirty = true end
+  if down and not prev_down then
+    if inside(r.track, 6) then g.drag = true; W.pk_to(mx)
+    elseif inside(r.loud) then g.weak = false; dirty = true
+    elseif inside(r.weak) then g.weak = true; dirty = true
+    elseif inside(r.apply) then W.pk_do(); return
+    elseif inside(r.cancel) or not inside(r.box) then W.pk_close("max partials cancelled"); return end
+  elseif down and g.drag then
+    W.pk_to(mx)
+  end
+  if not down then g.drag = nil end
+end
+function W.draw_pk()
+  local g = W.pk
+  if not g then return end
+  local r = W.pk_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.45, 0.92, 1, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr("Max partials of the selection")
+  local label = string.format("keep %d of %d", g.n, g.total)
+  gfx.set(1, 0.9, 0.5, 1)
+  gfx.x, gfx.y = bx + bw - 16 - gfx.measurestr(label), by + 8
+  gfx.drawstr(label)
+  local tx0, ty, tw, th = table.unpack(r.track)
+  local frac = (g.total > 1) and (g.n - 1) / (g.total - 1) or 1
+  gfx.set(0.16, 0.18, 0.22, 1)
+  gfx.rect(tx0, ty, tw, th, 1)
+  gfx.set(0.25, 0.62, 0.7, 0.6)
+  gfx.rect(tx0, ty, tw * frac, th, 1)
+  gfx.set(1, 1, 1, 0.95)
+  gfx.rect(tx0 + math.floor((tw - 3) * frac), ty - 2, 3, th + 4, 1)
+  gfx.set(0.35, 0.38, 0.43, 1)
+  gfx.rect(tx0, ty, tw, th, 0)
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(0.6, 0.64, 0.7, 1)
+  gfx.x, gfx.y = tx0, ty + 12; gfx.drawstr("1")
+  gfx.x, gfx.y = tx0 + tw - gfx.measurestr(tostring(g.total)), ty + 12; gfx.drawstr(tostring(g.total))
+  -- (as the buttons of the other panels: a dark fill, the colour as border and text. A choice that is ON is lit by a lighter fill and white text; one that is OFF is
+  -- dim. The first version filled the buttons with a bright colour and wrote the text in the same colour on it: hardly readable.)
+  local function button(rc, text, rgb, lit)
+    gfx.set(rgb[1] * (lit == true and 0.55 or 0.15), rgb[2] * (lit == true and 0.55 or 0.15), rgb[3] * (lit == true and 0.55 or 0.15), 1)
+    if lit == nil then gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1) end
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(rgb[1], rgb[2], rgb[3], lit == false and 0.45 or 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.setfont(1, "Arial", 12)
+    if lit == true then gfx.set(1, 1, 1, 1) elseif lit == false then gfx.set(rgb[1] * 0.65, rgb[2] * 0.65, rgb[3] * 0.65, 1) else gfx.set(rgb[1], rgb[2], rgb[3], 1) end
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.loud, "LOUDEST", { 0.5, 0.9, 0.95 }, not g.weak)
+  button(r.weak, "WEAKEST", { 0.5, 0.9, 0.95 }, g.weak)
+  gfx.setfont(1, "Arial", 12)
+  gfx.set(0.75, 0.78, 0.84, 1)
+  gfx.x, gfx.y = bx + 16, by + 92
+  gfx.drawstr(g.n >= g.total and "nothing is silenced" or string.format("keeps the %d %s, silences %d", g.n, g.weak and "weakest" or "loudest", g.total - g.n))
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "APPLY", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
 end
 
 -- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
@@ -3614,11 +3716,11 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
-  if W.gain or W.np or W.sl then                                 -- the gain slider, the export-notes panel or the slant slider is open: it takes the mouse and the keys
+  if W.gain or W.np or W.sl or W.pk then                                 -- the gain slider, the export-notes panel or the slant slider is open: it takes the mouse and the keys
     local ch = gfx.getchar()
     if ch < 0 then stop_audition(); return false end
     gfx.mouse_wheel = 0
-    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
+    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) elseif W.pk then W.pk_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
     prev_down = (cap & 1) ~= 0
     return true
   end
@@ -3923,6 +4025,7 @@ local function loop()
   draw_header(px, py, pw, ph)
   W.draw_gain()
   W.draw_slant()
+  W.draw_pk()
   W.draw_notes_panel()
   gfx.update()
   if keep then reaper.defer(loop) end

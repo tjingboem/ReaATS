@@ -77,6 +77,22 @@ local function click_button()
   gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = bx, by; strings = {}; frame()
   gfx.mouse_cap = 0; frame()
 end
+-- the panel that the button opens (12 Nov 2026; it was a text box): a slider for how many to keep, LOUDEST / WEAKEST, CANCEL / APPLY. It opens under the
+-- button, in the layout of the default window: 284, 6 + 18 + 4.
+local PNX, PNY = 284, 6 + 18 + 4
+local function track_x(frac) return PNX + 16 + math.floor(228 * frac + 0.5) end
+local TRACKY = PNY + 38 + 5
+local LOUD, WEAK = { PNX + 16 + 10, PNY + 66 + 9 }, { PNX + 136 + 10, PNY + 66 + 9 }
+local CANCEL, APPLY = { PNX + 120 + 10, PNY + 112 + 9 }, { PNX + 188 + 10, PNY + 112 + 9 }
+local function click_at(pt) gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = pt[1], pt[2]; frame(); gfx.mouse_cap = 0; frame() end
+-- open the panel, choose how many to keep (n of `total` partials) and which, and apply
+local function keep(n, total, weak)
+  click_button()
+  if weak then click_at(WEAK) end
+  click_at({ track_x((n - 1) / math.max(total - 1, 1)), TRACKY })
+  strings = {}; frame()
+  click_at(APPLY)
+end
 
 local function all_zero(saved, p) for f = 1, NF do if saved.amp[p][f] ~= 0 then return false end end return true end
 local function unchanged(saved, p, amp, freq) for f = 1, NF do if saved.amp[p][f] ~= amp or saved.frq[p][f] ~= freq then return false end end return true end
@@ -98,22 +114,37 @@ assert(saw("^selected: %d+ points in 4 partials"), "all 4 partials selected: " .
 strings = {}; frame()
 assert(saw("MAX PARTIALS"), "the button is drawn: " .. tostring(saw("MAX")))
 
--- cancelling the dialog changes nothing
-dialog_ok, dialog_text = false, ""
-click_button()
-assert(dialog_calls == 1, "the dialog opened with a selection")
+-- the button opens a slider panel (no text box any more); it starts at all of them, nothing is silenced
+click_button(); strings = {}; frame()
+assert(dialog_calls == 0, "no text box")
+assert(saw("Max partials of the selection") and saw("^keep 4 of 4$") and saw("nothing is silenced"), "the panel opens at all of them: " .. tostring(saw("keep")))
+assert(saw("LOUDEST") and saw("WEAKEST") and saw("APPLY") and saw("CANCEL"), "its buttons are drawn")
+-- CANCEL changes nothing
+click_at(CANCEL); strings = {}; frame()
+assert(saw("^max partials cancelled$") and not saw("Max partials of the selection"), "CANCEL closes the panel")
 assert(not saw(" %*$"), "Cancel applied nothing: no modified marker")
-
--- a non-numeric answer is refused, nothing changes
-dialog_ok, dialog_text = true, "abc"
+-- Esc and a click outside do the same
+click_button(); script.keys = { 27 }; frame(); strings = {}; frame()
+assert(not saw("Max partials of the selection") and not saw(" %*$"), "Esc closes it and changes nothing")
+click_button(); click_at({ 700, 500 }); strings = {}; frame()
+assert(not saw("Max partials of the selection") and not saw(" %*$"), "a click outside closes it and changes nothing")
+-- the slider and the keys change the count
 click_button()
-assert(saw("^max partials: not a number$"), "non-numeric input refused: " .. tostring(saw("max partials")))
-assert(not saw(" %*$"), "a refused answer applied nothing")
+click_at({ track_x(1 / 3), TRACKY }); strings = {}; frame()
+assert(saw("^keep 2 of 4$") and saw("keeps the 2 loudest, silences 2"), "the slider at a third: keep 2 of 4: " .. tostring(saw("keep")))
+script.keys = { 30064 }; frame(); strings = {}; frame()
+assert(saw("^keep 3 of 4$"), "Up: one more")
+script.keys = { 1685026670 }; frame(); script.keys = { 1685026670 }; frame(); strings = {}; frame()
+assert(saw("^keep 1 of 4$"), "Down twice: 1")
+script.keys = { 119 }; frame(); strings = {}; frame()
+assert(saw("keeps the 1 weakest, silences 3"), "W chooses the weakest: " .. tostring(saw("keeps")))
+click_at(LOUD); strings = {}; frame()
+assert(saw("keeps the 1 loudest, silences 3"), "the LOUDEST button chooses the loudest again")
+script.keys = { 27 }; frame()
 
--- a positive count keeps the N LOUDEST (200 Hz amp .9 = energy 45, 1600 Hz amp .7 = energy 35), silencing the 2 quietest
-dialog_ok, dialog_text = true, "2"
-click_button()
-assert(saw("^kept the 2 loudest, silenced 2$"), "positive count keeps the loudest: " .. tostring(saw("kept") or saw("loudest")))
+-- keeping 2 keeps the 2 LOUDEST (200 Hz amp .9 = energy 45, 1600 Hz amp .7 = energy 35), silencing the 2 quietest
+keep(2, 4, false)
+assert(saw("^kept the 2 loudest, silenced 2$"), "keeps the loudest: " .. tostring(saw("kept") or saw("loudest")))
 assert(saw(" %*$"), "modified marker after applying")
 
 script.keys = { 19 }; strings = {}; frame(); frame()
@@ -133,13 +164,12 @@ saved = assert(ats.load(edited_path2))
 assert(unchanged(saved, 2, 0.2, 400), "undo restores the previously-silenced 400 Hz partial")
 assert(unchanged(saved, 3, 0.5, 800), "undo restores the previously-silenced 800 Hz partial")
 
--- the mirror: a NEGATIVE count keeps the N WEAKEST instead, silencing the 2 loudest (undo clears the selection, made again first)
+-- the mirror: WEAKEST keeps the N weakest instead, silencing the 2 loudest (undo clears the selection, made again first)
 gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = px, py + 2; frame()
 gfx.mouse_x, gfx.mouse_y = px + pw + 50, py + ph + 50; frame()
 gfx.mouse_cap = 0; frame(); frame()
-dialog_ok, dialog_text = true, "-2"
-click_button()
-assert(saw("^kept the 2 weakest, silenced 2$"), "negative count keeps the weakest: " .. tostring(saw("kept") or saw("weakest")))
+keep(2, 4, true)
+assert(saw("^kept the 2 weakest, silenced 2$"), "WEAKEST keeps the weakest: " .. tostring(saw("kept") or saw("weakest")))
 script.keys = { 19 }; strings = {}; frame(); frame()
 assert(saw("^saved pk_test_edit3%.ats"), "third save status missing: " .. tostring(saw("saved")))
 saved = assert(ats.load(edited_path3))
@@ -164,8 +194,7 @@ assert(sel_msg, "a middle stretch is selected: " .. tostring(sel_msg))
 local t0, t1 = sel_msg:match("([%d%.]+)%-([%d%.]+) s")
 t0, t1 = tonumber(t0), tonumber(t1)
 assert(t0 > 0.05 and t1 < 0.44, "the selection leaves real margin on both sides: " .. t0 .. "-" .. t1)
-dialog_ok, dialog_text = true, "2"                                  -- keep the 2 loudest, silence the 2 quietest, but ONLY inside the selection
-click_button()
+keep(2, 4, false)                                                  -- keep the 2 loudest, silence the 2 quietest, but ONLY inside the selection
 assert(saw("^kept the 2 loudest, silenced 2$"), "applies as usual on a partial selection: " .. tostring(saw("kept")))
 script.keys = { 19 }; strings = {}; frame(); frame()
 assert(saw("^saved pk_test_edit4%.ats"), "fourth save status missing: " .. tostring(saw("saved")))
@@ -186,8 +215,7 @@ assert(unchanged(saved, 4, 0.7, 1600), "the 2nd loudest partial is untouched eve
 os.execute("rm -rf " .. scratch .. "pk_proj; mkdir -p " .. scratch .. "pk_proj")
 reaper.EnumProjects = function() return {}, scratch .. "pk_proj/piece.rpp" end
 reaper.RecursiveCreateDirectory = function(d) os.execute("mkdir -p '" .. d .. "'"); return 1 end
-dialog_ok, dialog_text = true, "1"
-click_button()
+keep(1, 4, false)
 script.keys = { 19 }; strings = {}; frame(); frame()
 assert(saw("^saved pk_test_edit5?%.ats") or saw("^saved pk_test_edit%.ats"), "saved in the project: " .. tostring(saw("saved")))
 local inproj = io.open(scratch .. "pk_proj/ReaATS/pk_test_edit.ats", "rb")
@@ -195,4 +223,4 @@ assert(inproj, "the edited copy is in the project's ReaATS folder"); inproj:clos
 os.execute("rm -rf " .. scratch .. "pk_proj")
 reaper.EnumProjects, reaper.RecursiveCreateDirectory = nil, nil
 
-print("MAX PARTIALS button OK: greyed out with no selection, ranks by total energy, positive keeps the loudest, negative the weakest, undo restores, and only ever touches the actual selection")
+print("MAX PARTIALS button OK: greyed out with no selection, opens a slider panel (cancel, Esc, outside, keys), ranks by total energy, LOUDEST keeps the loudest, WEAKEST the weakest, undo restores, and only ever touches the actual selection")
