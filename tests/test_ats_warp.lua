@@ -102,5 +102,54 @@ w.top.bulge_h[1] = 4
 local h25, h50 = warp.edge_h(w.top, 0.25), warp.edge_h(w.top, 0.5)
 local ii = warp.add_point(w, "top", 0.5)
 check("add_point keeps h and its arch", ii == 2 and near(w.top.pts[2].h, h50) and near(warp.edge_h(w.top, 0.25), h25, 1e-6) and near(warp.max_abs_h(w), 4, 1e-6))
+-- slant (12 Nov 2026): the speed of a stretch falls from the left to the right border, or the other way round
+do
+  local function stretched(dh)                                       -- a box 4 s long whose right border is moved dh seconds later
+    local w = warp.new(10, 14, 100, 1000)
+    warp.set_value(w, "bottom", 2, 0, dh); warp.set_value(w, "top", 2, 0, dh)
+    return w
+  end
+  local w = stretched(4)                                             -- 4 s become 8 s: x2
+  local base = warp.snapshot(w)
+  check("slant: a plain stretch is even", math.abs(warp.stretch_at(w, "top", 0.1) - 2) < 1e-6 and math.abs(warp.stretch_at(w, "top", 0.9) - 2) < 1e-6)
+  local k = warp.set_slant(w, base, 1)
+  check("slant 1: k comes back as 1", k == 1)
+  check("slant 1: the left border goes at x3 (1 + 2)", math.abs(warp.stretch_at(w, "top", 0) - 3) < 0.02, warp.stretch_at(w, "top", 0))
+  check("slant 1: the right border is not stretched (x1)", math.abs(warp.stretch_at(w, "top", 1) - 1) < 0.02, warp.stretch_at(w, "top", 1))
+  check("slant 1: the right border ends where it did", math.abs(warp.edge_h(w.top, 1) - 4) < 1e-9 and math.abs(warp.edge_h(w.bottom, 1) - 4) < 1e-9)
+  check("slant 1: the left border does not move", math.abs(warp.edge_h(w.top, 0)) < 1e-9)
+  check("slant 1: still monotone", warp.monotone(w))
+  warp.set_slant(w, base, -1)
+  check("slant -1: the left border is not stretched, the right one x3", math.abs(warp.stretch_at(w, "top", 0) - 1) < 0.02 and math.abs(warp.stretch_at(w, "top", 1) - 3) < 0.02)
+  warp.set_slant(w, base, 0)
+  check("slant 0 is the plain stretch again", math.abs(warp.stretch_at(w, "top", 0.1) - 2) < 1e-6 and math.abs(warp.stretch_at(w, "bottom", 0.9) - 2) < 1e-6)
+  -- the inside of the box follows (a point in the middle of the height)
+  warp.set_slant(w, base, 1)
+  check("slant: the same displacement at every height", math.abs(warp.displacement_h(w, 0.3, 0.2) - warp.displacement_h(w, 0.3, 0.9)) < 1e-9)
+  -- a squeeze that would fold time back is limited
+  local sq = stretched(-3.2)                                         -- 4 s squeezed to 0.8 s
+  local sb = warp.snapshot(sq)
+  local used = warp.set_slant(sq, sb, 1)
+  check("slant: a squeeze is limited to what keeps time in order", used < 1 and warp.monotone(sq), used)
+  -- a stretch that is not even to begin with: the arch it has is kept, the slant is added
+  local w2 = stretched(4)
+  w2.top.bulge_h[1] = 0.5
+  local b2 = warp.snapshot(w2)
+  warp.set_slant(w2, b2, 0.5)
+  check("slant adds to the arch that was there", math.abs(w2.top.bulge_h[1] - (0.5 + 0.5 * 4 / 4)) < 1e-9, w2.top.bulge_h[1])
+  warp.set_slant(w2, b2, 0)
+  check("slant 0 gives the old arch back", math.abs(w2.top.bulge_h[1] - 0.5) < 1e-9)
+  -- the mapper that moves the points: a quarter of the way in, a slant of 1 has already moved the point further (4 s * (0.25 + 0.1875))
+  local mp = warp.mapper(w)
+  local t_new = mp(10 + 4 * 0.25, 300)
+  check("slant: where a point a quarter in goes", math.abs(t_new - (11 + 4 * (0.25 + 0.25 * 0.75))) < 1e-9, t_new)
+  -- two segments (a border dot): each segment slants by its own displacement
+  local w3 = stretched(4)
+  warp.add_point(w3, "top", 0.5); warp.add_point(w3, "bottom", 0.5)
+  local b3 = warp.snapshot(w3)
+  warp.set_slant(w3, b3, 1)
+  check("slant: both segments of an edge with a dot", math.abs(w3.top.bulge_h[1] - 0.5) < 1e-9 and math.abs(w3.top.bulge_h[2] - 0.5) < 1e-9, w3.top.bulge_h[1])
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

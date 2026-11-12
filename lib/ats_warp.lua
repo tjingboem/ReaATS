@@ -193,6 +193,43 @@ function M.monotone(w)
   return true
 end
 
+-- The speed of a stretch at position s (0..1 along time) of the top or bottom edge: 1 = as it was, 2 = twice as long, 0.5 = half as long.
+function M.stretch_at(w, edge, s)
+  local span = w.t1 - w.t0
+  if span <= 0 then return 1 end
+  local e = w[edge]
+  local d = 0.002
+  local a, b = clamp(s - d, 0, 1), clamp(s + d, 0, 1)
+  return 1 + (M.edge_h(e, b) - M.edge_h(e, a)) / ((b - a) * span)
+end
+
+-- SLANT (tjingboem 12 Nov 2026: "a slider that stretches less at the left border or the right border"): spreads the time displacement of the box unevenly
+-- over its length without changing where the right border ends up. The arch of every segment of the top and bottom edge (bulge_h) becomes
+-- k/4 of the segment's own displacement, on top of what it was when `base` (a snapshot of the warp) was taken: the speed of the stretch
+-- then falls from (1 + k) times the extra length at the left to (1 - k) times at the right, at k = 1 the right border is not stretched at
+-- all and the left one twice as much, at k = -1 the other way round. k runs from -1 to 1; a squeeze (negative displacement) that would fold
+-- time back on itself is limited to the largest k that does not (M.monotone). Returns the k that was used.
+function M.set_slant(w, base, k)
+  local function apply(kk)
+    M.restore(w, base)
+    for _, name in ipairs({ "top", "bottom" }) do
+      local e = w[name]
+      for i = 1, #e.pts - 1 do e.bulge_h[i] = (e.bulge_h[i] or 0) + kk * (e.pts[i + 1].h - e.pts[i].h) / 4 end
+    end
+  end
+  k = clamp(k, -1, 1)
+  apply(k)
+  local tries = 0
+  while not M.monotone(w) and tries < 40 do
+    k = k * 0.9
+    if math.abs(k) < 1e-3 then k = 0 end
+    apply(k)
+    tries = tries + 1
+    if k == 0 then break end
+  end
+  return k
+end
+
 -- The changes that apply the warp to the selected points of one channel when only frequencies move (no time displacement): sel[p] = { [frame] = true }.
 -- Returns a list of { p, f, oa, na, of, nf } (the amplitude stays). (For a warp with time displacement use ats_edit.plan_warp.)
 function M.changes(d, sel, w)

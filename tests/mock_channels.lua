@@ -458,6 +458,49 @@ do
   assert(saw("%(3 channels%)"), "the stretched points stay selected")
   press(26, 4); strings = {}; frame()
   assert(not saw("^%d%*$"), "ONE Ctrl+Z takes the stretch back")
+  -- Ctrl+A (12 Nov 2026): the whole sound is selected in every green channel, with the box all round it
+  press(27); strings = {}; frame()
+  press(1); strings = {}; frame()
+  assert(saw("^selected: %d+ points in %d+ partials") and saw("%(3 channels%)"), "Ctrl+A selects everything in all three channels: " .. tostring(saw("selected") or saw("nothing") or "(no status)"))
+  do
+    local whole = tonumber((saw("^selected: %d+ points") or ""):match("^selected: (%d+) points"))
+    assert(whole and whole > 100, "a lot of points: " .. tostring(whole))
+    -- the box all round it: a corner can be dragged at once (a stretch waits)
+    local lanes = lanes_now()[1]
+    press(27); strings = {}; frame()
+    assert(not saw("^selected:"), "Esc clears it again")
+  end
+  -- the slant slider (12 Nov 2026): with a stretch waiting, a right-click opens it instead of the gain slider
+  sweep(65, y_top, 600, y_bot)
+  hold_and_drag(600, y_top, 50, 0); let_go()
+  do
+    local cx, cy = 300, y_top + 60
+    gfx.mouse_cap = 2; gfx.mouse_x, gfx.mouse_y = cx, cy; frame()
+    gfx.mouse_cap = 0; strings = {}; frame(); frame()
+    assert(saw("Slant of the stretch") and not saw("Gain of the selection"), "a right-click with a stretch waiting opens the slant slider")
+    assert(saw("^even$"), "it starts even: " .. tostring(saw("even")))
+    local sx, sy = cx - 130, cy - 24
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = sx + 16 + 227, sy + 58 + 5; frame()
+    gfx.mouse_cap = 0; strings = {}; frame()
+    assert(saw("^less at the right$"), "dragged to the right end: less stretch at the right border: " .. tostring(saw("less at")))
+    assert(saw("right border  x1%.0"), "the right border is not stretched: " .. tostring(saw("border")))
+    -- CANCEL gives the box back as it was: the stretch is still waiting and even
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = sx + 120 + 10, sy + 98 + 9; frame()
+    gfx.mouse_cap = 0; strings = {}; frame(); frame()
+    assert(saw("^slant cancelled") and not saw("Slant of the stretch"), "cancel closes the slider: " .. tostring(saw("slant")))
+    -- again, and APPLY: the stretch is applied (one undo step), every channel
+    gfx.mouse_cap = 2; gfx.mouse_x, gfx.mouse_y = cx, cy; frame()
+    gfx.mouse_cap = 0; strings = {}; frame(); frame()
+    assert(saw("^even$"), "after a cancel it starts even again")
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = sx + 16 + 1, sy + 58 + 5; frame()
+    gfx.mouse_cap = 0; strings = {}; frame()
+    assert(saw("^less at the left$"), "dragged to the left end: " .. tostring(saw("less at")))
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = sx + 188 + 10, sy + 98 + 9; frame()
+    gfx.mouse_cap = 0; strings = {}; frame(); frame()
+    assert(saw("^1%*$") and saw("^2%*$") and saw("^3%*$"), "APPLY applies the slanted stretch in every channel: " .. tostring(saw("bend") or "(no status)"))
+    press(26, 4); strings = {}; frame()
+    assert(not saw("^%d%*$"), "ONE Ctrl+Z takes it back")
+  end
   -- with the Noise layer on, the noise bands in the box follow the stretch (the status says so); one undo step
   sweep(65, y_top, 600, y_bot)
   hold_and_drag(600, y_top, 50, 0); let_go()
@@ -483,6 +526,20 @@ do
   clock_skew = clock_skew + 30; strings = {}; frame()                          -- (a message of the last action takes the place of the numbers for a while)
   assert(saw("   2%.[1-6]%d s   "), "Ctrl+Y makes it longer again: " .. tostring(saw("partials")))
   press(26, 4); strings = {}; frame()
+  -- no limit of "twice as long" (12 Nov 2026: a stretch of more than 2x was cut at exactly twice the length of the file): many drag steps to the right
+  -- scroll the view on, and the file ends up more than twice as long (it is 2.00 s here)
+  do
+    press(102)
+    sweep(65, y_top, 1040, y_bot)
+    gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 1040, y_top; frame()
+    for i = 1, 60 do gfx.mouse_x = 1040 + i * 8; clock_skew = clock_skew + 0.05; strings = {}; frame() end
+    gfx.mouse_cap = 0; frame(); press(13); strings = {}; frame()
+    clock_skew = clock_skew + 30; strings = {}; frame()
+    local dur = tonumber((saw("partials") or ""):match("   (%d+%.%d+) s   "))
+    assert(dur and dur > 4.05, "the file is more than twice as long after a long stretch: " .. tostring(dur) .. " / " .. tostring(saw("longer") or saw("bend")))
+    press(26, 4); strings = {}; frame()
+    press(27); press(102); strings = {}; frame()
+  end
   -- the handle in the middle of the right edge: dragged sideways it STRETCHES the box (the left edge stays), it does not move the selection
   sweep(65, y_top, 600, y_bot)
   local y_mid = math.floor((y_top + y_bot) / 2)
@@ -495,6 +552,24 @@ do
   assert(saw("^1%*$") and saw("^3%*$") and saw("bend in time up to"), "Enter applies the stretch: " .. tostring(saw("bend") or "(none)"))
   press(26, 4); strings = {}; frame()
   assert(not saw("^%d%*$"), "and Ctrl+Z takes it back")
+  -- Ctrl held when the mouse goes down on the middle handle is the one-direction lock, not a new dot (12 Nov 2026): the same stretch as without Ctrl
+  do
+    local function selected_points() local v for _, x in ipairs(strings) do v = v or x:match("^selected: (%d+) points") end return tonumber(v) end
+    local function stretch_and_apply(cap)
+      sweep(65, y_top, 600, y_bot)
+      hold_and_drag(600, y_mid, 60, 0, cap)
+      if cap == 5 then                                                      -- a small wobble up while Ctrl locks to time: no pitch bend
+        gfx.mouse_x, gfx.mouse_y = 600 + 60, y_mid - 6; frame(); strings = {}; frame()
+        assert(saw("%+0%.00 st  %+%d+ ms"), "no pitch bend while Ctrl locks to time: " .. tostring(saw("%d st")))
+      end
+      let_go(); press(13); strings = {}; frame()
+      local n = selected_points()
+      press(26, 4); strings = {}; frame()
+      return n
+    end
+    local plain, with_ctrl = stretch_and_apply(1), stretch_and_apply(5)
+    assert(plain and with_ctrl and plain == with_ctrl, "Ctrl at the press on the handle makes the same stretch as without: " .. tostring(plain) .. " vs " .. tostring(with_ctrl))
+  end
   -- a stretch to before 0 puts frames in front: everything in the file moves later; one undo step, every channel
   press(102)
   sweep(65, y_top, 1040, y_bot)
@@ -556,11 +631,11 @@ do
   press(13); strings = {}; frame()
   assert(saw("nothing to apply"), "Enter with a flat box says so")
   -- a border dot: Ctrl+click on the top edge adds one, it can be dragged along, and a right-click removes it
-  hold_and_drag(332, y_top, 0, 30, 1 + 4); let_go()
+  hold_and_drag(200, y_top, 0, 30, 1 + 4); let_go()                       -- (not in the middle: there is the handle, where Ctrl is the one-direction lock)
   strings = {}; frame()
   assert(saw("^bend up to [%d%.]+ st"), "the new border dot bends the edge: " .. tostring(saw("bend") or "(nothing)"))
   clock_skew = clock_skew + 30
-  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 332, y_top + 30, 2; frame(); gfx.mouse_cap = 0; strings = {}; frame()
+  gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap = 200, y_top + 30, 2; frame(); gfx.mouse_cap = 0; strings = {}; frame()
   assert(saw("border dot removed"), "a right-click on a border dot removes it: " .. tostring(saw("border") or saw("whole")))
   press(18); strings = {}; frame()
   assert(saw("bend reset"), "Ctrl+R resets the box to flat")

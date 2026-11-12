@@ -19,6 +19,7 @@
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
           click on the picture, or click/drag on the time ruler  set the playhead; AUDITION starts there (the line moves while it plays)
+          Ctrl+A        select the whole sound (every point that is drawn, in every green channel) with the box all round it: drag the dots or edges at will
           Z             zoom to the selection (with some room round it)
           A             AUDITION of the selection only (the selected points alone) when there is a selection; AUDITION button / A without one: the whole sound
           A or AUDITION render the edited data (in Lua, no other program needed) and play it; Space stops
@@ -839,7 +840,10 @@ local function transpose_selection(semitones) edit_on_channels(function() transp
 function W.room()
   local rows_max = 1
   for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
-  return math.min(chs[1].data.frames, math.floor(2e7 / rows_max))        -- at most as long again, and never more than 20 million new cells
+  -- Only the number of cells limits it (tjingboem, 12 Nov 2026, a piano of 1.05 s that could not be stretched past 2.107 s: "perhaps there is no limit
+  -- to how far i can stretch"): the file may grow by as many frames as 20 million new cells allow (rows x frames). The old limit, "at most as long
+  -- again", cut every stretch of more than 2 times without a word.
+  return math.floor(2e7 / rows_max)
 end
 function W.move(df, ratio)
   if not W.busy then W.commit() end
@@ -1803,6 +1807,33 @@ end
 function W.sel_info_of(i) return (i == cur) and sel_info or chs[i].sel_info end
 function W.sel_of(i) return (i == cur) and sel or chs[i].sel end
 
+-- Ctrl+A (tjingboem 12 Nov 2026: "it is better that the selection box is created all around the sample. The user can then drag the points at will"):
+-- selects every point that a box would select over the whole length and the whole frequency range of what sounds (the points under the display threshold
+-- are left out, as for a box), in every green channel, and puts the box round it: the whole file in time, the sounding frequencies with a little room
+-- (a sixth of a tone) above and below. The view is not changed: Z zooms to the selection, F fits the whole sound.
+function W.select_all()
+  if not data then return end
+  if not show_partials then set_status("the sine layer is off: switch it on to select partials"); return end
+  if #on_channels() == 0 then set_status("no channel is editable: click an LED to make it green"); return end
+  local lo, hi = math.huge, 0
+  for _, i in ipairs(on_channels()) do
+    with_channel(i, function()
+      for p = 1, data.partials do
+        local amp, frq = data.amp[p], data.frq[p]
+        for f = 1, data.frames do
+          if amp[f] > amp_thresh and frq[f] > 0 then
+            if frq[f] < lo then lo = frq[f] end
+            if frq[f] > hi then hi = frq[f] end
+          end
+        end
+      end
+    end)
+  end
+  if hi <= 0 then set_status("nothing to select: no partial sounds above the display threshold"); return end
+  local room = 2 ^ (1 / 12 / 6)
+  select_box(data.times[1], data.times[data.frames], lo / room, hi * room, false)
+end
+
 function W.set_region(ta, tb, fa, fb, add)
   W.w = nil
   if ta > tb then ta, tb = tb, ta end
@@ -2325,6 +2356,112 @@ function W.draw_gain()
   gfx.setfont(1, "Arial", 14)
 end
 
+-- SLANT OF A STRETCH (tjingboem 12 Nov 2026: "i want to decide as i drag" [the stretch itself]; "a slider that stretches less at the left border or the
+-- right border ... the Slant slider would be the way to go"): when a bend of the box is waiting (dragged, not applied yet) a right-click opens this slider
+-- instead of the gain slider. It spreads the stretch unevenly over the selection (ats_warp.set_slant), live: the box shows it as you drag. The left end
+-- is "less stretch at the left border", the right end "less at the right border", the middle an even stretch. APPLY applies the bend (as Enter does),
+-- CANCEL gives the box back as it was before the slider. W.sl = { x, y, k, used, base, drag } while it is open (it takes every click and key).
+function W.slant_open(mx, my)
+  if not W.w or W.m.is_flat(W.w) then return end
+  W.sl = { x = clamp(mx - 130, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(my - 24, 4, math.max(math.floor(gfx.h) - 124, 4)),
+           k = 0, used = 0, base = W.m.snapshot(W.w) }
+  dirty = true
+end
+function W.slant_rects()
+  local g = W.sl
+  return { box = { g.x, g.y, 260, 124 }, track = { g.x + 16, g.y + 58, 228, 10 },
+           reset = { g.x + 16, g.y + 98, 56, 18 }, cancel = { g.x + 120, g.y + 98, 62, 18 }, apply = { g.x + 188, g.y + 98, 56, 18 } }
+end
+function W.slant_set(k)
+  local g = W.sl
+  g.k = math.min(math.max(k, -1), 1)
+  g.used = W.m.set_slant(W.w, g.base, g.k)
+  dirty = true
+end
+function W.slant_cancel(msg)
+  local g = W.sl
+  W.sl = nil
+  if W.w and g then W.m.restore(W.w, g.base) end
+  dirty = true
+  if msg then set_status(msg) end
+end
+function W.slant_to(mx)
+  local r = W.slant_rects().track
+  local k = (math.min(math.max((mx - r[1]) / r[3], 0), 1) * 2 - 1)
+  k = math.floor(k * 100 + 0.5) / 100
+  if math.abs(k) < 0.04 then k = 0 end                                     -- (it sticks in the middle: an even stretch)
+  W.slant_set(k)
+end
+function W.slant_input(mx, my, cap, ch)
+  local g, r = W.sl, W.slant_rects()
+  local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
+  local down = (cap & 1) ~= 0
+  if not W.w then W.sl = nil; dirty = true; return end
+  if ch == 27 then W.slant_cancel("slant cancelled (the stretch is still waiting: Enter applies it, Esc again cancels it)"); return end
+  if ch == 13 then W.sl = nil; dirty = true; W.commit(); return end
+  if ch == 1919379572 then W.slant_set(g.k + 0.05) elseif ch == 1818584692 then W.slant_set(g.k - 0.05) end
+  if down and not prev_down then
+    if inside(r.track, 6) then g.drag = true; W.slant_to(mx)
+    elseif inside(r.reset) then W.slant_set(0)
+    elseif inside(r.apply) then W.sl = nil; dirty = true; W.commit()
+    elseif inside(r.cancel) or not inside(r.box) then W.slant_cancel("slant cancelled (the stretch is still waiting: Enter applies it, Esc again cancels it)") end
+  elseif down and g.drag then
+    W.slant_to(mx)
+  end
+  if not down then g.drag = nil end
+end
+function W.draw_slant()
+  local g = W.sl
+  if not g or not W.w then return end
+  local r = W.slant_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.95, 0.75, 0.40, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr("Slant of the stretch")
+  local label = (math.abs(g.used) < 0.025) and "even" or ((g.used < 0) and "less at the left" or "less at the right")
+  gfx.set(1, 0.9, 0.5, 1)
+  gfx.x, gfx.y = bx + bw - 16 - gfx.measurestr(label), by + 8
+  gfx.drawstr(label)
+  gfx.setfont(1, "Arial", 12)
+  gfx.set(0.75, 0.78, 0.84, 1)
+  gfx.x, gfx.y = bx + 16, by + 30
+  gfx.drawstr(string.format("left border  x%.2f      right border  x%.2f", W.m.stretch_at(W.w, "top", 0), W.m.stretch_at(W.w, "top", 1)))
+  local tx0, ty, tw, th = table.unpack(r.track)
+  gfx.set(0.16, 0.18, 0.22, 1)
+  gfx.rect(tx0, ty, tw, th, 1)
+  gfx.set(0.4, 0.43, 0.48, 1)
+  gfx.rect(tx0 + tw // 2, ty - 3, 1, th + 6, 1)                           -- the middle mark: an even stretch
+  local frac = (g.k + 1) / 2
+  gfx.set(0.95, 0.75, 0.40, 0.6)
+  if frac >= 0.5 then gfx.rect(tx0 + tw // 2, ty, tw * (frac - 0.5), th, 1) else gfx.rect(tx0 + tw * frac, ty, tw * (0.5 - frac), th, 1) end
+  gfx.set(1, 1, 1, 0.95)
+  gfx.rect(tx0 + math.floor((tw - 3) * frac), ty - 2, 3, th + 4, 1)
+  gfx.set(0.35, 0.38, 0.43, 1)
+  gfx.rect(tx0, ty, tw, th, 0)
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(0.6, 0.64, 0.7, 1)
+  gfx.x, gfx.y = tx0, ty + 12; gfx.drawstr("less at left")
+  gfx.x, gfx.y = tx0 + tw - gfx.measurestr("less at right"), ty + 12; gfx.drawstr("less at right")
+  local function button(rc, text, rgb)
+    gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(rgb[1], rgb[2], rgb[3], 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.setfont(1, "Arial", 12)
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.reset, "EVEN", { 0.7, 0.72, 0.78 })
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "APPLY", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
+end
+
 -- AUDITION of the selection only (A with a selection): only the selected points sound, from just before the first to just after the last
 -- frame of the selection (the sines only, in the SPACE output; no noise). Always made by the Python program, always made again.
 function W.audition_selection()
@@ -2461,7 +2598,7 @@ function W.apply_grown(label, plans, nplans, need_end, need_front)
     if grown - need_front > 0 then where[#where + 1] = string.format("%d at the end", grown - need_front) end
     set_status(string.format("%s: the file is %.2f s longer now: %s%s%s", label, chs[1].data.dur - dur_before, table.concat(where, ", "),
       any_noise and ", and the noise" or "",
-      dropped > 0 and (string.format(", %d piece(s) still fell outside", dropped)) or ""))
+      dropped > 0 and (string.format(", %d piece(s) still fell outside (the file can grow by at most %.0f s with %d partials)", dropped, W.room() * hop, #chs[1].data.amp)) or ""))
   elseif dropped > 0 then
     set_status(string.format("%s: %d piece(s) of partials fell outside the file and are gone", label, dropped))
   end
@@ -2485,9 +2622,9 @@ function W.commit()
   for _, c in ipairs(chs) do rows_max = math.max(rows_max, c.data.partials) end
   for _, i in ipairs(list) do
     with_channel(i, function()
-      -- the file may get longer when a stretch goes past its end or before its start: at most as long again at each side, and never more
-      -- than 20 million new cells. (What goes before the start puts frames in front: everything in the file moves later.)
-      local room = math.min(data.frames, math.floor(2e7 / math.max(rows_max, 1)))
+      -- the file may get longer when a stretch goes past its end or before its start: as far as 20 million new cells allow (W.room).
+      -- (What goes before the start puts frames in front: everything in the file moves later.)
+      local room = W.room()
       plans[i] = edit.plan_warp(data, sel, map, { max_extra = room, max_front = room })
       if plans[i] then
         need_end = math.max(need_end, plans[i].frames_after)
@@ -2599,9 +2736,12 @@ function W.mouse_down(px, py, pw, ph, mx, my, cap)
   if h.kind == "edge" and not h.mid and not alt and hit_selected(px, py, pw, ph, mx, my) then return false end   -- (Ctrl there is the one-axis move; the handle in the middle of an edge is always the box's)
   local w = W.get()
   local d = { lastx = mx, lasty = my, ex = 0, ey = 0, th = 0, g = h.g, edge = h.edge, good = W.m.snapshot(w) }
-  if h.kind == "point" and not alt and not ctrl then
+  -- Ctrl held at the press: on a dot or on the square handle in the middle of an edge it is the one-direction lock of the drag (read while dragging, see
+  -- W.drag_to), NOT a new dot (tjingboem, 12 Nov 2026: with Ctrl down on the middle handle a dot was made there and only the middle of the edge moved,
+  -- so the stretch was uneven and cut short at the top and the bottom). Ctrl+click on the line of an edge, away from its handle, still adds a dot.
+  if h.kind == "point" and not alt then
     d.kind, d.i, d.v0, d.h0 = "point", h.i, w[h.edge].pts[h.i].v, w[h.edge].pts[h.i].h
-  elseif ctrl then
+  elseif ctrl and not h.mid then
     local i = W.m.add_point(w, h.edge, h.s)
     if not i then return true end
     d.kind, d.i, d.v0, d.h0 = "point", i, w[h.edge].pts[i].v, w[h.edge].pts[i].h
@@ -2653,8 +2793,8 @@ function W.drag_to(mx, my, cap)
   local span = w.t1 - w.t0
   -- No cap on d.dh itself any more (tjingboem, 10 Nov 2026: "i need to stretch partials for creative sounds. There should be no
   -- cap."): the old +-3x-the-selection's-own-width limit was an arbitrary drag-time ceiling with no record of why that number, not
-  -- a safety limit -- the real one is W.commit's `room` (the file may grow by at most its own length again, or 20 million cells,
-  -- whichever is smaller), which still applies no matter how far the handle is dragged.
+  -- a safety limit -- the real one is W.commit's `room` (the file may grow by as many frames as 20 million new cells allow, W.room),
+  -- which still applies no matter how far the handle is dragged.
   d.dh = (d.axis == "y") and 0 or d.th
   if d.kind == "point" then
     W.m.set_value(w, d.edge, d.i, clamp(d.v0 + d.dv, -48, 48), d.h0 + d.dh)
@@ -3243,11 +3383,11 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
-  if W.gain or W.np then                                         -- the gain slider or the export-notes panel is open: it takes the mouse and the keys
+  if W.gain or W.np or W.sl then                                 -- the gain slider, the export-notes panel or the slant slider is open: it takes the mouse and the keys
     local ch = gfx.getchar()
     if ch < 0 then stop_audition(); return false end
     gfx.mouse_wheel = 0
-    if W.gain then W.gain_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
+    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
     prev_down = (cap & 1) ~= 0
     return true
   end
@@ -3290,7 +3430,9 @@ local function handle_input(px, py, pw, ph)
   else
     if drag and drag.right and not drag.moved then              -- a right-click without a drag: a border dot goes away, else the whole file in view (as F; the same in ReaShapeM)
       if not W.right_click(px, py, pw, ph, drag.x0, drag.y0) then
-        if any_sel() and show_partials then
+        if W.w and not W.m.is_flat(W.w) then
+          W.slant_open(mx, my)                                   -- a stretch is waiting: the slant slider
+        elseif any_sel() and show_partials then
           W.gain_open(mx, my)                                    -- a selection: the gain slider
         else
           fit_view()
@@ -3449,6 +3591,7 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 13 then                                          -- Enter: apply the bend
     if W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
   elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
+  elseif ch == 1 then W.select_all()                              -- Ctrl+A: the whole sound, with the box round it
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
   elseif ch == 24 then if copy_selection() then edit_on_channels(function() delete_single(true) end, "cut") end   -- Ctrl+X (the noise goes with the sines)
   elseif ch == 22 then paste_clipboard()                        -- Ctrl+V: at the playhead
@@ -3548,6 +3691,7 @@ local function loop()
   draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)
   W.draw_gain()
+  W.draw_slant()
   W.draw_notes_panel()
   gfx.update()
   if keep then reaper.defer(loop) end
