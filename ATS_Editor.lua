@@ -1981,7 +1981,8 @@ end
 -- on a channel of its own, pitch bend = its deviation from the semitone, pressure = its amplitude). Works on the selection if there is
 -- one, otherwise on the whole sound of the channel that is shown. A panel with two sliders (as the gain of the selection) asks how many
 -- partials (1 to 15) and how much to favour low partials (neutral = by energy only ... 2; both remembered, the preference starts at 0.5), writes <name>_notes<N>.mid
--- next to the .ats file (never over an existing file) and puts the same notes on a new track "ReaATS notes" at the edit cursor.
+-- next to the .ats file (never over an existing file) and puts the same notes in a MIDI item on the selected track (a new track "ReaATS notes" only when none
+-- is selected) at the edit cursor.
 function W.notes_rect() return W.lay("btn_notes_s") end
 
 function W.draw_notes_button()
@@ -2001,10 +2002,18 @@ end
 function W.notes_to_reaper(res)
   local pos = reaper.GetCursorPosition()
   reaper.Undo_BeginBlock()
-  local idx = reaper.CountTracks(0)
-  reaper.InsertTrackAtIndex(idx, true)
-  local track = reaper.GetTrack(0, idx)
-  reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS notes", true)
+  -- The notes go on the selected track (tjingboem, 12 Nov 2026: "each time notes are exported, a new Track is added. Change it to: add notes to active
+  -- Track"); only without a selected track a new track "ReaATS notes" is made, as PRINT does.
+  local track = reaper.GetSelectedTrack(0, 0)
+  local made_track = false
+  if not track then
+    local idx = reaper.CountTracks(0)
+    reaper.InsertTrackAtIndex(idx, true)
+    track = reaper.GetTrack(0, idx)
+    reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "ReaATS notes", true)
+    reaper.SetOnlyTrackSelected(track)
+    made_track = true
+  end
   local item = reaper.CreateNewMIDIItemInProj(track, pos, pos + res.dur + 0.1, false)
   local take = item and reaper.GetActiveTake(item)
   if not take then reaper.Undo_EndBlock("ReaATS: export notes", -1); return false end
@@ -2012,7 +2021,7 @@ function W.notes_to_reaper(res)
   reaper.MIDI_SetAllEvts(take, buf)
   reaper.UpdateItemInProject(item)
   reaper.Undo_EndBlock("ReaATS: export notes", -1)
-  return true
+  return true, made_track
 end
 
 -- The panel: the same kind of slider as the gain of the selection (right-click). W.np = { x, y, max, bias, tracks, sel, drag } while it is open
@@ -2063,10 +2072,10 @@ function W.notes_apply()
   if not fh then set_status("export notes: cannot write " .. tostring(err)); return end
   fh:write(W.notes.smf(res))
   fh:close()
-  local placed = W.notes_to_reaper(res)
+  local placed, made_track = W.notes_to_reaper(res)
   set_status(string.format("%d notes (%d partials found%s) on %d MPE channels%s -> %s", #res.notes, res.found,
     res.dropped > 0 and string.format(", %d weaker left out", res.dropped) or "", res.members,
-    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and " and a MIDI item on a new track" or "")) .. Analysis.unsaved_note())
+    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and (made_track and " and a MIDI item on a new track" or " and a MIDI item on the selected track") or "")) .. Analysis.unsaved_note())
 end
 -- Mouse and key while the panel is open.
 function W.notes_input(mx, my, cap, ch)

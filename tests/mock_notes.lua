@@ -40,6 +40,7 @@ gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
 local clock_skew = 0
 local calls = {}
+local selected_track = nil                                       -- (no track selected: a new one is made)
 local dialog_calls, dialog_ok, dialog_text = 0, false, ""
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
@@ -56,6 +57,8 @@ reaper = {
   defer = function(fn) deferred = fn end,
   CountTracks = function() return 0 end,
   InsertTrackAtIndex = function() calls.track = true end,
+  GetSelectedTrack = function() return selected_track end,
+  SetOnlyTrackSelected = function() end,
   GetTrack = function() return "TRACK" end,
   GetSetMediaTrackInfo_String = function(_, _, v) calls.name = v; return true end,
   GetCursorPosition = function() return 2.0 end,
@@ -144,11 +147,19 @@ assert(saw("found 4 partials: 1 notes on 1 channels, 3 left out"), "live line: "
 script.keys = { 27 }; frame()
 os.remove(mid); os.remove(scratch .. "notes_test_notes2.mid")
 
+-- a selected track: the notes go on it, no new track is made (12 Nov 2026)
+selected_track = "SELECTED"
+open_panel(); script.keys = { 13 }; frame()
+assert(calls.buf and not calls.track and not calls.name, "with a selected track no new track is made")
+assert(saw("on the selected track"), "the status says where the item is: " .. tostring(saw("notes")))
+selected_track = nil
+os.remove(mid)
+
 -- a saved project: the file goes in <project folder>/ReaATS
 os.execute("rm -rf " .. scratch .. "notes_proj; mkdir -p " .. scratch .. "notes_proj")
 reaper.EnumProjects = function() return {}, scratch .. "notes_proj/piece.rpp" end
 reaper.RecursiveCreateDirectory = function(d) os.execute("mkdir -p '" .. d .. "'"); return 1 end
-open_panel(); script.keys = { 13 }; frame()
+open_panel(); script.keys = { 13 }; frame(); strings = {}; frame()                    -- (the strings of the frames before are not the status of this export)
 local inproj = scratch .. "notes_proj/ReaATS/notes_test_notes1.mid"
 local f3 = io.open(inproj, "rb"); assert(f3, "the MIDI file is in the project's ReaATS folder"); f3:close()
 assert(not io.open(mid, "rb"), "and not next to the sound")
