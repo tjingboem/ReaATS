@@ -131,6 +131,7 @@ gfx.mouse_cap = 0; frame()
 script.keys = { 13 }; frame()
 local f2 = io.open(scratch .. "notes_test_notes2.mid", "rb"); assert(f2, "the second file has its own name"); f2:close()
 assert(saw("^4 notes %(4 partials found%)"), "all four with 15: " .. tostring(saw("notes")))
+assert(saw("project is not saved"), "no project folder: the status says the files are next to the sound")
 
 -- favour low partials: one voice, the bias slider all the way to the right keeps the 200 Hz partial instead of the stronger... all four
 -- partials have flat amplitudes 0.9 (200), 0.2 (400), 0.5 (800), 0.7 (1600): with max 1 and neutral the loudest (200) wins either way,
@@ -142,4 +143,16 @@ assert(saw("low partials 2%.00"), "bias slider at the right end: " .. tostring(s
 assert(saw("found 4 partials: 1 notes on 1 channels, 3 left out"), "live line: " .. tostring(saw("found")))
 script.keys = { 27 }; frame()
 os.remove(mid); os.remove(scratch .. "notes_test_notes2.mid")
+
+-- a saved project: the file goes in <project folder>/ReaATS
+os.execute("rm -rf " .. scratch .. "notes_proj; mkdir -p " .. scratch .. "notes_proj")
+reaper.EnumProjects = function() return {}, scratch .. "notes_proj/piece.rpp" end
+reaper.RecursiveCreateDirectory = function(d) os.execute("mkdir -p '" .. d .. "'"); return 1 end
+open_panel(); script.keys = { 13 }; frame()
+local inproj = scratch .. "notes_proj/ReaATS/notes_test_notes1.mid"
+local f3 = io.open(inproj, "rb"); assert(f3, "the MIDI file is in the project's ReaATS folder"); f3:close()
+assert(not io.open(mid, "rb"), "and not next to the sound")
+assert(saw("^%d+ notes") and not saw("project is not saved"), "no warning when the project is saved: " .. tostring(saw("notes")))
+os.execute("rm -rf " .. scratch .. "notes_proj")
+reaper.EnumProjects, reaper.RecursiveCreateDirectory = nil, nil
 print("EXPORT NOTES OK: renamed export button, slider panel with a live line, cancel/Esc/outside, MIDI file, new track, strongest partials kept, numbered files")

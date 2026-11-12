@@ -124,8 +124,8 @@ do
   for _, c in ipairs(cells) do fh:write(string.pack("<dddd", c[1], c[2], ed.amp[c[1]][c[2]], ed.frq[c[1]][c[2]])) end
   fh:close()
   local a, b = scratch .. "/ps_ed_a.wav", scratch .. "/ps_ed_b.wav"
-  run("--out " .. a .. " " .. full_path)                                       -- the whole edited data written to a file
-  run("--out " .. b .. " --edits " .. ep .. " " .. sax_path)                     -- the original file plus the edits
+  run("--no-phase --out " .. a .. " " .. full_path)                                       -- the whole edited data written to a file
+  run("--no-phase --out " .. b .. " --edits " .. ep .. " " .. sax_path)                     -- the original file plus the edits
   local fa = io.open(a, "rb"); local da = fa:read("a"); fa:close()
   local fb = io.open(b, "rb"); local db = fb:read("a"); fb:close()
   check("edits: the original file plus the edits sounds exactly like the edited data written out", da == db and #da > 1000)
@@ -160,8 +160,8 @@ do
     for _, c in ipairs(ncells) do nh:write(string.pack("<dddd", -c[1], c[2], ed.noise[c[1]][c[2]], 0)) end
     nh:close()
     local na, nb = scratch .. "/ps_ned_a.wav", scratch .. "/ps_ned_b.wav"
-    run("--out " .. na .. " " .. nfull)
-    run("--out " .. nb .. " --edits " .. nep .. " " .. sax_path)
+    run("--no-phase --out " .. na .. " " .. nfull)
+    run("--no-phase --out " .. nb .. " --edits " .. nep .. " " .. sax_path)
     local f1 = io.open(na, "rb"); local d1 = f1:read("a"); f1:close()
     local f2 = io.open(nb, "rb"); local d2 = f2:read("a"); f2:close()
     check("noise edits: the file plus the noise records sounds exactly like the edited data written out", d1 == d2 and #d1 > 1000)
@@ -180,8 +180,8 @@ do
   for r = extra, extra + 1 do for f = 30, 60 do fh2:write(string.pack("<dddd", r, f, grown.amp[r][f], grown.frq[r][f])) end end
   fh2:close()
   local ra, rb = scratch .. "/ps_ra.wav", scratch .. "/ps_rb.wav"
-  run("--no-noise --out " .. ra .. " " .. full2)
-  run("--no-noise --out " .. rb .. " --edits " .. ep2 .. " " .. sax_path)
+  run("--no-phase --no-noise --out " .. ra .. " " .. full2)
+  run("--no-phase --no-noise --out " .. rb .. " --edits " .. ep2 .. " " .. sax_path)
   local fa2 = io.open(ra, "rb"); local da2 = fa2:read("a"); fa2:close()
   local fb2 = io.open(rb, "rb"); local db2 = fb2:read("a"); fb2:close()
   check("edits: rows that the file does not have are made from the edits", da2 == db2 and #da2 > 1000)
@@ -204,8 +204,8 @@ do
   for f = 215, 245 do fh3:write(string.pack("<dddd", 2, f, grown.amp[2][f], grown.frq[2][f])) end
   fh3:close()
   local la, lb = scratch .. "/ps_la.wav", scratch .. "/ps_lb.wav"
-  run("--no-noise --out " .. la .. " " .. full3)
-  run("--no-noise --out " .. lb .. " --edits " .. ep3 .. " " .. sax_path)
+  run("--no-phase --no-noise --out " .. la .. " " .. full3)
+  run("--no-phase --no-noise --out " .. lb .. " --edits " .. ep3 .. " " .. sax_path)
   local fa3 = io.open(la, "rb"); local da3 = fa3:read("a"); fa3:close()
   local fb3 = io.open(lb, "rb"); local db3 = fb3:read("a"); fb3:close()
   check("longer: the original file plus the edits sounds exactly like the longer data written out", da3 == db3 and #da3 > 1000, #da3 .. " " .. #db3)
@@ -237,8 +237,8 @@ do
   fh4:write(string.pack("<dddd", 1, 40, grown.amp[1][40], grown.frq[1][40]))
   fh4:close()
   local ma, mb = scratch .. "/ps_ma.wav", scratch .. "/ps_mb.wav"
-  run("--out " .. ma .. " " .. full4)
-  run("--out " .. mb .. " --edits " .. ep4 .. " " .. sax_path)
+  run("--no-phase --out " .. ma .. " " .. full4)
+  run("--no-phase --out " .. mb .. " --edits " .. ep4 .. " " .. sax_path)
   local fa4 = io.open(ma, "rb"); local da4 = fa4:read("a"); fa4:close()
   local fb4 = io.open(mb, "rb"); local db4 = fb4:read("a"); fb4:close()
   check("front: the original file plus the edits sounds exactly like the data written out (with noise)", da4 == db4 and #da4 > 1000, #da4 .. " " .. #db4)

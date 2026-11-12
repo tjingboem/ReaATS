@@ -984,7 +984,7 @@ end
 local function render_wav(wav, from)
   local use_sines = show_partials
   local use_noise = show_noise and data.has_noise
-  local samples, sr, t_start = synth.render(data, { sines = use_sines, noise = use_noise, from = from })
+  local samples, sr, t_start = synth.render(data, { sines = use_sines, noise = use_noise, from = from, dirty = edited_cells })
   if not samples then return nil, sr end                      -- sr is the message when samples is nil
   local ok, err = synth.write_wav(wav, samples, sr)
   if not ok then return nil, err end
@@ -1000,10 +1000,10 @@ local python_missing = false                   -- no Python was found for the sy
 -- Returns the job, the engine's name and the request (to fall back on Lua if the Python run fails).
 local function start_synth(wav, o)
   capture_channel()
-  local list = {}
-  for i, c in ipairs(chs) do list[i] = c.data end
-  local req = { list = list, o = o }
-  local function lua_job() return synth.render_multi_job(list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to }), "Lua", req end
+  local list, dirty_list = {}, {}
+  for i, c in ipairs(chs) do list[i], dirty_list[i] = c.data, c.edited_cells end
+  local req = { list = list, o = o, dirty_list = dirty_list }
+  local function lua_job() return synth.render_multi_job(list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to, dirty_list = dirty_list }), "Lua", req end
   local script = script_dir .. "/python/reaats_synth.py"
   if not (reaper.ExecProcess and reaper.file_exists(script) and analysis) then return lua_job() end
   if not analysis.python then                                  -- look for Python once; if there is none, stay with Lua
@@ -1211,7 +1211,7 @@ local function advance_pending()
   if p.engine == "Python" and job.error then                   -- the Python run failed: say so, then do it with the built-in synthesis
     local o = p.req.o
     p.note = job.error
-    p.job = synth.render_multi_job(p.req.list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to })
+    p.job = synth.render_multi_job(p.req.list, { sines = o.sines, noise = o.noise, from = o.from, to = o.to, dirty_list = p.req.dirty_list })
     p.engine = "Lua"
     set_status("Python synthesis failed (" .. job.error .. "): using the built-in synthesis")
     return
@@ -1299,6 +1299,7 @@ local function save_file()
   if #chs > 1 then
     local first = chs[1].fname
     local base = set_names(first, 1)[1]:gsub("_ch1%.[^./\\]+$", ""):gsub("_edit%d*$", "")
+    base = (Analysis.relocate(base))                          -- (in the project's ReaATS folder when it has one)
     local ext = first:match("(%.[^./\\]+)$") or ".ats"
     local n, names = 1, nil
     repeat
@@ -1313,6 +1314,7 @@ local function save_file()
   end
   local base, ext = fname:match("^(.*)(%.[^./\\]+)$")
   base = (base or fname):gsub("_edit%d*$", "")
+  base = (Analysis.relocate(base))
   ext = ext or ".ats"
   local path = base .. "_edit" .. ext
   local n = 2
@@ -1396,6 +1398,7 @@ local function print_to_track()
   if pending then pending.job.cancel(); pending = nil end
   local stem = ats_path:gsub("%.[^./\\]+$", "")
   if #chs > 1 then stem = stem:gsub("_ch%d+$", "") end
+  stem = (Analysis.relocate(stem))                              -- (the print goes in the project's ReaATS folder when it has one)
   local n, wav = 1, nil
   repeat wav = string.format("%s_print%d.wav", stem, n); n = n + 1 until not reaper.file_exists(wav)
   local use_sines = show_partials
@@ -1458,7 +1461,7 @@ finish_print = function(p, job)
   reaper.UpdateArrange()
   local limited = (job.gain_db and job.gain_db < -0.005) and string.format("; turned down %.1f dB to stay under -1 dBFS", -job.gain_db) or ""
   set_status(item and string.format("printed %.1f s from %.2f s (%s%s, %s synthesis%s) to the track", dur, job.t_start or 0, mode,
-                                    nch > 1 and (", " .. nch .. " channels") or "", p.engine or "Lua", limited)
+                                    nch > 1 and (", " .. nch .. " channels") or "", p.engine or "Lua", limited) .. Analysis.unsaved_note()
                   or "printed, but the new item was not found on the track")
 end
 
@@ -2022,6 +2025,7 @@ function W.notes_apply()
   end
   local here = current_file or fname
   local stem = here:gsub("%.[^./\\]+$", ""):gsub("_ch%d+$", "")
+  stem = (Analysis.relocate(stem))
   local k, path = 1, nil
   repeat path = string.format("%s_notes%d.mid", stem, k); k = k + 1 until not reaper.file_exists(path)
   local fh, err = io.open(path, "wb")
@@ -2031,7 +2035,7 @@ function W.notes_apply()
   local placed = W.notes_to_reaper(res)
   set_status(string.format("%d notes (%d partials found%s) on %d MPE channels%s -> %s", #res.notes, res.found,
     res.dropped > 0 and string.format(", %d weaker left out", res.dropped) or "", res.members,
-    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and " and a MIDI item on a new track" or "")))
+    use_sel and ", from the selection" or "", (path:match("([^/\\]+)$") or path) .. (placed and " and a MIDI item on a new track" or "")) .. Analysis.unsaved_note())
 end
 -- Mouse and key while the panel is open.
 function W.notes_input(mx, my, cap, ch)

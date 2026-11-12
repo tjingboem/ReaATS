@@ -199,5 +199,45 @@ do
   reaper.GetResourcePath, reaper.RecursiveCreateDirectory = nil, nil
 end
 
+
+-- results in the project (11 Nov 2026): the analyses, edits, prints and notes go in <project folder>/ReaATS when the project has a folder
+do
+  local made = {}
+  reaper.time_precise = function() return os.clock() end
+  reaper.RecursiveCreateDirectory = function(d) made[#made + 1] = d; return 1 end
+  reaper.EnumProjects = nil
+  check("no EnumProjects: no project folder", page.results_dir() == nil)
+  reaper.EnumProjects = function() return {}, "" end
+  check("an unsaved project has no folder", page.results_dir() == nil)
+  local p, used = page.relocate("/music/voice")
+  check("unsaved: the path stays", p == "/music/voice" and used == false, p)
+  check("unsaved: a note says so", page.unsaved_note():find("project is not saved", 1, true) ~= nil)
+  reaper.EnumProjects = function() return {}, "/home/me/Songs/piece/piece.rpp" end
+  check("saved: the ReaATS folder in the project folder", page.results_dir() == "/home/me/Songs/piece/ReaATS", page.results_dir())
+  check("the folder is made", made[#made] == "/home/me/Songs/piece/ReaATS", made[#made])
+  p, used = page.relocate("/music/voice_print")
+  check("saved: the same name in that folder", p == "/home/me/Songs/piece/ReaATS/voice_print" and used == true, p)
+  check("saved: no note", page.unsaved_note() == "")
+  reaper.EnumProjects = function() return {}, "C:\\Music\\piece\\piece.rpp" end
+  check("Windows paths", page.results_dir() == "C:\\Music\\piece/ReaATS", page.results_dir())
+  p = page.relocate("D:\\samples\\voice")
+  check("Windows source: the name only", p == "C:\\Music\\piece/ReaATS/voice", p)
+  reaper.EnumProjects = function() return {}, "piece.rpp" end
+  check("a project file without a folder part", page.results_dir() == nil)
+
+  -- the suggested output of the page follows
+  reaper.EnumProjects = function() return {}, "/proj/p.rpp" end
+  local env = { layout = dofile("lib/analysis_layout.lua"), serial = require("reaats_serial"), script_dir = ".", ext_section = "t",
+                wav_info = { read = function() return { channels = 1, seconds = 3, rate = 44100, sr = 44100 } end },
+                on_open = function() return true end, set_status = function() end, redraw = function() end, back = function() end }
+  local pg = page.new(env)
+  pg:set_source("/music/voice.wav")
+  check("the page suggests the file in the project", pg.out == "/proj/ReaATS/voice.ats", pg.out)
+  reaper.EnumProjects = nil
+  pg:set_source("/music/voice.wav")
+  check("without a project folder it is next to the sound", pg.out == "/music/voice.ats", pg.out)
+  reaper.EnumProjects, reaper.RecursiveCreateDirectory = nil, nil
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

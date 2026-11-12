@@ -182,4 +182,17 @@ end
 assert(unchanged(saved, 1, 0.9, 200), "the loudest partial is untouched everywhere, selected or not")
 assert(unchanged(saved, 4, 0.7, 1600), "the 2nd loudest partial is untouched everywhere, selected or not")
 
+-- a saved project (11 Nov 2026): Ctrl+S puts the edited copy in <project folder>/ReaATS, not next to the original
+os.execute("rm -rf " .. scratch .. "pk_proj; mkdir -p " .. scratch .. "pk_proj")
+reaper.EnumProjects = function() return {}, scratch .. "pk_proj/piece.rpp" end
+reaper.RecursiveCreateDirectory = function(d) os.execute("mkdir -p '" .. d .. "'"); return 1 end
+dialog_ok, dialog_text = true, "1"
+click_button()
+script.keys = { 19 }; strings = {}; frame(); frame()
+assert(saw("^saved pk_test_edit5?%.ats") or saw("^saved pk_test_edit%.ats"), "saved in the project: " .. tostring(saw("saved")))
+local inproj = io.open(scratch .. "pk_proj/ReaATS/pk_test_edit.ats", "rb")
+assert(inproj, "the edited copy is in the project's ReaATS folder"); inproj:close()
+os.execute("rm -rf " .. scratch .. "pk_proj")
+reaper.EnumProjects, reaper.RecursiveCreateDirectory = nil, nil
+
 print("MAX PARTIALS button OK: greyed out with no selection, ranks by total energy, positive keeps the loudest, negative the weakest, undo restores, and only ever touches the actual selection")

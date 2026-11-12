@@ -40,6 +40,7 @@ function M.start(opts)
   if opts.from and opts.from > 0 then args[#args + 1] = "--from"; args[#args + 1] = string.format("%.9f", opts.from) end
   if opts.to and opts.to > 0 then args[#args + 1] = "--to"; args[#args + 1] = string.format("%.9f", opts.to) end
   if opts.sines == false then args[#args + 1] = "--no-sines" end
+  if opts.phase == false then args[#args + 1] = "--no-phase" end
   if opts.noise == false then args[#args + 1] = "--no-noise" end
   if opts.cache_dir then args[#args + 1] = "--cache-dir"; args[#args + 1] = opts.cache_dir end
   if opts.mixdown then args[#args + 1] = "--mixdown"; args[#args + 1] = opts.mixdown end

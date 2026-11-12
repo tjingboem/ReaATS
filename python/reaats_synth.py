@@ -30,6 +30,7 @@ import numpy as np
 NOISE_VARIANCE = 0.04
 NOISE_GAIN = 0.30                # classic: calibrated against Csound's atsaddnz on examples/sax.ats (level within 0.1 dB)
 NOISE_GAIN_CORRECTED = 0.20      # corrected: calibrated so that the noise has the power of the real residual (see tests)
+USE_PHASE = True                 # play the sines with the phases stored in the file (see add_sines_phase); False: phase from the frequency alone
 NOISE_SHAPE = "corrected"       # "corrected": bands get their share by width; "classic": the stored values are used as they are (as Csound does)
 EDGES = [0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720,
          2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 15500, 20000]
@@ -215,6 +216,24 @@ def chunk(a, p0, p1):
     return amp, frq
 
 
+def chunk_phase(a, p0, p1):
+    """The stored phases of partials p0 .. p1-1 as [partial, frame] and a mask [partial, frame] of the cells that the editor's edits
+    touched (their phases are not to be trusted), or (None, None) when the file has no phase."""
+    if a.pp != 3:
+        return None, None
+    k = max(0, min(p1, a.partials) - p0)
+    pha = np.zeros((p1 - p0, a.frames))
+    dirty = np.zeros((p1 - p0, a.frames), dtype=bool)
+    if k > 0:
+        pha[:k, a.front:a.front + a.file_frames] = np.array(a.m[:, 3 + a.pp * p0:3 + a.pp * (p0 + k):a.pp], dtype=np.float64).T
+    if a.edits is not None:
+        e = a.edits
+        sel = (e[:, 0] > p0) & (e[:, 0] <= p1) & (e[:, 1] >= 1) & (e[:, 1] <= a.frames)
+        if sel.any():
+            dirty[e[sel, 0].astype(np.int64) - 1 - p0, e[sel, 1].astype(np.int64) - 1] = True
+    return pha, dirty
+
+
 # ------------------------------------------------------------------------------------------------------- synthesis
 def grid(a, start, end):
     """The part to render: frame offset j0 (0-based), samples n, hop fs; None when there is nothing."""
@@ -305,6 +324,49 @@ def add_to(out, x0, x1, sig, gains):
                 out[k, x0:x1] += g * sig
 
 
+def add_track_phase(out, a, amp, frq, pha, dirty, f0, f1, j0, fs, n, xs_all, gains):
+    """One track (frames f0..f1 of a partial, all of them sounding) played with the stored phases (McAulay and Quatieri: the phase between
+    two frames is the cubic that starts and ends with the stored phase and frequency, the whole turns chosen so that it is as smooth as
+    possible; the amplitude changes linearly). A track that an edit touched has its phases rebuilt from its frequencies, starting from the stored
+    phase of its first frame: the same rule that Save uses (ats_file.lua, update_phases). At the start the sine fades in from silence and at
+    the end it fades out, at the frequency of its first and last frame."""
+    nf = a.frames
+    birth = f0 - 1 >= j0                                          # (a track that goes on from before the part that is played starts at once)
+    death = f1 + 1 <= nf - 1
+    f = fill_zeros(frq[f0:f1 + 1])
+    if f is None:
+        return
+    th = pha[f0:f1 + 1].copy()
+    if dirty[f0:f1 + 1].any():
+        step = np.concatenate(([0.0], (f[:-1] + f[1:]) * (np.pi * a.frame_size / a.sr)))
+        th = th[0] + np.cumsum(step)
+    om = f * (2 * np.pi / a.sr)                                   # rad / sample
+    am = amp[f0:f1 + 1]
+    T = float(fs)
+    if birth:
+        th = np.concatenate(([th[0] - om[0] * T], th)); om = np.concatenate(([om[0]], om)); am = np.concatenate(([0.0], am))
+    if death:
+        th = np.concatenate((th, [th[-1] + om[-1] * T])); om = np.concatenate((om, [om[-1]])); am = np.concatenate((am, [0.0]))
+    nseg = len(th) - 1
+    if nseg < 1:
+        return
+    kb = f0 - 1 if birth else f0
+    x0 = int(xs_all[kb])
+    if x0 >= n:
+        return
+    th0, th1, om0, om1, a0, a1 = th[:-1], th[1:], om[:-1], om[1:], am[:-1], am[1:]
+    m = np.round(((th0 + om0 * T - th1) + (om1 - om0) * T / 2) / (2 * np.pi))
+    d = th1 - th0 - om0 * T + 2 * np.pi * m
+    alpha = 3 * d / T ** 2 - (om1 - om0) / T
+    beta = -2 * d / T ** 3 + (om1 - om0) / T ** 2
+    t = np.arange(fs, dtype=np.float64)
+    ph = th0[:, None] + om0[:, None] * t + alpha[:, None] * t ** 2 + beta[:, None] * t ** 3
+    amp_t = a0[:, None] + (a1 - a0)[:, None] * (t / T)
+    sig = (amp_t * np.cos(ph)).ravel()                    # (ATS phases are for a cosine, as in pyatsyn)
+    x1 = min(x0 + len(sig), n)
+    add_to(out, x0, x1, sig[:x1 - x0], gains)
+
+
 def add_sines(a, out, fs, j0, n, base, span, spatial=None):
     two_pi_sr = 2 * np.pi / a.sr
     nf = a.frames
@@ -312,12 +374,22 @@ def add_sines(a, out, fs, j0, n, base, span, spatial=None):
     for c0 in range(0, a.rows, 256):                             # a block of partials at a time
         c1 = min(c0 + 256, a.rows)
         amp_c, frq_c = chunk(a, c0, c1)
+        pha_c, dirty_c = chunk_phase(a, c0, c1) if USE_PHASE else (None, None)
         for p in range(c1 - c0):
             amp, frq = amp_c[p], frq_c[p]
             gains = None
             if spatial is not None and spatial.mode != "off":
                 on = (amp > 0) & (frq > 0)
                 gains = spatial.gains(c0 + p, a.rows, float(frq[on].mean()) if on.any() else 0.0)
+            if pha_c is not None:                                 # with the stored phase: track by track
+                on = amp > 0
+                on[:j0] = False
+                if not on.any():
+                    continue
+                edges = np.diff(np.concatenate(([0], on.astype(np.int8), [0])))
+                for t0, t1 in zip(np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0] - 1):
+                    add_track_phase(out, a, amp, frq, pha_c[p], dirty_c[p], int(t0), int(t1), j0, fs, n, xs_all, gains)
+                continue
             seg = (amp[j0:nf - 1] > 0) | (amp[j0 + 1:nf] > 0)         # segment j -> j+1 sounds
             seg &= (frq[j0:nf - 1] > 0) | (frq[j0 + 1:nf] > 0)
             if not seg.any():
@@ -562,9 +634,10 @@ def _init_worker(shared, result):
 
 def synth_task(t):
     """One channel, in a worker process: returns (samples, start time of the samples)."""
-    global _IDX, NOISE_SHAPE
+    global _IDX, NOISE_SHAPE, USE_PHASE
     _IDX = t["k"]
     NOISE_SHAPE = t["shape"]
+    USE_PHASE = t["phase"]
     a = load_ats(t["path"])
     apply_edits(a, load_edits(t["edits"]))
     a.mask = load_mask(t.get("select"))
@@ -616,6 +689,8 @@ def build_parser():
     p.add_argument("--select", action="append", default=[],
                    help="only the cells in this file (records of partial, frame as two doubles) sound, one --select for each file in the "
                         "same order; '-' for a file without a mask (AUDITION of the selection)")
+    p.add_argument("--no-phase", action="store_true",
+                   help="do not use the phases stored in the file: every sine gets its phase from its frequency alone (softer attacks)")
     p.add_argument("--no-sines", action="store_true")
     p.add_argument("--no-noise", action="store_true")
     p.add_argument("--seed", type=int, default=1)
@@ -651,10 +726,11 @@ def expand_args(argv):
 
 
 def main(argv=None):
-    global RESULT, NOISE_SHAPE
+    global RESULT, NOISE_SHAPE, USE_PHASE
     a = build_parser().parse_args(expand_args(sys.argv[1:] if argv is None else argv))
     RESULT = a.result_file
     NOISE_SHAPE = a.noise_shape
+    USE_PHASE = not a.no_phase
     stop_beat = None
     if RESULT:
         write_text(RESULT + ".started", "0.0000 %.3f" % time.time())
@@ -680,7 +756,7 @@ def main(argv=None):
         jobs = choose_jobs(a.jobs, len(files))
         if jobs > 1:
             tasks = [{"k": k, "path": p, "start": a.start, "end": a.end, "sines": not a.no_sines, "noise": not a.no_noise,
-                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "edits": a.edits[k] if a.edits else None, "spatial": spatial,
+                      "seed": a.seed + k, "cache": a.cache_dir, "shape": NOISE_SHAPE, "phase": USE_PHASE, "edits": a.edits[k] if a.edits else None, "spatial": spatial,
                       "select": a.select[k] if a.select else None}
                      for k, p in enumerate(a.ats)]
             done = run_parallel(tasks, jobs)

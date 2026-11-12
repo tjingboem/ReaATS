@@ -306,5 +306,56 @@ do
   check("limit_peak: a quiet sound is not turned up", synth.limit_peak(quiet, -1) == 0 and quiet[1][1] == 0.1 and quiet[1][2] == -0.2)
 end
 
+-- the sines with the stored phase (Lua twin of python/reaats_synth.py add_track_phase)
+do
+  local F, FS, SR = 441, 441, 44100
+  local function steady(nf, phi0)
+    local d = make(1, nf)
+    d.has_phase, d.pha = true, { {} }
+    for f = 1, nf do
+      d.amp[1][f], d.frq[1][f] = 0.5, F
+      local ph = phi0 + 2 * math.pi * F * (f - 1) * FS / SR
+      d.pha[1][f] = (ph + math.pi) % (2 * math.pi) - math.pi
+    end
+    return d
+  end
+  local d = steady(20, 1.0)
+  local y = synth.render(d, { noise = false })
+  local worst = 0
+  for i = FS + 1, 18 * FS do worst = math.max(worst, math.abs(y[i] - 0.5 * math.cos(2 * math.pi * F * (i - 1) / SR + 1.0))) end
+  check("phase: a steady partial is the cosine of its stored phase", worst < 1e-6, worst)
+  local y2 = synth.render(d, { noise = false, phase = false })
+  worst = 0
+  for i = FS + 1, 18 * FS do worst = math.max(worst, math.abs(y2[i] - 0.5 * math.sin(2 * math.pi * F * (i - 1) / SR))) end
+  check("phase: phase = false gives the sine from the frequency alone", worst < 1e-6, worst)
+  -- two tracks in one row, one silent frame between: each starts with its own phase
+  local t = make(1, 30)
+  t.has_phase, t.pha = true, { {} }
+  for f = 1, 30 do t.frq[1][f], t.pha[1][f] = F, 0 end
+  for f = 3, 12 do t.amp[1][f] = 0.5; t.pha[1][f] = 0.3 + 2 * math.pi * F * (f - 3) * FS / SR end
+  for f = 14, 25 do t.amp[1][f] = 0.5; t.pha[1][f] = 2.0 + 2 * math.pi * F * (f - 14) * FS / SR end
+  for f = 1, 30 do t.pha[1][f] = (t.pha[1][f] + math.pi) % (2 * math.pi) - math.pi end
+  local yt = synth.render(t, { noise = false })
+  worst = 0
+  for i = 14 * FS + 1, 24 * FS do worst = math.max(worst, math.abs(yt[i] - 0.5 * math.cos(2 * math.pi * F * (i - 1 - 13 * FS) / SR + 2.0))) end
+  check("phase: the second track of a row has its own phase", worst < 1e-6, worst)
+  -- an edited track is rebuilt from its frequency: no jump where the pitch goes up a fifth
+  local e = steady(30, 0.5)
+  local dirty = { [1] = {} }
+  for f = 11, 30 do e.frq[1][f] = F * 2 ^ (7 / 12); dirty[1][f] = true end
+  local ye = synth.render(e, { noise = false, dirty = dirty })
+  local jump, slope = 0, 0.5 * 2 * math.pi * F * 2 ^ (7 / 12) / SR
+  for i = FS + 2, 28 * FS do jump = math.max(jump, math.abs(ye[i] - ye[i - 1])) end
+  check("phase: an edited track is smooth", jump < slope * 1.2, jump .. " vs " .. slope)
+  worst = 0
+  for i = FS + 1, 9 * FS do worst = math.max(worst, math.abs(ye[i] - 0.5 * math.cos(2 * math.pi * F * (i - 1) / SR + 0.5))) end
+  check("phase: the untouched start of an edited track keeps its stored phase", worst < 1e-3, worst)
+  -- from the middle
+  local ym = synth.render(d, { noise = false, from = 10 * FS / SR })
+  worst = 0
+  for i = 1, 8 * FS do worst = math.max(worst, math.abs(ym[i] - 0.5 * math.cos(2 * math.pi * F * (i - 1 + 10 * FS) / SR + 1.0))) end
+  check("phase: playing from the middle keeps the phase", worst < 1e-6, worst)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

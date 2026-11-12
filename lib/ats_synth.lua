@@ -4,9 +4,11 @@
 -- Method (the standard ATS resynthesis, described in the ATS papers and implemented in the BSD-3
 -- licensed Python package pyatsyn, whose phase-less sine path this follows in structure -- see
 -- THIRD-PARTY-NOTICES.md):
---   sines : one oscillator per partial; between two frames its amplitude and its frequency change
---           linearly, and the phase is the running sum of the frequency. Stored phases are NOT used
---           (they are wrong after editing, and the saved files do not have them).
+--   sines : one oscillator per partial; between two frames its amplitude changes linearly. WITH stored phases
+--           (11 Nov 2026, tjingboem: "the one with phase ... pops out more, an oomph") every track is played with the
+--           cubic phase of McAulay and Quatieri between its frames (add_sines_phase), the waveform of the original;
+--           a track that an edit touched is rebuilt from its frequencies. WITHOUT stored phases (or with opts.phase =
+--           false) the frequency changes linearly and the phase is the running sum of the frequency (add_sines).
 --   noise : per critical band, white noise is band-limited and multiplied by that band's energy
 --           envelope. The ATS file stores noise as energy per band; the amplitude of the band is
 --           sqrt(energy / (window_size * 0.04)) (0.04 = the noise variance assumed by the ATS analysis).
@@ -17,7 +19,7 @@
 
 local M = {}
 
-local sin, sqrt, floor, pi = math.sin, math.sqrt, math.floor, math.pi
+local sin, cos, sqrt, floor, pi = math.sin, math.cos, math.sqrt, math.floor, math.pi
 local TWO_PI = 2 * pi
 
 M.NOISE_VARIANCE = 0.04       -- the variance the ATS analysis assumes for the noise (a property of the format)
@@ -57,6 +59,85 @@ local function add_sines(d, out, n, k0)
           a = a + da
         end
         phase = phase % TWO_PI
+      end
+    end
+    tick(p / d.partials)
+  end
+end
+
+-- The sines with the phases stored in the file (the Lua twin of add_track_phase in python/reaats_synth.py; the method is described there):
+-- a track (consecutive frames with an amplitude) is played with the cubic phase of McAulay and Quatieri between its frames, a cosine as in
+-- pyatsyn; a track with an edited cell (dirty[p][f]) has its phases rebuilt from its frequencies, starting from its stored first phase (the rule of
+-- ats_file.update_phases); at the start the sine fades in and at the end it fades out, at the frequency of its first and last frame.
+local function add_sines_phase(d, out, n, k0, dirty)
+  local fs = floor(d.frame_size + 0.5)
+  local nf = d.frames
+  local w_scale = TWO_PI / d.sr
+  local rebuild_k = d.frame_size / d.sr * pi
+  local T = fs
+  for p = 1, d.partials do
+    local amp, frq, pha, dp = d.amp[p], d.frq[p], d.pha and d.pha[p], dirty and dirty[p]
+    local f = k0
+    while f <= nf do
+      if amp[f] > 0 then
+        local f0 = f
+        local touched = false
+        while f <= nf and amp[f] > 0 do
+          if dp and dp[f] then touched = true end
+          f = f + 1
+        end
+        local f1 = f - 1
+        -- frames f0 .. f1 (and the fade in front and behind): th, om, am
+        local th, om, am, first = {}, {}, {}, f0
+        local last_f
+        local ok = true
+        for i = f0, f1 do                                       -- a frequency of 0 takes the value of the nearest frame that has one
+          local v = frq[i]
+          if v <= 0 then
+            v = last_f
+            if not v then for j = i + 1, f1 do if frq[j] > 0 then v = frq[j]; break end end end
+            if not v then ok = false; break end
+          end
+          om[#om + 1] = v
+          last_f = v
+        end
+        if ok then
+          local fr = om                                          -- (Hz, for the rebuild)
+          local cnt = f1 - f0 + 1
+          local tb = {}
+          for j = 1, cnt do tb[j] = pha and pha[f0 + j - 1] or 0 end
+          if touched then
+            local ph = tb[1]
+            for j = 2, cnt do ph = ph + (fr[j - 1] + fr[j]) * rebuild_k; tb[j] = ph end
+          end
+          local o, a = {}, {}
+          for j = 1, cnt do o[j] = fr[j] * w_scale; a[j] = amp[f0 + j - 1] end
+          local kb = f0
+          if f0 - 1 >= k0 then                                    -- the fade in
+            table.insert(tb, 1, tb[1] - o[1] * T); table.insert(o, 1, o[1]); table.insert(a, 1, 0)
+            kb = f0 - 1
+          end
+          if f1 + 1 <= nf then                                    -- the fade out
+            tb[#tb + 1] = tb[#tb] + o[#o] * T; o[#o + 1] = o[#o]; a[#a + 1] = 0
+          end
+          for s = 1, #tb - 1 do
+            local base = (kb + s - 1 - k0) * fs
+            if base >= n then break end
+            local th0, th1, om0, om1, a0, a1 = tb[s], tb[s + 1], o[s], o[s + 1], a[s], a[s + 1]
+            local m = floor(((th0 + om0 * T - th1) + (om1 - om0) * T / 2) / TWO_PI + 0.5)
+            local dd = th1 - th0 - om0 * T + TWO_PI * m
+            local alpha = 3 * dd / (T * T) - (om1 - om0) / T
+            local beta = -2 * dd / (T * T * T) + (om1 - om0) / (T * T)
+            local da = (a1 - a0) / T
+            local count = T
+            if base + count > n then count = n - base end
+            for t = 0, count - 1 do
+              out[base + t + 1] = out[base + t + 1] + (a0 + da * t) * cos(th0 + om0 * t + alpha * t * t + beta * t * t * t)
+            end
+          end
+        end
+      else
+        f = f + 1
       end
     end
     tick(p / d.partials)
@@ -290,7 +371,10 @@ function M.render(d, opts)
   local out = {}
   for i = 1, n do out[i] = 0 end
   local both = use_sines and use_noise
-  if use_sines then base, span = 0, both and 0.15 or 1; add_sines(d, out, n, k0) end
+  if use_sines then
+    base, span = 0, both and 0.15 or 1
+    if d.has_phase and d.pha and opts.phase ~= false then add_sines_phase(d, out, n, k0, opts.dirty) else add_sines(d, out, n, k0) end
+  end
   if use_noise then
     base, span = both and 0.15 or 0, both and 0.85 or 1
     local nz, off = noise_signal(d, n, opts.seed, k0, opts.noise_shape)
@@ -367,7 +451,9 @@ function M.render_multi_job(list, opts)
   local job = { progress = 0, done = false }
   local index, sub = 1, nil
   job.channels = {}
-  local function start_sub() sub = M.render_job(list[index], opts) end
+  local function start_sub()                                      -- (opts.dirty_list[i]: the cells that were edited in channel i, for the phase)
+    sub = M.render_job(list[index], setmetatable({ dirty = opts.dirty_list and opts.dirty_list[index] }, { __index = opts }))
+  end
   start_sub()
   function job.step(budget)
     if job.done then return true end

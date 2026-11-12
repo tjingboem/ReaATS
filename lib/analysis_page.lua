@@ -297,6 +297,34 @@ function M.temp_dir()
   return d ~= "" and d or "/tmp"
 end
 
+-- The folder for what ReaATS makes that belongs to a project (the analyses, the edited copies, the prints, the MIDI of EXPORT NOTES): a
+-- ReaATS folder inside the folder of the project, so the files travel with the project when it is copied to another computer. nil when
+-- the project has not been saved yet (it has no folder): the files then go next to the sound, as they always did.
+function M.results_dir()
+  if not reaper.EnumProjects then return nil end
+  local ok, _, fn = pcall(reaper.EnumProjects, -1)
+  if not ok or type(fn) ~= "string" or fn == "" then return nil end
+  local folder = fn:match("^(.*)[/\\][^/\\]*$")
+  if not folder or folder == "" then return nil end
+  local dir = folder .. "/ReaATS"
+  if reaper.RecursiveCreateDirectory then reaper.RecursiveCreateDirectory(dir, 0) end
+  return dir
+end
+
+-- The place of a result file: the same name in the project's ReaATS folder, or the path as it was when the project has no folder.
+-- (Returns the path and whether the project folder was used.)
+function M.relocate(path)
+  local dir = M.results_dir()
+  if not dir then return path, false end
+  return dir .. "/" .. basename(path), true
+end
+
+-- What to add to a message when a result could not go in the project.
+function M.unsaved_note()
+  if M.results_dir() then return "" end
+  return "  (the project is not saved: the files are next to the sound; save the project and ReaATS uses a ReaATS folder inside it)"
+end
+
 -- ------------------------------------------------------------------ the page
 local Page = {}
 Page.__index = Page
@@ -413,7 +441,7 @@ function Page:save_settings()
 end
 
 local function unique_out(wav)
-  local stem = stem_ext(wav)
+  local stem = M.relocate((stem_ext(wav)))
   local path = stem .. ".ats"
   local n = 2
   while reaper.file_exists(path) do
@@ -434,7 +462,7 @@ function Page:set_source(wav)
   self.pre, self.suggest, self.view = nil, nil, nil                 -- (what was seen of the previous sound)
   self.changed = {}
   self.s.channels = info.channels                          -- a new sound: analyse all its channels (lower it by hand if you want fewer)
-  if not self.out_custom then self.out = unique_out(wav) end
+  if not self.out_custom then self.out, self.out_for = unique_out(wav), M.results_dir() or "" end
   self:say(nil)
   return true
 end
@@ -503,7 +531,7 @@ function Page:use_selected_item()
     self.s.duration = math.max(self.info.seconds - offs, 0)
   end
   self.out_custom = false
-  self.out = unique_out(path)
+  self.out, self.out_for = unique_out(path), M.results_dir() or ""
 end
 
 -- The extension list of the file dialog: only the sound files the analysis reads (nothing else is shown).
@@ -653,6 +681,9 @@ function Page:run()
   if bad then self:say(bad, true); return end
   local s, info = self.s, self.info
   local n = s.mono_mix and 1 or s.channels
+  if not self.out_custom and self.wav and self.out_for ~= (M.results_dir() or "") then      -- (the project was saved, or another one opened, since the name was made)
+    self.out, self.out_for = unique_out(self.wav), M.results_dir() or ""
+  end
   local out = self.out or unique_out(self.wav)
   for _, p in ipairs(M.output_files(out, n)) do
     if reaper.file_exists(p) and self.out_custom then
@@ -713,7 +744,7 @@ function Page:handle_reply(reply, took)
     opened and ("Channel 1 is open in the editor (" .. basename(first.file) .. ").") or "The first file could not be opened.",
     #parts > 0 and ("  Steps: " .. table.concat(parts, ", ") .. ".") or ""), not opened)
   self.env.set_status(string.format("analysed %s: %d partials, %d frames in %.1f s%s", basename(first.file), first.partials, first.frames, took,
-    #parts > 0 and ("  (" .. table.concat(parts, ", ") .. ")") or ""))
+    (#parts > 0 and ("  (" .. table.concat(parts, ", ") .. ")") or "") .. M.unsaved_note()))
   if opened and self.env.back then self.env.back() end                 -- the editor is shown at once (the ANALYSE button shows the page and its result again)
 end
 
