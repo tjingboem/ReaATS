@@ -19,6 +19,7 @@
           Ctrl+Z / Ctrl+Y   undo / redo
           Left / Right  move the selection one frame in time (Ctrl: ten frames)
           click on the picture, or click/drag on the time ruler  set the playhead; AUDITION starts there (the line moves while it plays)
+          Ctrl+click / Shift+click on a partial  select that whole partial and nothing else / add it to the selection
           Ctrl+A        select the whole sound (every point that is drawn, in every green channel) with the box all round it: drag the dots or edges at will
           Z             zoom to the selection (with some room round it)
           A             AUDITION of the selection only (the selected points alone) when there is a selection; AUDITION button / A without one: the whole sound
@@ -1833,6 +1834,54 @@ function W.select_all()
   if hi <= 0 then set_status("nothing to select: no partial sounds above the display threshold"); return end
   local room = 2 ^ (1 / 12 / 6)
   select_box(data.times[1], data.times[data.frames], lo / room, hi * room, false)
+end
+
+-- Ctrl+click / Shift+click on a partial (tjingboem, 12 Nov 2026: "Select a whole partial with one click: can we use a shortcut for that? ... love it. do
+-- it."): Ctrl+click selects that whole partial and nothing else (on a Mac Cmd+click: bit 4), Shift+click adds it to the selection. The partial is found
+-- as the hover finds it (the nearest line within 9 px at the frame under the pointer, in the lane that was clicked); "whole" is the one continuous stretch
+-- of sound (the frames next to it that have an amplitude, not the other partials that a shared row holds). The box is put round it. A click that
+-- finds no partial changes nothing. The click that starts a box is read in handle_input: no drag, Ctrl or Shift held.
+function W.select_partial_at(mx, my, add)
+  if not data or not show_partials then return false end
+  local px, py, pw, ph = plot_rect()
+  local lane = lane_at(py, ph, my)
+  if not lane then return false end
+  local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+  local lpy, lph = py + lane.off, lane.h
+  local best, bestd, bestch, bestfi = nil, 9, nil, nil
+  for _, ci in ipairs(lane.chans) do
+    as_channel(ci, function()
+      local fi = frame_at(t)
+      for p = 1, data.partials do
+        if data.amp[p][fi] > amp_thresh and data.frq[p][fi] > 0 then
+          local d = math.abs(lpy + fy(data.frq[p][fi], lph) - my)
+          if d < bestd then best, bestd, bestch, bestfi = p, d, ci, fi end
+        end
+      end
+    end)
+  end
+  if not best then set_status("no partial there: click on the line of a partial"); return false end
+  W.commit()
+  if not add then clear_selection() end
+  local t0, t1, fmin, fmax
+  with_channel(bestch, function()
+    local amp, frq = data.amp[best], data.frq[best]
+    local f0, f1 = bestfi, bestfi
+    while f0 > 1 and amp[f0 - 1] > 0 and frq[f0 - 1] > 0 do f0 = f0 - 1 end
+    while f1 < data.frames and amp[f1 + 1] > 0 and frq[f1 + 1] > 0 do f1 = f1 + 1 end
+    sel[best] = sel[best] or {}
+    fmin, fmax = math.huge, 0
+    for f = f0, f1 do
+      sel[best][f] = true
+      if frq[f] < fmin then fmin = frq[f] end
+      if frq[f] > fmax then fmax = frq[f] end
+    end
+    update_sel_info()
+    t0, t1 = data.times[f0], data.times[f1]
+  end)
+  local room = 2 ^ (1 / 12 / 6)
+  W.set_region(t0, t1, fmin / room, fmax * room, add)
+  return true
 end
 
 function W.set_region(ta, tb, fa, fb, add)
@@ -3828,7 +3877,8 @@ local function handle_input(px, py, pw, ph)
       if hit then
         mover = { x0 = mx, y0 = my, x = mx, y = my, lx = mx, ly = my, ex = 0, ey = 0, active = false, h = lh }
       else
-        box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0, off = lane.off, h = lane.h }
+        box = { x0 = mx, y0 = my, x1 = mx, y1 = my, add = (cap & 8) ~= 0, off = lane.off, h = lane.h,
+                whole = (cap & 12) ~= 0 and (cap & 12) ~= 12 }                  -- (Ctrl or Shift alone: a click without a drag takes the whole partial)
       end
     end
   elseif down and W.space_drag then
@@ -3893,7 +3943,9 @@ local function handle_input(px, py, pw, ph)
     local b = box
     box = nil
     if math.abs(b.x1 - b.x0) < 4 and math.abs(b.y1 - b.y0) < 4 then
-      if not b.add then
+      if b.whole then
+        W.select_partial_at(b.x0, b.y0, b.add)               -- Ctrl+click: this whole partial; Shift+click: add it
+      elseif not b.add then
         clear_selection()                                   -- a plain click on empty space clears the selection ...
         set_playhead(view.t0 + (b.x0 - px) / pw * (view.t1 - view.t0))   -- ... and puts the playhead there
       end

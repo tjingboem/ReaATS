@@ -211,6 +211,28 @@ end
 assert(unchanged(saved, 1, 0.9, 200), "the loudest partial is untouched everywhere, selected or not")
 assert(unchanged(saved, 4, 0.7, 1600), "the 2nd loudest partial is untouched everywhere, selected or not")
 
+-- Ctrl+click selects a whole partial, Shift+click adds one (12 Nov 2026)
+do
+  script.keys = { 114 }; strings = {}; frame()                          -- R: the pristine fixture again
+  script.keys = { 27 }; frame()
+  local function y_of(freq) local f0, f1 = 200 / 1.4, 1600 * 1.4; return py + ph - math.log(freq / f0) / math.log(f1 / f0) * ph end
+  local function click_cap(x, y, cap) gfx.mouse_cap = cap; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame(); strings = {}; frame() end
+  local mid = math.floor(px + pw / 2)
+  click_cap(mid, y_of(800), 1 + 4)                                       -- Ctrl+click on the 800 Hz line
+  assert(saw("^selected: 50 points in 1 partials"), "Ctrl+click selects the whole partial (50 frames): " .. tostring(saw("selected") or saw("no partial") or "(no status)"))
+  click_cap(mid, y_of(200), 1 + 8)                                       -- Shift+click on the 200 Hz line: added
+  assert(saw("^selected: 100 points in 2 partials"), "Shift+click adds a whole partial: " .. tostring(saw("selected") or "(no status)"))
+  click_cap(mid, y_of(1600), 1 + 4)                                      -- Ctrl+click on another line: only that one
+  assert(saw("^selected: 50 points in 1 partials"), "Ctrl+click replaces the selection: " .. tostring(saw("selected") or "(no status)"))
+  click_cap(mid, y_of(300), 1 + 4)                                       -- between the lines: nothing there
+  assert(saw("no partial there") and saw("^selected: 50 points in 1 partials"), "no partial there: the selection stays: " .. tostring(saw("no partial") or saw("selected")))
+  -- only the clicked line is selected: MAX PARTIALS offers one partial
+  click_button(); strings = {}; frame()
+  assert(saw("^keep 1 of 1$"), "the selection is that one partial: " .. tostring(saw("keep")))
+  click_at(CANCEL)
+  script.keys = { 27 }; frame()
+end
+
 -- a saved project (11 Nov 2026): Ctrl+S puts the edited copy in <project folder>/ReaATS, not next to the original
 os.execute("rm -rf " .. scratch .. "pk_proj; mkdir -p " .. scratch .. "pk_proj")
 reaper.EnumProjects = function() return {}, scratch .. "pk_proj/piece.rpp" end
