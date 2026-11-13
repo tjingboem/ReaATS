@@ -387,6 +387,17 @@
   {
     "panel": "editor",
     "state": "set",
+    "id": "btn_cross_s",
+    "label": "CROSS (sound A flows into sound B: the CROSS page)",
+    "shape": "box",
+    "x": 394,
+    "y": 6,
+    "w": 48,
+    "h": 18
+  },
+  {
+    "panel": "editor",
+    "state": "set",
     "id": "btn_space_s",
     "label": "SPACE (STEREO / P-STEREO / VBAP)",
     "shape": "box",

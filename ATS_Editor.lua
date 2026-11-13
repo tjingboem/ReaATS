@@ -2109,6 +2109,46 @@ function W.draw_pk()
   gfx.setfont(1, "Arial", 14)
 end
 
+-- CROSS (tjingboem, 13 Nov 2026): the button opens the CROSS page (lib/cross_page.lua): sound A flows into sound B. It replaced the MASTER / SLAVE experiment
+-- ("i think we should have, instead of the MASTER button, another button called CROSS"). The page holds the recipe (two blocks on a timeline, the cuts,
+-- the red line, the tolerances); MAKE RESULT writes a new .ats file that opens here. While that file is the one that is shown, the red line is drawn over the
+-- picture (display only) with its grey band. State: W.showing_cross, W.cross (the page object, kept while the editor runs).
+function W.cross_rect() return W.lay("btn_cross_s") end
+function W.draw_cross_button()
+  local x, y, w, h = W.cross_rect()
+  gfx.set(0.42, 0.30, 0.12, 1)
+  gfx.rect(x, y, w, h, 1)
+  gfx.set(0.95, 0.72, 0.35, 1)
+  gfx.rect(x, y, w, h, 0)
+  local label = "CROSS"
+  W.fit(label, w, 13)
+  gfx.set(1, 0.95, 0.85, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+function W.cross_open()
+  W.commit()
+  W.showing_cross = true
+  dirty = true
+end
+function W.draw_cross_line()
+  local r = W.cross and W.cross.result
+  if not (r and r.line and data and current_file == r.path) then return end
+  local px, py, pw, ph = plot_rect()
+  if r.grey1 and r.grey1 > r.grey0 then
+    gfx.set(0.6, 0.63, 0.7, 0.18)
+    local x0, x1 = px + tx(r.grey0, pw), px + tx(r.grey1, pw)
+    x0, x1 = math.max(x0, px), math.min(x1, px + pw)
+    if x1 > x0 then gfx.rect(x0, py, x1 - x0, ph, 1) end
+  end
+  local x = px + tx(r.line, pw)
+  if x >= px and x <= px + pw then
+    gfx.set(1, 0.23, 0.19, 0.95)
+    gfx.rect(x - 1, py, 3, ph, 1)
+  end
+end
+
 -- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
 -- tjingboem 10 Nov 2026). A field of W, like W.pk_ranks/W.pk_apply, rather than its own local: this file is already at Lua's
 -- 200-local-variable limit for its main chunk (see the comment near "local W =" above), so a plain new local here fails to compile.
@@ -3738,6 +3778,7 @@ local function draw_header(px, py, pw, ph, plain)
   end
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
+  W.draw_cross_button()
   W.draw_space()
 end
 
@@ -3858,6 +3899,8 @@ local function handle_input(px, py, pw, ph)
         return any_sel() and mx >= mx2 and mx < mx2 + mw2 and my >= my2 and my < my2 + mh2
       end)() then
       W.pk_apply()
+    elseif data and (function() local mx3, my3, mw3, mh3 = W.cross_rect(); return mx >= mx3 and mx < mx3 + mw3 and my >= my3 and my < my3 + mh3 end)() then
+      W.cross_open()
     elseif data and W.space_click(mx, my, cap) then
       -- (the SPACE controls: handled above)
     elseif data and mx >= px and mx < px + pw and my >= py + ph and my < py + ph + 26 then
@@ -4026,6 +4069,29 @@ end
 local function loop()
   analysis:poll()                                              -- looks at a background analysis, if one runs
   advance_pending()                                            -- prepares the AUDITION sound a little each frame
+  if W.showing_cross then                                      -- the CROSS page (lib/cross_page.lua) instead of the picture
+    local keep = true
+    W.cross:mouse(gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap, gfx.mouse_wheel)
+    gfx.mouse_wheel = 0
+    local ch = gfx.getchar()
+    while ch > 0 do
+      if not W.cross:key(ch) and ch == 27 then W.showing_cross = false; dirty = true end
+      ch = gfx.getchar()
+    end
+    if ch < 0 then keep = false end
+    if keep and close_signal_received() then keep = false end
+    if not keep then stop_audition() end
+    if W.showing_cross or not keep then
+      local px, py, pw, ph = plot_rect()
+      gfx.set(0.09, 0.10, 0.12, 1)
+      gfx.rect(0, 0, gfx.w, gfx.h, 1)
+      draw_header(px, py, pw, ph, true)
+      W.cross:draw(math.floor(gfx.w), math.floor(gfx.h), ANALYSIS_TOP)
+      gfx.update()
+      if keep then reaper.defer(loop) end
+      return
+    end
+  end
   if showing_analysis then
     local keep = true
     analysis:mouse(gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap, gfx.mouse_wheel)
@@ -4078,6 +4144,7 @@ local function loop()
   W.draw_gain()
   W.draw_slant()
   W.draw_pk()
+  W.draw_cross_line()
   W.draw_notes_panel()
   gfx.update()
   if keep then reaper.defer(loop) end
@@ -4091,6 +4158,14 @@ analysis = Analysis.new({
   set_status = set_status,
   redraw = function() draw_analysis_frame(); gfx.update() end,
   back = function() showing_analysis = false; dirty = true end,
+})
+W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
+  available_memory = available_memory,
+  open_file = function() return current_file, modified end,
+  relocate = function(path) return Analysis.relocate(path) end,
+  on_open = function(path) return load_file(path) end,
+  set_status = set_status,
+  back = function() W.showing_cross = false; dirty = true end,
 })
 Analysis.check_python_once(script_dir, EXT_SECTION)      -- once ever (tjingboem, 10 Nov 2026): a popup, not a Check button on the page
 -- Piece 4: settings ReaSnap left for this instance (restoring a snapshot). Checked after everything the

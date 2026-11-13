@@ -23,6 +23,7 @@ return {
     plot             = { x = 62, y = 70, w = 988, h = 516, ax = "l", ay = "t" },
     plot_s           = { x = 62, y = 100, w = 988, h = 486, ax = "l", ay = "t" },
     btn_maxpart_s    = { x = 284, y = 6, w = 104, h = 18, ax = "l", ay = "t" },
+    btn_cross_s      = { x = 394, y = 6, w = 48, h = 18, ax = "l", ay = "t" },
     btn_space_s      = { x = 444, y = 6, w = 96, h = 18, ax = "l", ay = "t" },
     space_slider_s   = { x = 548, y = 10, w = 96, h = 10, ax = "l", ay = "t" },
     space_pct_s      = { x = 650, y = 8, w = 70, h = 14, ax = "l", ay = "t" },
