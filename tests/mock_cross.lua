@@ -200,6 +200,26 @@ assert(f2, "the second result has its own name"); f2:close()
 click(394 + 10, 6 + 9); strings = {}; frame()
 drag(700, 300, 1000, 300); strings = {}; frame()
 assert(saw("do not overlap"), "no overlap: " .. tostring(saw("overlap") or saw("red line")))
+-- B dragged to the LEFT of A (it starts before A, they overlap): the sound that starts first flows into the other, B into A
+do
+  drag(1000, 300, 250, 300); strings = {}; frame()
+  assert(saw("the red line"), "B before A overlaps again: " .. tostring(saw("overlap") or saw("do not overlap")))
+  local pre = scratch .. "cx_test_cross3.ats"
+  os.remove(pre)
+  click(40 + 20, 40 + 434 + 10); strings = {}; frame()
+  local fh = io.open(pre, "rb")
+  assert(fh, "the result with B in front was written: " .. tostring(saw("cannot") or saw("result")))
+  fh:close()
+  local r = assert(ats.load(pre))
+  local function at(t) local f = math.floor(t / HOP + 0.5) + 1; local out = {}; for p = 1, r.partials do if r.amp[p][f] > 0 then out[#out + 1] = r.frq[p][f] end end; table.sort(out); return out end
+  local first = at(0.02)
+  local near205 = false
+  for _, fr in ipairs(first) do if math.abs(fr - 205) < 3 or math.abs(fr - 800) < 3 then near205 = true end end
+  assert(near205 and #first >= 1, "the result starts with B's partials (205 / 800 Hz): " .. table.concat(first, ", "))
+  assert(r.dur > 0.5 and r.dur < 0.65, "and it is one sound of both lengths together (B started first, A is inside it): " .. r.dur)
+  os.remove(pre)
+  click(394 + 10, 6 + 9); strings = {}; frame()
+end
 -- the red line is drawn over the result without a crash (a few frames)
 strings = {}; frame(); frame()
 -- EDIT B jumps to the editor with sound B; what is saved there comes back as B, at the same place (the image does not move)
