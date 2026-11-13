@@ -440,6 +440,36 @@ local function load_file(path)
   return true
 end
 
+-- Shows a sound that is in memory (the CROSS page holds it: the table itself, not a copy; edits here change it there) as the sound of the editor, without a file
+-- being read or written (tjingboem, 13 Nov 2026: "i want to keep saving to a minimal"). `file` is the file it came from (the name that Ctrl+S builds the _edit name from);
+-- `current` is that file only while the data still is what the file holds (so that the Python synthesis may read it), else nil (the synthesis then writes a
+-- temporary .ats of the data); `modified` marks the sound as changed since it was saved.
+function W.load_data(d, file, current, modified)
+  data_rev = data_rev + 1
+  W.w, W.region = nil, nil
+  if pending then pending.job.cancel(); pending = nil end
+  if stop_audition then stop_audition() end
+  last_audition = nil
+  chs, data = {}, nil
+  sel, sel_info, undo_stack, redo_stack, edited_cells = {}, nil, {}, {}, {}
+  box, mover = nil, nil
+  collectgarbage("collect")
+  local ampmax = d.ampmax
+  if not ampmax or ampmax <= 0 then
+    ampmax = 0
+    for p = 1, d.partials do for f = 1, d.frames do if d.amp[p][f] > ampmax then ampmax = d.amp[p][f] end end end
+    d.ampmax = math.max(ampmax, 1e-9)
+  end
+  chs[1] = { data = d, fname = file, current_file = current, undo_stack = {}, redo_stack = {}, modified = modified and true or false,
+             saved_depth = 0, edited_cells = {}, sel = {}, sel_info = nil, amp_thresh = d.ampmax * 10 ^ (DB_FLOOR / 20),
+             on = true, edit = true, vis = 1.0 }
+  restore_channel(1)
+  load_error = nil
+  playhead, play = 0, nil
+  fit_view()
+  return true
+end
+
 local function open_dialog()
   local start = reaper.GetExtState(EXT_SECTION, EXT_LAST)
   local ok, path = reaper.GetUserFileNameForRead(start, "Open an ATS analysis file", "ats")
@@ -2129,24 +2159,81 @@ function W.draw_cross_button()
 end
 function W.cross_open()
   W.commit()
+  W.cross:enter()                                                       -- (a sound that was sent to the editor and saved there comes back)
   W.showing_cross = true
   dirty = true
 end
-function W.draw_cross_line()
-  local r = W.cross and W.cross.result
-  if not (r and r.line and data and current_file == r.path) then return end
+-- The result of CROSS, while it is the file that is shown (and unchanged): the red line and its grey band, a handle on the line to drag it (the fine tuning: the
+-- CROSS page takes the new place when you go back), and the partials that carry the transition (the threads) BLINKING in orange (tjingboem, 13 Nov 2026).
+function W.cross_result()
+  local r = W.cross and W.cross.results and current_file and W.cross.results[current_file]
+  if r and r.line and data then return r end
+  return nil
+end
+function W.cross_line_x(r)
   local px, py, pw, ph = plot_rect()
+  return px + tx(r.line, pw), px, py, pw, ph
+end
+function W.draw_cross_line()
+  local r = W.cross_result()
+  if not r then return end
+  local x, px, py, pw, ph = W.cross_line_x(r)
   if r.grey1 and r.grey1 > r.grey0 then
     gfx.set(0.6, 0.63, 0.7, 0.18)
     local x0, x1 = px + tx(r.grey0, pw), px + tx(r.grey1, pw)
     x0, x1 = math.max(x0, px), math.min(x1, px + pw)
     if x1 > x0 then gfx.rect(x0, py, x1 - x0, ph, 1) end
   end
-  local x = px + tx(r.line, pw)
-  if x >= px and x <= px + pw then
-    gfx.set(1, 0.23, 0.19, 0.95)
-    gfx.rect(x - 1, py, 3, ph, 1)
+  if r.threads and not modified then                                      -- (an edited result: the rows may have moved, so no blinking)
+    local lanes = lane_layout(ph)
+    local lane = lanes[1]
+    for _, l in ipairs(lanes) do for _, c in ipairs(l.chans) do if c == cur then lane = l end end end
+    local lpy, lph = py + lane.off, lane.h
+    if math.floor(reaper.time_precise() * 2.5) % 2 == 0 then gfx.set(1, 0.62, 0.1, 1) else gfx.set(0.45, 0.25, 0.05, 1) end
+    for _, th in ipairs(r.threads) do
+      local frq = data.frq[th.p]
+      if frq then
+        for f = th.f0, math.min(th.f1, data.frames) - 1 do
+          if data.times[f + 1] and frq[f + 1] and frq[f] > 0 and frq[f + 1] > 0 then
+            local cx1, cy1, cx2, cy2 = clip_segment(tx(data.times[f], pw), fy(frq[f], lph), tx(data.times[f + 1], pw), fy(frq[f + 1], lph), pw, lph)
+            if cx1 then
+              gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1)
+              gfx.line(px + cx1, lpy + cy1 + 1, px + cx2, lpy + cy2 + 1, 1)
+            end
+          end
+        end
+      end
+    end
   end
+  if x >= px - 7 and x <= px + pw + 7 then
+    gfx.set(1, 0.23, 0.19, W.cross_drag and 1 or 0.95)
+    gfx.rect(x - 1, py, 3, ph, 1)
+    gfx.rect(x - 7, py, 15, 9, 1)                                         -- the handle
+  end
+end
+-- The line is dragged here (the fine tuning); the CROSS page takes the new place (W.cross.line is on the timeline: the result's time + where its 0 lies).
+function W.cross_line_input(px, py, pw, ph, mx, my, cap)
+  local r = W.cross_result()
+  if not r then W.cross_drag = false; return false end
+  local down = (cap & 1) ~= 0
+  if W.cross_drag then
+    if down then
+      local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+      if r.ov0 then t = clamp(t, r.ov0, r.ov1) end
+      local w = (r.grey1 or t) - (r.grey0 or t)
+      r.line, r.grey0, r.grey1 = t, t - w / 2, t + w / 2
+      W.cross.line = r.t_start + t
+      set_status(string.format("the red line: %.3f s   (the CROSS page uses it when you go back; make the result again there)", t))
+    else
+      W.cross_drag = false
+    end
+    return true
+  end
+  if down and not prev_down then
+    local x = px + tx(r.line, pw)
+    if math.abs(mx - x) <= 7 and my >= py - 4 and my < py + ph then W.cross_drag = true; return true end
+  end
+  return false
 end
 
 -- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
@@ -3815,6 +3902,11 @@ local function handle_input(px, py, pw, ph)
     return true
   end
 
+  if W.cross_line_input(px, py, pw, ph, mx, my, cap) then                 -- the red line of a CROSS result is being dragged
+    prev_down = (cap & 1) ~= 0
+    return true
+  end
+
   if gfx.mouse_wheel ~= 0 and data then
     local notches = gfx.mouse_wheel / 120
     gfx.mouse_wheel = 0
@@ -4161,9 +4253,15 @@ analysis = Analysis.new({
 })
 W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
   available_memory = available_memory,
-  open_file = function() return current_file, modified end,
   relocate = function(path) return Analysis.relocate(path) end,
   on_open = function(path) return load_file(path) end,
+  open_in_editor = function(d, file, current, modified)          -- EDIT A / B (or a double-click on a block): that sound, from memory, in the editor
+    if W.load_data(d, file, current, modified) then W.showing_cross = false; dirty = true; return true end
+    return false
+  end,
+  editor_state = function()                                     -- what the editor holds now: the data table, the file it came from, whether it was changed
+    return { data = data, file = fname, current = current_file, modified = modified, rev = data_rev }
+  end,
   set_status = set_status,
   back = function() W.showing_cross = false; dirty = true end,
 })

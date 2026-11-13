@@ -83,6 +83,17 @@ do
 end
 local function click(x, y) gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
 local function drag(x0, y0, x1, y1) gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = x0, y0; frame(); gfx.mouse_x, gfx.mouse_y = (x0 + x1) // 2, (y0 + y1) // 2; frame(); gfx.mouse_x, gfx.mouse_y = x1, y1; frame(); gfx.mouse_cap = 0; frame() end
+local last_col, orange_lines = {}, 0
+local old_set = gfx.set
+gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
+gfx.line = function()
+  local c = last_col
+  if c[1] and ((math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.62) < 1e-6 and math.abs(c[3] - 0.1) < 1e-6) or (math.abs(c[1] - 0.45) < 1e-6 and math.abs(c[2] - 0.25) < 1e-6)) then orange_lines = orange_lines + 1 end
+  return 0
+end
+local thumb_blits = 0
+local blit_x = {}
+gfx.blit = function(src, _, _, _, _, _, _, dx) if src and src >= 20 then thumb_blits = thumb_blits + 1; blit_x[src] = dx end return 0 end
 strings = {}; frame()
 assert(saw("^CROSS$"), "the CROSS button is drawn")
 assert(not saw("^MASTER$"), "and the MASTER button is gone")
@@ -98,20 +109,30 @@ click(394 + 10, 6 + 9); strings = {}; frame()
 assert(saw("CROSS: sound A flows into sound B"), "and the button opens it again")
 
 -- A = the sound that is open in the editor (it was opened with O: a file, not modified)
-click(158 + 10, 84 + 10); strings = {}; frame()
+click(356 + 10, 84 + 10); strings = {}; frame()
 assert(saw("cx_test%.ats") and saw("used 0%.00 %- 0%.49 s of 0%.50 s"), "A is the open sound: " .. tostring(saw("cx_test") or saw("unsaved") or saw("no sound")))
 -- B from a file (the open-file dialog is a stub)
 load_path = second
-click(40 + 10, 206 + 10); strings = {}; frame()
--- the LOAD B button is at top + 166 = 206 in a window with the page 40 px from the top
+click(40 + 10, 40 + 188 + 10); strings = {}; frame()
 assert(saw("cx_second%.ats"), "B is loaded: " .. tostring(saw("loaded") or saw("cx_second")))
+assert(thumb_blits > 0, "the low resolution images of the sounds are drawn (image buffers 20 and 21)")
 -- B starts half over the end of A: there is an overlap, so there is a red line
 assert(saw("the red line"), "the red line is there inside the overlap: " .. tostring(saw("overlap")))
 
+-- a double-click on block B opens that sound in the editor; "B = THE OPEN SOUND" brings the file back
+click(700, 300); click(700, 300); strings = {}; frame()
+assert(saw("cx_second%.ats is open in the editor"), "a double-click opens the sound in the editor: " .. tostring(saw("open in the editor") or saw("unsaved") or saw("CROSS")))
+assert(not saw("CROSS: sound A flows into sound B"), "the page is left")
+click(394 + 10, 6 + 9); strings = {}; frame()
+assert(saw("CROSS: sound A flows into sound B"), "and the button brings it back")
+click(356 + 10, 40 + 188 + 10); strings = {}; frame()
+assert(saw("the sound of the editor is B now: cx_second%.ats"), "USE THE EDITOR'S SOUND AS B: " .. tostring(saw("loaded") or saw("unsaved") or saw("no sound")))
+-- how many threads the recipe would make is counted (A's 200 and 800 Hz meet B's 205 and 800 Hz inside the overlap)
+assert(saw("^2 threads: partials of A and B that sound together"), "the page counts the threads: " .. tostring(saw("thread")))
 -- the time tolerance slider: its left end is a hard line
-click(40, 40 + 350 + 5); strings = {}; frame()
+click(40, 40 + 394 + 5); strings = {}; frame()
 assert(saw("^hard line$"), "the slider at its left end: hard line: " .. tostring(saw("s$")))
-click(40 + 150, 40 + 350 + 5); strings = {}; frame()
+click(40 + 150, 40 + 394 + 5); strings = {}; frame()
 assert(not saw("^hard line$"), "moved: a time tolerance")
 
 -- the cut: drag the right handle of A to the left (A ends at 0.49 s, x = 629 in this window): less of A is used
@@ -122,25 +143,85 @@ assert(used and not used:find("0%.49 s of"), "the right handle was dragged: A is
 -- MAKE RESULT: a new file that opens in the editor
 local expected = scratch .. "cx_test_cross1.ats"
 os.remove(expected)
-click(40 + 20, 40 + 398 + 10); strings = {}; frame()
+click(40 + 20, 40 + 434 + 10); strings = {}; frame()
 local f = io.open(expected, "rb")
 assert(f, "the result file was written next to A: " .. tostring(saw("cannot") or saw("result")))
 f:close()
 assert(saw("cx_test_cross1%.ats") or saw("partials in %d+ rows"), "the editor shows the result: " .. tostring(saw("cross") or saw("partials")))
 assert(not saw("CROSS: sound A flows into sound B"), "the page is left, the editor shows the picture")
+-- the editor draws the threads in blinking orange over the result (bright and dim, so over a second both states are drawn)
+do
+  local before = orange_lines
+  for i = 1, 8 do clock_skew = clock_skew + 0.2; strings = {}; frame() end
+  assert(orange_lines > before, "the orange blinking partials are drawn in the editor: " .. orange_lines .. " lines")
+end
+-- the threads are told, and the red line can be dragged in the editor: the page takes the new place
+assert(saw("%d+ thread"), "the status tells the threads: " .. tostring(saw("thread") or saw("rows")))
+do
+  local r0 = assert(ats.load(expected))
+  local tmax = r0.times[r0.frames]
+  local line_before
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  line_before = tonumber((saw("the red line  ([%d%.]+) s") or ""):match("the red line  ([%d%.]+) s"))
+  script.keys = { 27 }; frame(); strings = {}; frame()
+  assert(line_before, "the page tells where the red line is: " .. tostring(saw("red line")))
+  -- the line in the editor is at (line - start) / tmax of the picture (62 .. 1050); drag its handle 120 px to the right
+  local x_line = 62 + (line_before - 0) / tmax * 988
+  drag(math.floor(x_line), 70 + 4, math.floor(x_line) + 120, 70 + 4)
+  strings = {}; frame()
+  assert(saw("^the red line: [%d%.]+ s"), "the line moves in the editor: " .. tostring(saw("red line") or saw("selected")))
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  local line_after = tonumber((saw("the red line  ([%d%.]+) s") or ""):match("the red line  ([%d%.]+) s"))
+  assert(line_after and line_after > line_before + 0.01, "the CROSS page has the new place: " .. tostring(line_before) .. " -> " .. tostring(line_after))
+  script.keys = { 27 }; frame(); strings = {}; frame()
+end
+-- loading a sound again on the page does not make the open result forget its red line and its blinking partials (this was lost once: the result was dropped on every load)
+do
+  click(394 + 10, 6 + 9); load_path = second; click(40 + 10, 40 + 188 + 10)
+  script.keys = { 27 }; frame(); strings = {}; frame()
+  local before = orange_lines
+  for i = 1, 8 do clock_skew = clock_skew + 0.2; strings = {}; frame() end
+  assert(orange_lines > before, "the orange blinking partials are still drawn after a sound was loaded again: " .. orange_lines)
+end
 -- the result is a real analysis: it opens, it has more than one partial
 local r = assert(ats.load(expected))
 assert(r.partials >= 2 and r.dur > 0.49, "the result has the length of both: " .. r.dur .. " s, " .. r.partials .. " rows")
 -- a second result does not overwrite the first
 click(394 + 10, 6 + 9); strings = {}; frame()
-click(40 + 20, 40 + 398 + 10); strings = {}; frame()
+click(40 + 20, 40 + 434 + 10); strings = {}; frame()
 local f2 = io.open(scratch .. "cx_test_cross2.ats", "rb")
 assert(f2, "the second result has its own name"); f2:close()
 -- B dragged far to the right: the used parts no longer overlap: no transition
 click(394 + 10, 6 + 9); strings = {}; frame()
-drag(700, 280, 1000, 280); strings = {}; frame()
+drag(700, 300, 1000, 300); strings = {}; frame()
 assert(saw("do not overlap"), "no overlap: " .. tostring(saw("overlap") or saw("red line")))
 -- the red line is drawn over the result without a crash (a few frames)
 strings = {}; frame(); frame()
+-- EDIT B jumps to the editor with sound B; what is saved there comes back as B, at the same place (the image does not move)
+do
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  click(356 + 10, 40 + 188 + 10); strings = {}; frame()                       -- USE THE EDITOR'S SOUND AS B (the result that is open): a long sound
+  strings = {}; frame()
+  load_path = second
+  click(40 + 10, 40 + 188 + 10); strings = {}; frame()                        -- LOAD B: the second sound again
+  local x_before = blit_x[21]
+  assert(x_before, "the image of B is drawn")
+  click(158 + 10, 40 + 188 + 10); strings = {}; frame()                       -- EDIT B IN THE EDITOR
+  assert(saw("cx_second%.ats is open in the editor"), "EDIT B jumps to the editor with B: " .. tostring(saw("open in the editor") or saw("unsaved") or saw("CROSS")))
+  assert(not saw("CROSS: sound A flows into sound B"), "the page is left")
+  script.keys = { 1 }; frame(); script.keys = { 30064 }; frame()              -- Ctrl+A, Up: everything one semitone higher
+  strings = {}; frame()                                                       -- NO Ctrl+S: nothing is saved
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  assert(saw("B has the changes made in the editor"), "the changed sound comes back as B from memory: " .. tostring(saw("changes") or saw("save") or saw("CROSS")))
+  assert(not io.open(scratch .. "cx_second_edit.ats", "rb"), "and nothing was written")
+  local fq = io.open(scratch .. "cx_second_edit.ats", "rb"); if fq then fq:close() end
+  assert(blit_x[21] and math.abs(blit_x[21] - x_before) < 0.5, "and stays where B was: " .. tostring(x_before) .. " -> " .. tostring(blit_x[21]))
+  -- the editor's sound used as A replaces A from memory too
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  click(356 + 10, 40 + 44 + 10); strings = {}; frame()
+  assert(saw("the sound of the editor is A now"), "USE THE EDITOR'S SOUND AS A needs no saving: " .. tostring(saw("save") or saw("sound")))
+  assert(not saw("save it first"), "no demand to save")
+  script.keys = { 27 }; frame()
+end
 os.remove(expected); os.remove(scratch .. "cx_test_cross2.ats"); os.remove(second)
 print("CROSS page OK: button, page, A from the open sound, B from a file, the red line, the sliders, MAKE RESULT opens a new numbered file in the editor")

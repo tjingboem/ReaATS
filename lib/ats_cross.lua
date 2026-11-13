@@ -5,8 +5,8 @@
 -- grey area round it (`tol_time` seconds wide) is where both sounds overlap gradually. Before the grey area only the sound that starts first (L) sounds, after it
 -- only the other (R); without an overlap nothing is faded: L, then R.
 --   * Partials with no partner fade out (L) or in (R) on their own frequency, with equal-power weights cos / sin of the smooth step s(t).
---   * A PAIR is one L track and one R track that both sound through the whole grey area and stay within `tol_cents` of each other on average (one pair per
---     track, the nearest first). A pair is ONE THREAD: the partial of L until the grey area, then, in the grey area, a partial whose frequency moves from L's to
+--   * A PAIR is one L track (that goes on from before the grey area) and one R track (that goes on after it) that sound together for a few frames inside the
+--     grey area and stay within `tol_cents` of each other on average there (one pair per track, the nearest first). They need not sound through the whole grey area. A pair is ONE THREAD: the partial of L until the grey area, then, in the grey area, a partial whose frequency moves from L's to
 --     R's (in semitones: fL^(1-s) * fR^s) and whose level moves linearly from L's to R's, then the partial of R. Nobody is pulled onto the other: at the end R is
 --     exactly on its own frequency. Shared frequencies are not made louder.
 --   * The noise bands of both sounds are crossfaded with the same weights (squared, they are energies); the stored energy depends on the window size, so each
@@ -22,6 +22,7 @@ local M = {}
 local LOG, EXP, PI = math.log, math.exp, math.pi
 local LOG2 = LOG(2)
 local NB = ats.NUM_NOISE_BANDS
+local MIN_TOGETHER = 3                              -- frames that a partial of A and a partial of B must sound together inside the grey area to be one thread
 
 local function clamp(x, lo, hi) if x < lo then return lo elseif x > hi then return hi end return x end
 
@@ -85,7 +86,8 @@ local function tracks_of(rs, F)
 end
 
 -- spec = { a = { d, t0, t1, pos }, b = { d, t0, t1, pos }, line = seconds on the timeline, tol_time = seconds, tol_cents = cents }
--- Returns the data table of the result and an info table: { rows, frames, hop, pairs, overlap, line, grey0, grey1 } (times in the result's own time, from 0).
+-- Returns the data table of the result and an info table: { rows, frames, hop, pairs, overlap, line, grey0, grey1, ov0, ov1, t_start, threads = { {p, f0, f1} } }
+-- (times in the result's own time, from 0; t_start = where that 0 lies on the timeline; the threads are rows and frames of the result).
 function M.build(spec)
   local A, B = spec.a, spec.b
   for _, s in ipairs({ A, B }) do
@@ -146,13 +148,16 @@ function M.build(spec)
   if g0f and g1f and g1f >= g0f then
     local cands = {}
     for li, tl in ipairs(tL) do
-      if tl.f0 <= g0f and tl.f1 >= g1f then
+      if tl.f0 <= g0f then                                             -- the partial of L that goes on from before the grey area ...
         for ri, tr in ipairs(tR) do
-          if tr.f0 <= g0f and tr.f1 >= g1f then
-            local sum = 0
-            for f = g0f, g1f do sum = sum + math.abs(1200 * LOG(rR.frq[tr.p][f] / rL.frq[tl.p][f]) / LOG2) end
-            local mean = sum / (g1f - g0f + 1)
-            if mean <= (spec.tol_cents or 100) then cands[#cands + 1] = { li = li, ri = ri, cents = mean } end
+          if tr.f1 >= g1f and tr.f0 <= g1f then                       -- ... and the partial of R that goes on after it
+            local lo, hi = math.max(tl.f0, tr.f0, g0f), math.min(tl.f1, tr.f1, g1f)
+            if hi - lo + 1 >= MIN_TOGETHER then                       -- they sound together for a few frames inside the grey area
+              local sum = 0
+              for f = lo, hi do sum = sum + math.abs(1200 * LOG(rR.frq[tr.p][f] / rL.frq[tl.p][f]) / LOG2) end
+              local mean = sum / (hi - lo + 1)
+              if mean <= (spec.tol_cents or 100) then cands[#cands + 1] = { li = li, ri = ri, cents = mean } end
+            end
           end
         end
       end
@@ -162,22 +167,33 @@ function M.build(spec)
       if not used_L[c.li] and not used_R[c.ri] then
         used_L[c.li], used_R[c.ri] = true, true
         pair_count = pair_count + 1
-        local tl, tr = tL[c.li], tR[c.ri]
-        local mt = { f0 = tl.f0, amp = {}, frq = {} }
-        for f = tl.f0, tr.f1 do
-          local a, fr
-          if f < g0f then a, fr = rL.amp[tl.p][f], rL.frq[tl.p][f]
-          elseif f <= g1f then
-            local sf = s[f]
-            local aL, aR, fL, fR = rL.amp[tl.p][f], rR.amp[tr.p][f], rL.frq[tl.p][f], rR.frq[tr.p][f]
-            a, fr = (1 - sf) * aL + sf * aR, EXP((1 - sf) * LOG(fL) + sf * LOG(fR))
-          else a, fr = rR.amp[tr.p][f], rR.frq[tr.p][f] end
-          mt.amp[f - tl.f0 + 1], mt.frq[f - tl.f0 + 1] = a, fr
+        if not spec.count_only then
+          local tl, tr = tL[c.li], tR[c.ri]
+          local mt = { f0 = tl.f0, amp = {}, frq = {}, thread = true }
+          for f = tl.f0, tr.f1 do
+            local a, fr
+            if f < g0f then a, fr = rL.amp[tl.p][f], rL.frq[tl.p][f]
+            elseif f <= g1f then
+              -- inside the grey area: the level moves linearly from L's to R's (a side that does not sound there counts as 0), the frequency moves in
+              -- semitones while both sound, and is the one that sounds when only one does
+              local sf = s[f]
+              local aL = (f >= tl.f0 and f <= tl.f1) and rL.amp[tl.p][f] or 0
+              local aR = (f >= tr.f0 and f <= tr.f1) and rR.amp[tr.p][f] or 0
+              a = (1 - sf) * aL + sf * aR
+              if aL > 0 and aR > 0 then fr = EXP((1 - sf) * LOG(rL.frq[tl.p][f]) + sf * LOG(rR.frq[tr.p][f]))
+              elseif aL > 0 then fr = rL.frq[tl.p][f]
+              elseif aR > 0 then fr = rR.frq[tr.p][f]
+              else fr = 0 end
+              if a <= 0 then a, fr = 0, 0 end
+            else a, fr = rR.amp[tr.p][f], rR.frq[tr.p][f] end
+            mt.amp[f - tl.f0 + 1], mt.frq[f - tl.f0 + 1] = a, fr
+          end
+          out[#out + 1] = mt
         end
-        out[#out + 1] = mt
       end
     end
   end
+  if spec.count_only then return nil, { pairs = pair_count } end
   local function weighted(tr, rs, w, used)
     for k, t in ipairs(tr) do
       if not used[k] then
@@ -234,9 +250,21 @@ function M.build(spec)
     end
   end
   ats.update_phases(d, nil)                                            -- (no phase in the data yet: every track gets its phases from its frequencies)
-  local info = { rows = P, frames = F, hop = hop, pairs = pair_count, overlap = overlap, tracks = #out }
-  if overlap then info.line, info.grey0, info.grey1 = tc - t_start, g0 - t_start, g1 - t_start end
+  local info = { rows = P, frames = F, hop = hop, pairs = pair_count, overlap = overlap, tracks = #out, t_start = t_start, threads = {} }
+  for k, t in ipairs(out) do                                           -- the partials that carry the transition (the editor blinks them)
+    if t.thread then info.threads[#info.threads + 1] = { p = row_of[k], f0 = t.f0, f1 = t.f0 + #t.amp - 1 } end
+  end
+  if overlap then info.line, info.grey0, info.grey1, info.ov0, info.ov1 = tc - t_start, g0 - t_start, g1 - t_start, ov0 - t_start, ov1 - t_start end
   return d, info
+end
+
+-- How many threads a setting would make (no result is built; the same pairing as M.build). Returns the info { pairs }, or nil and a message.
+function M.count(spec)
+  spec.count_only = true
+  local d, info = M.build(spec)
+  spec.count_only = nil
+  if d == nil and type(info) == "table" then return info end
+  return nil, info
 end
 
 -- Builds the result and writes it as a type 4 file. Returns the info, or nil and a message.

@@ -64,6 +64,30 @@ do
   check("and absent before the grey area (1.0 s: only A's two)", #rows_at(d, 1.1) == 2)
   check("rows are shared: few rows", d.partials <= 4, d.partials)
   check("type 4 after the phases", d.has_phase and d.pha[1][1] ~= nil)
+  check("the info lists the thread (a row and its frames) for the editor to blink", #info.threads == 1 and info.threads[1].f0 == 1 and info.threads[1].f1 == 301, #info.threads)
+  check("and tells the overlap in the result's time and where its 0 lies", math.abs(info.ov0 - 1.0) < 1e-9 and math.abs(info.ov1 - 2.0) < 1e-9 and info.t_start == 0)
+end
+
+-- threads need not sound through the whole grey area (a wide grey area still finds them): A's partial ends at 1.5 s, B's begins at 1.35 s, the grey area is 1.3 .. 1.7
+do
+  local A = sound({ { 200, 0.5 } }, 2.0, HOP); local B = sound({ { 205, 0.5 } }, 1.65, HOP)       -- B is placed so that it starts at 1.35 s
+  for f = 1, A.frames do if A.times[f] > 1.5 + 1e-9 then A.amp[1][f], A.frq[1][f] = 0, 0 end end   -- (A's partial ends at 1.5 s, the sound goes on)
+  local spec = { a = { d = A, pos = 0 }, b = { d = B, pos = 1.35 }, line = 1.5, tol_time = 0.4, tol_cents = 100 }
+  local info0 = cross.count(spec)
+  check("the count says one thread without building the result", info0 and info0.pairs == 1, info0 and info0.pairs)
+  local d, info = cross.build(spec)
+  check("one thread although the partials sound together for only part of the grey area", info.pairs == 1, info.pairs)
+  local r1, r2 = rows_at(d, 1.42), rows_at(d, 1.62)
+  local th1, th2
+  for _, x in ipairs(r1) do if x[2] > 190 and x[2] < 210 then th1 = x end end
+  for _, x in ipairs(r2) do if x[2] > 190 and x[2] < 210 then th2 = x end end
+  check("while both sound the frequency is between the two", th1 and th1[2] > 200 and th1[2] < 205, th1 and th1[2])
+  check("after A's partial ended the thread goes on with B's frequency and the level moves to B's (s * 0.5)", th2 and th2[2] == 205 and th2[1] > 0.1 and th2[1] < 0.5, th2 and (th2[2] .. " " .. th2[1]))
+  check("one row carries it all", #info.threads == 1)
+  -- a very wide grey area: 4 s: the partials of 1 s overlap inside it: still a thread
+  local A2 = sound({ { 200, 0.5 } }, 3.0, HOP); local B2 = sound({ { 205, 0.5 } }, 3.0, HOP)
+  local info2 = cross.count({ a = { d = A2, pos = 0 }, b = { d = B2, pos = 1.0 }, line = 2.0, tol_time = 4.0, tol_cents = 100 })
+  check("a wide grey area finds threads too", info2 and info2.pairs == 1, info2 and info2.pairs)
 end
 
 -- a partial that has no partner: tolerance 20 cents: 200 -> 205 (43 cents) is no pair any more: both fade on their own frequencies
