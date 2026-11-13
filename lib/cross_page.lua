@@ -45,6 +45,49 @@ end
 
 function Page:say(msg) self.message = msg end
 
+-- UNDO (tjingboem, 13 Nov 2026: "i accidentally deleted a ats file in crossing. Can we have a Ctrl+Z function here?"): the recipe (the sounds with their place, cuts and
+-- level, the line, the tolerances, the curve, the diagonal) is copied before every change (the sound data itself is shared, not copied); Ctrl+Z goes back, Ctrl+Y
+-- forward. A removed sound stays in memory while the undo list holds it (the last 20 steps).
+local function copy_slot(s)
+  if not s then return nil end
+  local c = {}
+  for k, v in pairs(s) do c[k] = v end
+  return c
+end
+function Page:capture()
+  local pts = {}
+  for i, p in ipairs(self.diag_pts) do pts[i] = { t = p.t, f = p.f } end
+  return { a = copy_slot(self.a), b = copy_slot(self.b), line = self.line, tol_time = self.tol_time, tol_cents = self.tol_cents, curve = self.curve, diag_pts = pts }
+end
+function Page:push_undo(state)
+  self.undo = self.undo or {}
+  self.undo[#self.undo + 1] = state or self:capture()
+  if #self.undo > 20 then table.remove(self.undo, 1) end
+  self.redo = {}
+end
+function Page:restore(st)
+  self.a, self.b, self.line, self.tol_time, self.tol_cents, self.curve, self.diag_pts = st.a, st.b, st.line, st.tol_time, st.tol_cents, st.curve, st.diag_pts
+  for _, slot in ipairs({ "a", "b" }) do if self[slot] then self:make_thumb(slot) end end
+  self.zoomed = false
+  self:fit_view(true)
+  self:recount()
+end
+function Page:undo_step()
+  local st = self.undo and table.remove(self.undo)
+  if not st then self:say("nothing to undo"); return end
+  self.redo = self.redo or {}
+  self.redo[#self.redo + 1] = self:capture()
+  self:restore(st)
+  self:say("undone")
+end
+function Page:redo_step()
+  local st = self.redo and table.remove(self.redo)
+  if not st then self:say("nothing to redo"); return end
+  self.undo[#self.undo + 1] = self:capture()
+  self:restore(st)
+  self:say("redone")
+end
+
 -- How many threads the present recipe would make (counted when something is let go, not while it moves). Skipped for big sounds (the count resamples both).
 function Page:recount()
   self.threads_est, self.thread_lines = nil, nil
@@ -137,6 +180,7 @@ function Page:load(slot, path)
     local over = 0.5 * math.min(self.a.t1 - self.a.t0, s.t1 - s.t0)
     s.origin = (self.a.origin + self.a.t1 - over) - s.t0
   end
+  self:push_undo()
   self[slot] = s
   self:make_thumb(slot)
   self.line = nil
@@ -155,6 +199,7 @@ function Page:remove(slot)
     local answer = reaper.MB(s.name .. " has changes that are not saved. Remove it anyway?", "ReaATS", 4)
     if answer ~= 6 then return end
   end
+  self:push_undo()
   self[slot] = nil
   self.line = nil
   self.results_for = nil
@@ -221,6 +266,7 @@ function Page:use_open_sound(slot)
     local over = 0.5 * math.min(self.a.t1 - self.a.t0, s.t1 - s.t0)
     s.origin = (self.a.origin + self.a.t1 - over) - s.t0
   end
+  self:push_undo()
   self[slot] = s
   self:make_thumb(slot)
   self.line = nil
@@ -433,7 +479,7 @@ function Page:mouse(mx, my, cap, wheel)
   if down and not self.prev_down and self.dd_open and g.dd_curve then       -- the open list of curves takes this click
     local dd = g.dd_curve
     for i, c in ipairs(CURVES) do
-      if mx >= dd.x and mx < dd.x + dd.w and my >= dd.y + i * dd.h and my < dd.y + (i + 1) * dd.h then self.curve = c[1] end
+      if mx >= dd.x and mx < dd.x + dd.w and my >= dd.y + i * dd.h and my < dd.y + (i + 1) * dd.h and c[1] ~= self.curve then self:push_undo(); self.curve = c[1] end
     end
     self.dd_open = false
     self.prev_down = down
@@ -441,12 +487,14 @@ function Page:mouse(mx, my, cap, wheel)
   end
   if down and not self.prev_down then
     self.drag = nil
+    local pre = self:capture()                                       -- (for undo: kept when the press starts a change)
     local b = g.btn
     local ctrl = (cap & 4) ~= 0
     local dd = g.dd_curve
     if ctrl and not shift and (my >= g.laneA.y and my < g.laneA.y + g.laneA.h or my >= g.laneB.y and my < g.laneB.y + g.laneB.h) then
       -- Ctrl+click in a lane: a point of the diagonal (low and high in the picture); the second one makes the line, a third starts again
       local lane = (my < g.laneA.y + g.laneA.h) and g.laneA or g.laneB
+      self:push_undo(pre)
       if #self.diag_pts >= 2 then self.diag_pts = {} end
       self.diag_pts[#self.diag_pts + 1] = { t = self:tt(g, mx), f = self:y_to_f(lane, my) }
       self:recount()
@@ -512,6 +560,7 @@ function Page:mouse(mx, my, cap, wheel)
         end
       end
     end
+    if self.drag and self.drag.kind ~= "pan" then self:push_undo(pre) end
   elseif down and self.drag then
     local d = self.drag
     if d.x then                                                      -- Shift = fine: a tenth of the movement of the mouse
@@ -551,6 +600,8 @@ end
 
 function Page:key(ch)
   if ch == 27 and (#self.diag_pts > 0 or self.dd_open) then self.diag_pts = {}; self.dd_open = false; self:recount(); return true end     -- Esc: back to a vertical line
+  if ch == 26 then self:undo_step(); return true end                              -- Ctrl+Z
+  if ch == 25 then self:redo_step(); return true end                              -- Ctrl+Y
   if ch == 13 then self:make(); return true end
   if ch == 32 then self.env.stop_audition(); return true end
   if ch == 97 or ch == 65 then self:audition(); return true end

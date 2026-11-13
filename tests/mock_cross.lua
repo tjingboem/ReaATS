@@ -324,6 +324,14 @@ do
   do
     gfx.mouse_cap = 2; gfx.mouse_x, gfx.mouse_y = blit_x[21] + 30, 300; strings = {}; frame(); gfx.mouse_cap = 0; frame()
     assert(saw("B removed"), "a right-click removes B: " .. tostring(saw("removed") or saw("B")))
+    -- Ctrl+Z brings it back where it was, Ctrl+Y removes it again
+    local b_blits = thumb_blits
+    script.keys = { 26 }; strings = {}; frame(); strings = {}; frame()
+    assert(saw("undone"), "Ctrl+Z undoes the removal: " .. tostring(saw("undo") or saw("removed")))
+    assert(thumb_blits > b_blits and blit_x[21], "and the sound is back on its lane with its picture")
+    script.keys = { 25 }; strings = {}; frame()
+    assert(saw("redone"), "Ctrl+Y does it again")
+    script.keys = { 26 }; strings = {}; frame()
   end
   script.keys = { 27 }; frame()
 end
