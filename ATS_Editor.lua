@@ -2188,51 +2188,14 @@ end
 -- CROSS page takes the new place when you go back), and the partials that carry the transition (the threads) BLINKING in orange (tjingboem, 13 Nov 2026).
 function W.cross_result()
   local r = W.cross and W.cross.results and current_file and W.cross.results[current_file]
-  if r and r.line and data then return r end
+  if r and r.transitions and data then return r end
   return nil
 end
-function W.cross_line_x(r)
-  local px, py, pw, ph = plot_rect()
-  return px + tx(r.line, pw), px, py, pw, ph
-end
-function W.draw_cross_line()
-  local r = W.cross_result()
-  if not r then return end
-  local x, px, py, pw, ph = W.cross_line_x(r)
-  if r.grey1 and r.grey1 > r.grey0 then
-    gfx.set(0.6, 0.63, 0.7, 0.18)
-    local x0, x1 = px + tx(r.grey0, pw), px + tx(r.grey1, pw)
-    x0, x1 = math.max(x0, px), math.min(x1, px + pw)
-    if x1 > x0 then gfx.rect(x0, py, x1 - x0, ph, 1) end
-  end
-  if r.threads and not modified then                                      -- (an edited result: the rows may have moved, so no blinking)
-    local lanes = lane_layout(ph)
-    local lane = lanes[1]
-    for _, l in ipairs(lanes) do for _, c in ipairs(l.chans) do if c == cur then lane = l end end end
-    local lpy, lph = py + lane.off, lane.h
-    if math.floor(reaper.time_precise() * 2.5) % 2 == 0 then gfx.set(1, 0.62, 0.1, 1) else gfx.set(0.45, 0.25, 0.05, 1) end
-    for _, th in ipairs(r.threads) do
-      local frq = data.frq[th.p]
-      if frq then
-        for f = th.f0, math.min(th.f1, data.frames) - 1 do
-          if data.times[f + 1] and frq[f + 1] and frq[f] > 0 and frq[f + 1] > 0 then
-            local cx1, cy1, cx2, cy2 = clip_segment(tx(data.times[f], pw), fy(frq[f], lph), tx(data.times[f + 1], pw), fy(frq[f + 1], lph), pw, lph)
-            if cx1 then
-              gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1)
-              gfx.line(px + cx1, lpy + cy1 + 1, px + cx2, lpy + cy2 + 1, 1)
-            end
-          end
-        end
-      end
-    end
-  end
-  if r.diag then                                                           -- a diagonal line: low and high point of the picture (display only)
-    local lanes = lane_layout(ph)
-    local lane = lanes[1]
-    for _, l in ipairs(lanes) do for _, c in ipairs(l.chans) do if c == cur then lane = l end end end
-    local lpy, lph = py + lane.off, lane.h
-    local d = r.diag
-    local w = (r.grey1 or 0) - (r.grey0 or 0)
+-- One transition of the result: its grey band and its red line (or diagonal).
+function W.draw_cross_transition(r, tr, px, py, pw, ph, lpy, lph)
+  local w = (tr.grey1 or 0) - (tr.grey0 or 0)
+  if tr.diag then                                                          -- a diagonal line: low and high point of the picture (display only)
+    local d = tr.diag
     gfx.set(0.6, 0.63, 0.7, 0.18)
     for yy = 0, lph - 2, 2 do                                             -- the grey band follows the line row by row
       local lf1, lf2 = math.log(d[2]), math.log(d[4])
@@ -2251,24 +2214,59 @@ function W.draw_cross_line()
     end
     return
   end
+  if tr.grey1 and tr.grey1 > tr.grey0 then
+    gfx.set(0.6, 0.63, 0.7, 0.18)
+    local x0, x1 = px + tx(tr.grey0, pw), px + tx(tr.grey1, pw)
+    x0, x1 = math.max(x0, px), math.min(x1, px + pw)
+    if x1 > x0 then gfx.rect(x0, py, x1 - x0, ph, 1) end
+  end
+  local x = px + tx(tr.line, pw)
   if x >= px - 7 and x <= px + pw + 7 then
-    gfx.set(1, 0.23, 0.19, W.cross_drag and 1 or 0.95)
+    gfx.set(1, 0.23, 0.19, (W.cross_drag == tr) and 1 or 0.95)
     gfx.rect(x - 1, py, 3, ph, 1)
     gfx.rect(x - 7, py, 15, 9, 1)                                         -- the handle
   end
 end
--- The line is dragged here (the fine tuning); the CROSS page takes the new place (W.cross.line is on the timeline: the result's time + where its 0 lies).
+function W.draw_cross_line()
+  local r = W.cross_result()
+  if not r then return end
+  local px, py, pw, ph = plot_rect()
+  local lanes = lane_layout(ph)
+  local lane = lanes[1]
+  for _, l in ipairs(lanes) do for _, c in ipairs(l.chans) do if c == cur then lane = l end end end
+  local lpy, lph = py + lane.off, lane.h
+  if r.threads and not modified then                                      -- (an edited result: the rows may have moved, so no blinking)
+    if math.floor(reaper.time_precise() * 2.5) % 2 == 0 then gfx.set(1, 0.62, 0.1, 1) else gfx.set(0.45, 0.25, 0.05, 1) end
+    for _, th in ipairs(r.threads) do
+      local frq = data.frq[th.p]
+      if frq then
+        for f = th.f0, math.min(th.f1, data.frames) - 1 do
+          if data.times[f + 1] and frq[f + 1] and frq[f] > 0 and frq[f + 1] > 0 then
+            local cx1, cy1, cx2, cy2 = clip_segment(tx(data.times[f], pw), fy(frq[f], lph), tx(data.times[f + 1], pw), fy(frq[f + 1], lph), pw, lph)
+            if cx1 then
+              gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1)
+              gfx.line(px + cx1, lpy + cy1 + 1, px + cx2, lpy + cy2 + 1, 1)
+            end
+          end
+        end
+      end
+    end
+  end
+  for _, tr in ipairs(r.transitions) do W.draw_cross_transition(r, tr, px, py, pw, ph, lpy, lph) end
+end
+-- A red line is dragged here (the fine tuning); the CROSS page takes the new place (its lines are on the timeline: the result's time + where its 0 lies).
 function W.cross_line_input(px, py, pw, ph, mx, my, cap)
   local r = W.cross_result()
-  if not r or r.diag then W.cross_drag = false; return false end      -- (a diagonal is moved on the CROSS page)
+  if not r then W.cross_drag = false; return false end
   local down = (cap & 1) ~= 0
   if W.cross_drag then
+    local tr = W.cross_drag
     if down then
       local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
-      if r.ov0 then t = clamp(t, r.ov0, r.ov1) end
-      local w = (r.grey1 or t) - (r.grey0 or t)
-      r.line, r.grey0, r.grey1 = t, t - w / 2, t + w / 2
-      W.cross.line = r.t_start + t
+      if tr.ov0 then t = clamp(t, tr.ov0, tr.ov1) end
+      local w = (tr.grey1 or t) - (tr.grey0 or t)
+      tr.line, tr.grey0, tr.grey1 = t, t - w / 2, t + w / 2
+      if tr.key then W.cross.lines[tr.key] = r.t_start + t end
       set_status(string.format("the red line: %.3f s   (the CROSS page uses it when you go back; make the result again there)", t))
     else
       W.cross_drag = false
@@ -2276,8 +2274,12 @@ function W.cross_line_input(px, py, pw, ph, mx, my, cap)
     return true
   end
   if down and not prev_down then
-    local x = px + tx(r.line, pw)
-    if math.abs(mx - x) <= 7 and my >= py - 4 and my < py + ph then W.cross_drag = true; return true end
+    for _, tr in ipairs(r.transitions) do
+      if not tr.diag then                                                 -- (a diagonal is moved on the CROSS page)
+        local x = px + tx(tr.line, pw)
+        if math.abs(mx - x) <= 7 and my >= py - 4 and my < py + ph then W.cross_drag = tr; return true end
+      end
+    end
   end
   return false
 end

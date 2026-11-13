@@ -232,5 +232,41 @@ do
   check("the count lists the thread with both frequencies and its time", info.pairs == 1 and info.threads[1] and math.abs(info.threads[1].fl - 200) < 1e-6 and math.abs(info.threads[1].fr - 205) < 1e-6 and info.threads[1].t0 < info.threads[1].t1 and info.l_is_a, info.threads and info.threads[1] and info.threads[1].fl)
 end
 
+-- a timeline of three sounds: A (200 Hz, 0-2 s), B (205 Hz, 1.5-3.5 s), A2 (210 Hz, 3.0-5.0 s): A flows into B, and the result flows into A2
+do
+  local A = sound({ { 200, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 } }, 2.0, HOP)
+  local C = sound({ { 210, 0.5 } }, 2.0, HOP)
+  local spec = { blocks = { { d = A, pos = 0 }, { d = B, pos = 1.5 }, { d = C, pos = 3.0 } }, steps = { [2] = { line = 1.75 }, [3] = { line = 3.25 } },
+                 tol_time = 0.4, tol_cents = 100 }
+  local d, info = cross.build_timeline(spec)
+  check("the timeline is as long as the three sounds together (5 s)", d and math.abs(d.dur - 5.0) < 1e-9, d and d.dur)
+  check("there are two transitions with their lines", info and #info.transitions == 2 and math.abs(info.transitions[1].line - 1.75) < 1e-9 and math.abs(info.transitions[2].line - 3.25) < 1e-9, info and #info.transitions)
+  check("two threads (one per transition)", info and info.pairs == 2, info and info.pairs)
+  local r = rows_at(d, 0.5); check("A alone at the start: 200 Hz", #r == 1 and math.abs(r[1][2] - 200) < 1e-6)
+  r = rows_at(d, 2.5);       check("B alone in the middle: 205 Hz", #r == 1 and math.abs(r[1][2] - 205) < 1e-6, r[1] and r[1][2])
+  r = rows_at(d, 4.5);       check("the last sound at the end: 210 Hz", #r == 1 and math.abs(r[1][2] - 210) < 1e-6, r[1] and r[1][2])
+  check("the threads are found again in the result: here one partial runs through both transitions (A to B to A2)", #info.threads == 1 and info.threads[1].f0 == 1 and info.threads[1].f1 == d.frames, #info.threads)
+  -- the order of the blocks in the list does not matter
+  local d2 = cross.build_timeline({ blocks = { { d = C, pos = 3.0 }, { d = A, pos = 0 }, { d = B, pos = 1.5 } }, steps = spec.steps, tol_time = 0.4, tol_cents = 100 })
+  check("any order in the list: the same result", d2 and d2.frames == d.frames)
+  -- a gap: no transition, silence between
+  local d3, i3 = cross.build_timeline({ blocks = { { d = A, pos = 0 }, { d = B, pos = 3.0 } }, steps = {}, tol_time = 0.4 })
+  check("a gap between two sounds: no transition, nothing sounds in the gap", d3 and #i3.transitions == 0 and #rows_at(d3, 2.5) == 0 and #rows_at(d3, 1.0) == 1)
+  check("one sound is not enough", cross.build_timeline({ blocks = { { d = A, pos = 0 } }, steps = {} }) == nil)
+end
+
+-- every transition has its own tolerances (a step with its own tol_time / tol_cents)
+do
+  local A = sound({ { 200, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 } }, 2.0, HOP)
+  local C = sound({ { 210, 0.5 } }, 2.0, HOP)
+  local spec = { blocks = { { d = A, pos = 0 }, { d = B, pos = 1.5 }, { d = C, pos = 3.0 } },
+                 steps = { [2] = { line = 1.75, tol_time = 0.4 }, [3] = { line = 3.25, tol_time = 0 } }, tol_time = 0.2, tol_cents = 100 }
+  local d, info = cross.build_timeline(spec)
+  check("the first transition has a grey area of 0.4 s, the second a hard line", d and math.abs(info.transitions[1].grey1 - info.transitions[1].grey0 - 0.4) < 1e-9
+        and math.abs(info.transitions[2].grey1 - info.transitions[2].grey0) < 1e-9 and info.pairs == 1, info and info.transitions[2].grey1)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

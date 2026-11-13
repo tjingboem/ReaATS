@@ -178,6 +178,7 @@ function M.build(spec)
   local out = {}                                                       -- the tracks of the result: { f0, amp = {}, frq = {} } (index f - f0 + 1)
   local pair_count = 0
   local used_L, used_R = {}, {}
+  local marks = {}
   local pair_info = {}                                                 -- for the CROSS page: where each thread is (seconds on the timeline, Hz)
   if overlap then
     local cands = {}
@@ -229,6 +230,9 @@ function M.build(spec)
             mt.amp[f - tl.f0 + 1], mt.frq[f - tl.f0 + 1] = a, fr
           end
           out[#out + 1] = mt
+          local fm = math.floor((g0f + g1f) / 2)                          -- where the thread was in the middle of its grey area (to find it again in a later result)
+          local fmid = mt.frq[fm - tl.f0 + 1]
+          if fmid and fmid > 0 then marks[#marks + 1] = { t = t_start + (fm - 1) * hop, f = fmid } end
         end
       end
     end
@@ -294,7 +298,7 @@ function M.build(spec)
     end
   end
   ats.update_phases(d, nil)                                            -- (no phase in the data yet: every track gets its phases from its frequencies)
-  local info = { rows = P, frames = F, hop = hop, pairs = pair_count, overlap = overlap, tracks = #out, t_start = t_start, threads = {} }
+  local info = { rows = P, frames = F, hop = hop, pairs = pair_count, overlap = overlap, tracks = #out, t_start = t_start, threads = {}, marks = marks }
   for k, t in ipairs(out) do                                           -- the partials that carry the transition (the editor blinks them)
     if t.thread then info.threads[#info.threads + 1] = { p = row_of[k], f0 = t.f0, f1 = t.f0 + #t.amp - 1 } end
   end
@@ -304,6 +308,82 @@ function M.build(spec)
     if diag then info.diag = { diag[1] - t_start, diag[2], diag[3] - t_start, diag[4] } end
   end
   return d, info
+end
+
+-- A TIMELINE of any number of sounds (the CROSS page: blocks in two lanes). The sounds are taken in the order they start; each one flows into what came before it
+-- (the crossing made so far), at its own red line. spec = { blocks = { { d, t0, t1, pos, gain } ... }, steps = { [k] = { line, diag } } (k = the place of a sound in the
+-- order of starting, 2 ..; a step may have its own tol_time and tol_cents), tol_time, tol_cents (for steps that have none), curve }. Without an overlap a sound just follows the one before it. Returns the data table and an info:
+-- { rows, frames, hop, pairs, tracks, t_start, transitions = { { k, line, grey0, grey1, ov0, ov1, diag } (seconds from the start of the result) }, threads = { {p, f0, f1} } }.
+local function locate(d, t_start, hop, mark)
+  local fi = math.floor((mark.t - t_start) / hop + 0.5) + 1
+  if fi < 1 or fi > d.frames then return nil end
+  local best, best_c = nil, 60                                          -- (within 60 cents)
+  for p = 1, d.partials do
+    local fr = d.frq[p][fi]
+    if d.amp[p][fi] > 0 and fr > 0 then
+      local c = math.abs(1200 * LOG(fr / mark.f) / LOG2)
+      if c < best_c then best, best_c = p, c end
+    end
+  end
+  if not best then return nil end
+  local a = d.amp[best]
+  local f0, f1 = fi, fi
+  while f0 > 1 and a[f0 - 1] > 0 do f0 = f0 - 1 end
+  while f1 < d.frames and a[f1 + 1] > 0 do f1 = f1 + 1 end
+  return { p = best, f0 = f0, f1 = f1 }
+end
+
+function M.build_timeline(spec)
+  local order = {}
+  for i, b in ipairs(spec.blocks) do order[i] = { i = i, b = b } end
+  table.sort(order, function(x, y) if x.b.pos ~= y.b.pos then return x.b.pos < y.b.pos end return x.i < y.i end)
+  if #order < 2 then return nil, "load two sounds" end
+  local acc, d, info = nil, nil, nil
+  local transitions, marks, pairs_total = {}, {}, 0
+  for k, o in ipairs(order) do
+    local b = o.b
+    if k == 1 then
+      acc = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }
+    else
+      local st = spec.steps and spec.steps[k] or {}
+      d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }, line = st.line, diag = st.diag,
+                          tol_time = st.tol_time or spec.tol_time, tol_cents = st.tol_cents or spec.tol_cents, curve = spec.curve })
+      if not d then return nil, info end
+      pairs_total = pairs_total + info.pairs
+      if info.overlap then
+        local t0 = info.t_start
+        local tr = { k = k, line = info.line + t0, grey0 = info.grey0 + t0, grey1 = info.grey1 + t0, ov0 = info.ov0 + t0, ov1 = info.ov1 + t0 }
+        if info.diag then tr.diag = { info.diag[1] + t0, info.diag[2], info.diag[3] + t0, info.diag[4] } end
+        transitions[#transitions + 1] = tr
+      end
+      for _, m in ipairs(info.marks) do marks[#marks + 1] = m end
+      acc = { d = d, t0 = d.times[1], t1 = d.times[d.frames], pos = info.t_start }
+    end
+  end
+  local t_start = info.t_start
+  for _, tr in ipairs(transitions) do                                    -- (the times of the result start at 0)
+    tr.line, tr.grey0, tr.grey1, tr.ov0, tr.ov1 = tr.line - t_start, tr.grey0 - t_start, tr.grey1 - t_start, tr.ov0 - t_start, tr.ov1 - t_start
+    if tr.diag then tr.diag[1], tr.diag[3] = tr.diag[1] - t_start, tr.diag[3] - t_start end
+  end
+  local threads, seen = {}, {}
+  for _, m in ipairs(marks) do
+    local th = locate(d, t_start, info.hop, m)
+    if th then
+      local key = th.p .. ":" .. th.f0
+      if not seen[key] then seen[key] = true; threads[#threads + 1] = th end
+    end
+  end
+  info.transitions, info.threads, info.pairs = transitions, threads, pairs_total
+  info.line, info.grey0, info.grey1, info.ov0, info.ov1, info.diag = nil, nil, nil, nil, nil, nil
+  return d, info
+end
+
+function M.make_timeline(spec, path)
+  local d, info = M.build_timeline(spec)
+  if not d then return nil, info end
+  local ok, err = ats.save(path, d, { phase = true })
+  if not ok then return nil, err end
+  return info
 end
 
 -- How many threads a setting would make (no result is built; the same pairing as M.build). Returns the info { pairs }, or nil and a message.
