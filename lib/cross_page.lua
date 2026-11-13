@@ -256,10 +256,18 @@ end
 -- ------------------------------------------------------------------ geometry
 -- The places come from the layout (lib/cross_layout.lua, made by tools/gen_cross_layout.py from the ReaLayout file) in pixels of the default window; an
 -- element that is not in the layout has the default place below. The layout's y counts from the top of the window, the page starts `top` (40) from it.
-function Page:el(id, dx, dy, dw, dh, top)
-  local lay = self.env.layout and self.env.layout.el and self.env.layout.el[id]
-  if lay then return lay.x, lay.y - 40 + top, lay.w, lay.h end
+function Page:el(id, dx, dy, dw, dh, top, optional)
+  local lay = self.env.layout and self.env.layout.el
+  local e = lay and lay[id]
+  if e then return e.x, e.y - 40 + top, e.w, e.h end
+  if lay and optional then return nil end                         -- (left out of the layout: not drawn, as on the Analysis page)
   return dx, top + dy, dw, dh
+end
+
+-- The text on a button or the title: the label of its element in the layout (rename it in ReaLayout), else the built-in one.
+function Page:label(id, default)
+  local lay = self.env.layout and self.env.layout.el and self.env.layout.el[id]
+  return (lay and lay.label and lay.label ~= "") and lay.label or default
 end
 
 function Page:geom(W, H, top)
@@ -280,9 +288,14 @@ function Page:geom(W, H, top)
     load_b = rect("btn_load_b", 40, 188, 110, 24), edit_b = rect("btn_edit_b", 158, 188, 190, 24), open_b = rect("btn_use_b", 356, 188, 290, 24),
     make = rect("btn_make", 40, 434, 190, 32),
   }
-  local function pt(id, dx, dy) local x, y = self:el(id, dx, dy, 0, 0, top); return { x = x, y = y } end
+  local function pt(id, dx, dy, always) local x, y = self:el(id, dx, dy, 0, 0, top, not always); if x then return { x = x, y = y } end end
   g.texts = { title = pt("txt_title", 40, 8), threads = pt("txt_threads", 40, 416), hint = pt("txt_make_hint", 244, 443),
-              message = pt("txt_message", 40, 478), help1 = pt("txt_help1", 40, 506), help2 = pt("txt_help2", 40, 524) }
+              message = pt("txt_message", 40, 478, true), help1 = pt("txt_help1", 40, 506), help2 = pt("txt_help2", 40, 524) }
+  local function sc(id, lane, dx)                                  -- the numbers of the frequency scale: a box whose height is the height of the picture
+    local x, y, w, h = self:el(id, dx, lane.y + 4 - top, 34, lane.h - 8, top, true)
+    if x then return { x = x, y = y, w = w, h = h } end
+  end
+  g.scale_a, g.scale_b = sc("scale_hz_a", g.laneA, g.x0 - 38), sc("scale_hz_b", g.laneB, g.x0 - 38)
   g.pps = (g.x1 - g.x0) / math.max(self.view[2] - self.view[1], 1e-6)
   return g
 end
@@ -503,36 +516,49 @@ function Page:draw_tip(g, W, H)
   end
 end
 
+local function put(pos, str, r, g, b) if pos then text(pos.x, pos.y, str, r, g, b) end end
+
 function Page:draw(W, H, top)
   self.top = top
   local g = self:geom(W, H, top)
   gfx.setfont(1, "Arial", 16)
-  text(g.texts.title.x, g.texts.title.y, "CROSS: sound A flows into sound B", 0.95, 0.72, 0.35)
-  button(g.btn.back, "BACK", { 0.9, 0.55, 0.5 })
-  button(g.btn.load_a, "LOAD A", BLUE)
-  button(g.btn.edit_a, "EDIT A IN THE EDITOR", BLUE, self.a ~= nil)
-  button(g.btn.open_a, "USE THE EDITOR'S SOUND AS A", BLUE)
-  button(g.btn.load_b, "LOAD B", GREEN)
-  button(g.btn.edit_b, "EDIT B IN THE EDITOR", GREEN, self.b ~= nil)
-  button(g.btn.open_b, "USE THE EDITOR'S SOUND AS B", GREEN)
+  put(g.texts.title, self:label("txt_title", "CROSS: sound A flows into sound B"), 0.95, 0.72, 0.35)
+  button(g.btn.back, self:label("btn_back", "BACK"), { 0.9, 0.55, 0.5 })
+  button(g.btn.load_a, self:label("btn_load_a", "LOAD A"), BLUE)
+  button(g.btn.edit_a, self:label("btn_edit_a", "EDIT A IN THE EDITOR"), BLUE, self.a ~= nil)
+  button(g.btn.open_a, self:label("btn_use_a", "USE THE EDITOR'S SOUND AS A"), BLUE)
+  button(g.btn.load_b, self:label("btn_load_b", "LOAD B"), GREEN)
+  button(g.btn.edit_b, self:label("btn_edit_b", "EDIT B IN THE EDITOR"), GREEN, self.b ~= nil)
+  button(g.btn.open_b, self:label("btn_use_b", "USE THE EDITOR'S SOUND AS B"), GREEN)
   self:draw_block(g, "a")
   self:draw_block(g, "b")
-  gfx.setfont(1, "Arial", 10)                                              -- the frequency scale of the images (the same for both)
-  for _, lane in ipairs({ g.laneA, g.laneB }) do
-    text(4, lane.y + 4, "10k", 0.5, 0.53, 0.6); text(4, lane.y + lane.h - 14, "50 Hz", 0.5, 0.53, 0.6)
+  -- the frequency scale of the images (log, 50 Hz - 10 kHz, the same for both): faint lines over the lane; the numbers are placed by the layout (scale_hz_a / _b:
+  -- a box as high as the picture, the numbers right-aligned to its right side)
+  gfx.setfont(1, "Arial", 10)
+  local lf0, lr = math.log(FMIN), math.log(FMAX / FMIN)
+  for _, pair in ipairs({ { g.laneA, g.scale_a }, { g.laneB, g.scale_b } }) do
+    local lane, sc = pair[1], pair[2]
+    for _, f in ipairs({ 100, 200, 500, 1000, 2000, 5000, 10000 }) do
+      local frac = 1 - (math.log(f) - lf0) / lr
+      local y = math.floor(lane.y + 4 + (lane.h - 8) * frac + 0.5)
+      gfx.set(0.7, 0.75, 0.85, (f == 100 or f == 1000 or f == 10000) and 0.22 or 0.1)
+      gfx.line(g.x0, y, g.x1, y)
+      if sc then
+        local label = f >= 1000 and (f // 1000) .. "k" or tostring(f)
+        text(sc.x + sc.w - gfx.measurestr(label), math.floor(sc.y + sc.h * frac + 0.5) - 6, label, 0.55, 0.58, 0.64)
+      end
+    end
   end
-  -- the ruler
-  gfx.set(0.4, 0.43, 0.48, 1)
-  gfx.line(g.x0, g.ruler, g.x1, g.ruler)
+  -- the ruler: no line, only a tick and the time beside it ("| 0.50 s")
   local span = self.view[2] - self.view[1]
   local step = 1
   for _, st in ipairs({ 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300 }) do step = st; if span / st <= 14 then break end end
   gfx.setfont(1, "Arial", 11)
-  local t = math.ceil(self.view[1] / step) * step
-  while t <= self.view[2] do
+  local t = math.ceil(self.view[1] / step - 1e-9) * step
+  while t <= self.view[2] + 1e-9 do
     local x = self:tx(g, t)
-    gfx.set(0.4, 0.43, 0.48, 1); gfx.line(x, g.ruler, x, g.ruler + 5)
-    text(x + 3, g.ruler + 6, string.format(step < 1 and "%.2f s" or "%g s", t), 0.55, 0.58, 0.64)
+    gfx.set(0.4, 0.43, 0.48, 1); gfx.line(x, g.ruler + 1, x, g.ruler + 13)
+    text(x + 4, g.ruler + 1, string.format(step < 1 and "%.2f s" or "%g s", t), 0.55, 0.58, 0.64)
     t = t + step
   end
   -- the transition space, the red line and its grey band
@@ -572,18 +598,18 @@ function Page:draw(W, H, top)
   slider(g.sl_time, "Time tolerance (the grey area)", self.tol_time < 0.005 and "hard line" or string.format("%.2f s", self.tol_time), math.sqrt(math.min(self.tol_time / self:time_max(), 1)))
   slider(g.sl_freq, "Frequency tolerance (which partials are one thread)", string.format("%d cents", self.tol_cents), (self.tol_cents - 10) / 590)
   gfx.setfont(1, "Arial", 12)
-  local est = self.threads_est
-  if est == -1 then text(g.texts.threads.x, g.texts.threads.y, "the number of threads is counted when the result is made (the sounds are big)", 0.6, 0.64, 0.7)
+  local est = self.threads_est                                              -- only the count (nothing else is written here)
+  if est == -1 then put(g.texts.threads, "threads: counted when made", 0.6, 0.64, 0.7)
   elseif est then
-    if est > 0 then text(g.texts.threads.x, g.texts.threads.y, string.format("%d thread%s: partials of A and B that sound together inside the grey area and are close in frequency (the orange blinking partials in the editor)", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
-    else text(g.texts.threads.x, g.texts.threads.y, "no threads: no partial of A and partial of B sound together inside the grey area within the frequency tolerance. A shorter grey area or a wider frequency tolerance may help.", 1, 0.5, 0.3) end
+    if est > 0 then put(g.texts.threads, string.format("%d thread%s", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
+    else put(g.texts.threads, "no threads", 1, 0.5, 0.3) end
   end
-  button(g.btn.make, "MAKE RESULT", { 0.45, 0.85, 0.6 }, self.a ~= nil and self.b ~= nil)
+  button(g.btn.make, self:label("btn_make", "MAKE RESULT"), { 0.45, 0.85, 0.6 }, self.a ~= nil and self.b ~= nil)
   gfx.setfont(1, "Arial", 12)
-  text(g.texts.hint.x, g.texts.hint.y, "writes a new .ats file and opens it in the editor (A and B stay as they are); Enter does the same", 0.6, 0.64, 0.7)
-  if self.message then text(g.texts.message.x, g.texts.message.y, self.message, 1, 0.8, 0.45) end
-  text(g.texts.help1.x, g.texts.help1.y, "Drag a block to place it in time. Drag the white handles at its ends to use only a part of the file. Drag the red line inside the overlap. Double-click a block (or EDIT) to edit that sound in the editor: what you change there comes back as that sound, without saving.", 0.55, 0.58, 0.64)
-  text(g.texts.help2.x, g.texts.help2.y, "The partials of A and B that are close in frequency (the tolerance) become one thread that moves from A's frequency to B's.", 0.55, 0.58, 0.64)
+  put(g.texts.hint, "writes a new .ats file and opens it in the editor (A and B stay as they are); Enter does the same", 0.6, 0.64, 0.7)
+  if self.message then text(g.texts.message.x, g.texts.message.y, self.message, 1, 0.8, 0.45) end      -- (a message is never left out)
+  put(g.texts.help1, "Drag a block to place it in time. Drag the white handles at its ends to use only a part of the file. Drag the red line inside the overlap. Double-click a block (or EDIT) to edit that sound in the editor: what you change there comes back as that sound, without saving.", 0.55, 0.58, 0.64)
+  put(g.texts.help2, "The partials of A and B that are close in frequency (the tolerance) become one thread that moves from A's frequency to B's.", 0.55, 0.58, 0.64)
   self:draw_info_marks(g)
   self:draw_tip(g, W, H)
 end

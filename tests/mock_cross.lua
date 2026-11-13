@@ -2,6 +2,7 @@
 -- The CROSS button and page: two blocks (A, B), dragging, the cut, the red line, the sliders, MAKE RESULT (a new file that opens in the editor).
 -- Runs ATS_Editor.lua against a fake gfx/reaper; A = the 4 flat partials of the shared fixture, B = a second analysis with two partials.
 local root = os.getenv("PWD")
+REAATS_TEST_CROSS_LAYOUT = root .. "/tests/cross_layout_test.lua"            -- the layout the clicks below are made for
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
 local work = scratch .. "cx_test.ats"
 local edited_path = scratch .. "cx_test_edit.ats"
@@ -92,8 +93,8 @@ gfx.line = function()
   return 0
 end
 local thumb_blits = 0
-local blit_x = {}
-gfx.blit = function(src, _, _, _, _, _, _, dx) if src and src >= 20 then thumb_blits = thumb_blits + 1; blit_x[src] = dx end return 0 end
+local blit_x, blit_w = {}, {}
+gfx.blit = function(src, _, _, _, _, _, _, dx, _, dw) if src and src >= 20 then thumb_blits = thumb_blits + 1; blit_x[src] = dx; blit_w[src] = dw end return 0 end
 strings = {}; frame()
 assert(saw("^CROSS$"), "the CROSS button is drawn")
 assert(not saw("^MASTER$"), "and the MASTER button is gone")
@@ -113,6 +114,7 @@ click(356 + 10, 84 + 10); strings = {}; frame()
 gfx.mouse_x, gfx.mouse_y = 948, 120 + 16; strings = {}; frame()   -- the mouse is on the little i of block A (top right of its used part): the box shows the information
 assert(saw("sound A: cx_test%.ats") and saw("used 0%.00 %- 0%.49 s of 0%.50 s") and saw("partials, %d+ frames, hop"), "A is the open sound: " .. tostring(saw("cx_test") or saw("unsaved") or saw("no sound")))
 gfx.mouse_x, gfx.mouse_y = 5, 5; strings = {}; frame()
+assert(saw("^100$") and saw("^1k$") and saw("^10k$"), "the frequency scale is drawn at the left of the lanes")
 assert(not saw("^used 0%.00") and not saw("^sound A: "), "away from the block the picture is free of text")
 gfx.mouse_x, gfx.mouse_y = 300, 170; strings = {}; frame()
 assert(saw("^i$") and not saw("^sound A: "), "on the block (not on the i) there is no box, and the i is drawn")
@@ -138,7 +140,7 @@ assert(saw("CROSS: sound A flows into sound B"), "and the button brings it back"
 click(356 + 10, 40 + 188 + 10); strings = {}; frame()
 assert(saw("the sound of the editor is B now: cx_second%.ats"), "USE THE EDITOR'S SOUND AS B: " .. tostring(saw("loaded") or saw("unsaved") or saw("no sound")))
 -- how many threads the recipe would make is counted (A's 200 and 800 Hz meet B's 205 and 800 Hz inside the overlap)
-assert(saw("^2 threads: partials of A and B that sound together"), "the page counts the threads: " .. tostring(saw("thread")))
+assert(saw("^2 threads$"), "the page counts the threads: " .. tostring(saw("thread")))
 -- the time tolerance slider: its left end is a hard line
 click(40, 40 + 394 + 5); strings = {}; frame()
 assert(saw("^hard line$"), "the slider at its left end: hard line: " .. tostring(saw("s$")))
@@ -208,8 +210,13 @@ drag(700, 300, 1000, 300); strings = {}; frame()
 assert(saw("do not overlap"), "no overlap: " .. tostring(saw("overlap") or saw("red line")))
 -- B dragged to the LEFT of A (it starts before A, they overlap): the sound that starts first flows into the other, B into A
 do
-  drag(1000, 300, 250, 300); strings = {}; frame()
-  assert(saw("the red line"), "B before A overlaps again: " .. tostring(saw("overlap") or saw("do not overlap")))
+  strings = {}; frame()
+  local pps = blit_w[21] / 0.6                                                  -- pixels per second (B is 0.6 s long)
+  local want = blit_x[20] - 0.1 * pps                                           -- B starts 0.1 s before A
+  local from = blit_x[21] + blit_w[21] / 2
+  drag(math.floor(from), 300, math.floor(from + want - blit_x[21]), 300); strings = {}; frame()
+  assert(blit_x[21] < blit_x[20], "B now starts before A: " .. blit_x[21] .. " " .. blit_x[20])
+  assert(saw("^the red line  [%d%.]+ s"), "B before A overlaps again: " .. tostring(saw("overlap") or saw("do not overlap")))
   local pre = scratch .. "cx_test_cross3.ats"
   os.remove(pre)
   click(40 + 20, 40 + 434 + 10); strings = {}; frame()

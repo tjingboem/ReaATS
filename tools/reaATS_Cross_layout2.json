@@ -185,5 +185,27 @@
     "y": 518,
     "w": 1020,
     "h": 16
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "scale_hz_a",
+    "label": "Frequency numbers, lane A",
+    "shape": "box",
+    "x": 2,
+    "y": 124,
+    "w": 34,
+    "h": 96
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "scale_hz_b",
+    "label": "Frequency numbers, lane B",
+    "shape": "box",
+    "x": 2,
+    "y": 264,
+    "w": 34,
+    "h": 96
   }
 ]

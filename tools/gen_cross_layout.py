@@ -6,7 +6,7 @@
 The JSON comes from the layout editor (github.com/tjingboem/ReaLayout, project 'reaats_cross'): a list of elements {panel, state, id, label, shape, x, y, w, h}
 in pixels of the default window, 1100 x 640 (the page starts 40 px from the top). lib/cross_page.lua draws and clicks at these places.
 Ids: txt_* (texts), btn_* (buttons), lane_a / lane_b (the two lanes; both use the x and width of lane_a for the time scale), ruler, sl_time / sl_freq (sliders).
-Elements that are left out use the built-in default place. lib/cross_layout.lua is overwritten, never edited by hand.
+The label of a button and of the title is the text the page writes on it (so rename it in ReaLayout to rename the button). Elements that are left out use the built-in default place. lib/cross_layout.lua is overwritten, never edited by hand.
 """
 import json
 import os
@@ -31,7 +31,8 @@ def main():
              "return {", "  el = {"]
     for i in sorted(els):
         e = els[i]
-        lines.append('    %-18s = { x = %d, y = %d, w = %d, h = %d },' % (i, e["x"], e["y"], e["w"], e["h"]))
+        label = e.get("label", "").replace("\\", "\\\\").replace('"', '\\"')
+        lines.append('    %-18s = { x = %d, y = %d, w = %d, h = %d, label = "%s" },' % (i, e["x"], e["y"], e["w"], e["h"], label))
     lines += ["  },", "}", ""]
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))

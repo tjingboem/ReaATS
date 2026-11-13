@@ -4198,7 +4198,6 @@ local function loop()
       local px, py, pw, ph = plot_rect()
       gfx.set(0.09, 0.10, 0.12, 1)
       gfx.rect(0, 0, gfx.w, gfx.h, 1)
-      draw_header(px, py, pw, ph, true)
       W.cross:draw(math.floor(gfx.w), math.floor(gfx.h), ANALYSIS_TOP)
       gfx.update()
       if keep then reaper.defer(loop) end
@@ -4273,7 +4272,7 @@ analysis = Analysis.new({
   back = function() showing_analysis = false; dirty = true end,
 })
 W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
-  layout = dofile(script_dir .. "/lib/cross_layout.lua"),
+  layout = dofile(rawget(_G, "REAATS_TEST_CROSS_LAYOUT") or (script_dir .. "/lib/cross_layout.lua")),      -- (the tests use a fixed layout)
   available_memory = available_memory,
   memory_warning = function() return W.memory_warning() end,
   relocate = function(path) return Analysis.relocate(path) end,
