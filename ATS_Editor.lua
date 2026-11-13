@@ -356,6 +356,26 @@ local function available_memory(need)
   return kb and tonumber(kb) * 1024 or nil
 end
 
+-- A warning when 20 % or less of the computer's memory is free (tjingboem, 13 Nov 2026). Linux reads /proc/meminfo; elsewhere the Python program is asked.
+-- Returns true when it warned. Called after a sound has been loaded, and after a CROSS result was made.
+W.low_memory = tonumber(os.getenv("REAATS_LOW_MEMORY") or "") or 0.20      -- (the variable is for the tests)
+function W.memory_warning()
+  local free, total
+  local fh = io.open("/proc/meminfo", "r")
+  if fh then
+    local t = fh:read("a"); fh:close()
+    local f, tt = t:match("MemAvailable:%s+(%d+)"), t:match("MemTotal:%s+(%d+)")
+    free, total = f and tonumber(f) * 1024, tt and tonumber(tt) * 1024
+  elseif analysis then
+    free, total = analysis:memory_state()
+  end
+  if not free or not total or total <= 0 or free / total > W.low_memory then return false end
+  local msg = string.format("WARNING: memory is low, only %.0f %% is free (%.1f of %.1f GB). Close sounds you do not need, cut A and B to the part you need, or save and restart REAPER.",
+    100 * free / total, free / 2^30, total / 2^30)
+  if set_status then set_status(msg) end
+  return true, msg
+end
+
 
 local function load_file(path)
   data_rev = data_rev + 1
@@ -437,6 +457,7 @@ local function load_file(path)
   reaper.SetExtState(EXT_SECTION, EXT_LAST, path, true)
   fit_view()
   if note and set_status then set_status(note) end
+  W.memory_warning()
   return true
 end
 
@@ -4253,6 +4274,7 @@ analysis = Analysis.new({
 })
 W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
   available_memory = available_memory,
+  memory_warning = function() return W.memory_warning() end,
   relocate = function(path) return Analysis.relocate(path) end,
   on_open = function(path) return load_file(path) end,
   open_in_editor = function(d, file, current, modified)          -- EDIT A / B (or a double-click on a block): that sound, from memory, in the editor

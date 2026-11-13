@@ -115,6 +115,11 @@ assert(saw("cx_test%.ats") and saw("used 0%.00 %- 0%.49 s of 0%.50 s"), "A is th
 load_path = second
 click(40 + 10, 40 + 188 + 10); strings = {}; frame()
 assert(saw("cx_second%.ats"), "B is loaded: " .. tostring(saw("loaded") or saw("cx_second")))
+if os.getenv("REAATS_LOW_MEMORY") then       -- run with REAATS_LOW_MEMORY=1.0: any free memory counts as low
+  assert(saw("WARNING: memory is low"), "the low-memory warning is shown")
+else
+  assert(not saw("WARNING: memory is low"), "no warning with plenty of memory")
+end
 assert(thumb_blits > 0, "the low resolution images of the sounds are drawn (image buffers 20 and 21)")
 -- B starts half over the end of A: there is an overlap, so there is a red line
 assert(saw("the red line"), "the red line is there inside the overlap: " .. tostring(saw("overlap")))

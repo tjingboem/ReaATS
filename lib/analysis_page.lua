@@ -413,11 +413,17 @@ end
 -- Finds a Python that can run the engine; remembers it. Returns true, or false after setting self.python_problem.
 -- The memory that is free (bytes), asked of the Python program (the same call on every operating system), or nil.
 function Page:available_memory()
+  local n = self:memory_state()
+  return n
+end
+
+-- Free and total memory (bytes) as the Python program reports them; nil when unknown.
+function Page:memory_state()
   if not self:find_python() then return nil end
   local engine = self.env.script_dir .. "/python/reaats_analyse.py"
   local reply = reaper.ExecProcess(string.format("%s %s --memory", q(self.python.exe), q(engine)), 10000) or ""
-  local n = reply:match("MEMORY (%d+)")
-  return n and tonumber(n) or nil
+  local n, t = reply:match("MEMORY (%d+)"), reply:match("TOTAL (%d+)")
+  return n and tonumber(n) or nil, t and tonumber(t) or nil
 end
 
 function Page:find_python(force)

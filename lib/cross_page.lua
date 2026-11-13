@@ -34,6 +34,13 @@ function M.new(env)
   return self
 end
 
+-- 20 % or less memory free: a warning replaces the message (and shows in red)
+function Page:memory_check()
+  if not self.env.memory_warning then return end
+  local low, msg = self.env.memory_warning()
+  if low then self:say(msg, true) end
+end
+
 function Page:say(msg) self.message = msg end
 
 -- How many threads the present recipe would make (counted when something is let go, not while it moves). Skipped for big sounds (the count resamples both).
@@ -131,6 +138,7 @@ function Page:load(slot, path)
   self:recount()
   self:fit_view()
   self:say(string.format("%s loaded: %.2f s, %d partials", s.name, d.dur, d.partials))
+  self:memory_check()
   return true
 end
 

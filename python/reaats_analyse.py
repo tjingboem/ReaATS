@@ -76,9 +76,37 @@ def available_memory_bytes():
     return None
 
 
+def total_memory_bytes():
+    """The memory the computer has in all, in bytes, or None (used for the warning when little is left)."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/meminfo") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) * 1024
+        elif sys.platform == "win32":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return int(st.ullTotalPhys)
+        elif sys.platform == "darwin":
+            import subprocess
+            return int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5).stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 if "--memory" in sys.argv[1:]:
     mem = available_memory_bytes()
-    print("MEMORY %s" % (mem if mem is not None else "unknown"))
+    tot = total_memory_bytes()
+    print("MEMORY %s TOTAL %s" % (mem if mem is not None else "unknown", tot if tot is not None else "unknown"))
     sys.exit(0)
 
 if "--check" in sys.argv[1:]:
