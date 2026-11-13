@@ -27,6 +27,8 @@ function M.new(env)
   self.a, self.b = nil, nil                         -- { path, name, d, origin (timeline seconds of file time 0), t0, t1 (the used part, file time) }
   self.line = nil                                   -- seconds on the timeline
   self.tol_time, self.tol_cents = 0.6, 100
+  self.curve = "smooth"                             -- the shape of the crossover (see ats_cross): smooth, linear, equal, s
+  self.diag_pts = {}                                -- Ctrl+click in a lane: { t (timeline s), f (Hz) } x 2 = a diagonal line (low partials cross first)
   self.view = { 0, 10 }
   self.drag, self.prev_down = nil, false
   self.message = nil
@@ -45,18 +47,21 @@ function Page:say(msg) self.message = msg end
 
 -- How many threads the present recipe would make (counted when something is let go, not while it moves). Skipped for big sounds (the count resamples both).
 function Page:recount()
-  self.threads_est = nil
+  self.threads_est, self.thread_lines = nil, nil
   if not (self.a and self.b) or not self:overlap() then return end
   local cells = self.a.d.partials * self.a.d.frames + self.b.d.partials * self.b.d.frames
   if cells > 3e6 then self.threads_est = -1; return end
   local info = cross.count(self:spec())
   self.threads_est = info and info.pairs or nil
+  self.thread_lines, self.thread_l_is_a = info and info.threads, info and info.l_is_a
 end
 
 -- ------------------------------------------------------------------ the sounds
 local function sound_end(s) return s.d.times[s.d.frames] end
 
-function Page:fit_view()
+function Page:fit_view(force)
+  if force then self.zoomed = false end
+  if self.zoomed then return end                                      -- (a view that was zoomed by hand stays until a sound is loaded or removed)
   local lo, hi
   for _, s in ipairs({ self.a, self.b }) do
     if s then
@@ -136,10 +141,26 @@ function Page:load(slot, path)
   self:make_thumb(slot)
   self.line = nil
   self:recount()
-  self:fit_view()
+  self:fit_view(true)
   self:say(string.format("%s loaded: %.2f s, %d partials", s.name, d.dur, d.partials))
   self:memory_check()
   return true
+end
+
+-- Right-click on a block: the sound leaves its lane. A sound with changes that are not in a file asks first (nothing else would bring it back).
+function Page:remove(slot)
+  local s = self[slot]
+  if not s then return end
+  if s.edited then
+    local answer = reaper.MB(s.name .. " has changes that are not saved. Remove it anyway?", "ReaATS", 4)
+    if answer ~= 6 then return end
+  end
+  self[slot] = nil
+  self.line = nil
+  self.results_for = nil
+  self:fit_view(true)
+  self:recount()
+  self:say(slot:upper() .. " removed")
 end
 
 -- A double-click on a block (or EDIT): the sound opens in the editor, from memory (no file is read, nothing has to be saved), to edit it (a stretch to make it
@@ -171,7 +192,7 @@ function Page:enter()
     end
   end
   self.editing = nil
-  self:fit_view()
+  self:fit_view(true)
   self:recount()
 end
 
@@ -203,7 +224,7 @@ function Page:use_open_sound(slot)
   self[slot] = s
   self:make_thumb(slot)
   self.line = nil
-  self:fit_view()
+  self:fit_view(true)
   self:recount()
   self:say(string.format("the sound of the editor is %s now: %s%s", slot:upper(), s.name, s.edited and " (with the changes made in the editor)" or ""))
 end
@@ -228,10 +249,43 @@ function Page:current_line()
   return self.line, lo, hi
 end
 
+-- The diagonal: { t1, f1, t2, f2 } with the low point first, or nil (a vertical line).
+function Page:diag()
+  local p = self.diag_pts
+  if #p < 2 then return nil end
+  local lo, hi = p[1], p[2]
+  if lo.f > hi.f then lo, hi = hi, lo end
+  return { lo.t, lo.f, hi.t, hi.f }
+end
+
+-- Frequency <-> height in a lane (the pictures: log scale, FMIN .. FMAX, 4 px inside the lane).
+function Page:f_to_y(lane, f) return lane.y + 4 + (lane.h - 8) * (1 - (math.log(f) - math.log(FMIN)) / math.log(FMAX / FMIN)) end
+function Page:y_to_f(lane, y)
+  local fr = clamp(1 - (y - lane.y - 4) / (lane.h - 8), 0, 1)
+  return FMIN * (FMAX / FMIN) ^ fr
+end
+
 function Page:spec()
   local a, b = self.a, self.b
-  return { a = { d = a.d, t0 = a.t0, t1 = a.t1, pos = self:pos_of(a) }, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = self:pos_of(b) },
-           line = self:current_line(), tol_time = self.tol_time, tol_cents = self.tol_cents }
+  return { a = { d = a.d, t0 = a.t0, t1 = a.t1, pos = self:pos_of(a), gain = 10 ^ ((a.gain_db or 0) / 20) },
+           b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = self:pos_of(b), gain = 10 ^ ((b.gain_db or 0) / 20) },
+           line = self:current_line(), tol_time = self.tol_time, tol_cents = self.tol_cents, curve = self.curve,
+           diag = self:diag() }
+end
+
+-- Listens to the crossing without making a file: the result is built in memory and played from a little before the transition to a little after it.
+function Page:audition()
+  if not (self.a and self.b) then self:say("load both sounds first"); return end
+  local d, info = cross.build(self:spec())
+  if not d then self:say("cannot audition: " .. tostring(info)); return end
+  local from, to = 0, nil
+  if info.line then
+    local half = (self.tol_time or 0) / 2
+    from = math.max(0, info.line - half - 1.5)
+    to = math.min(d.dur, info.line + half + 1.5)
+  end
+  if not self.env.audition(d, from, to) then return end
+  self:say("listening")
 end
 
 -- Makes the result (a new file) and opens it in the editor.
@@ -243,7 +297,7 @@ function Page:make()
   repeat path = string.format("%s_cross%d.ats", stem, n); n = n + 1 until not reaper.file_exists(path)
   local info, err = cross.make(self:spec(), path)
   if not info then self:say("cannot make the result: " .. tostring(err)); return end
-  self.results[path] = { path = path, line = info.line, grey0 = info.grey0, grey1 = info.grey1, ov0 = info.ov0, ov1 = info.ov1, t_start = info.t_start, threads = info.threads }
+  self.results[path] = { path = path, diag = info.diag, line = info.line, grey0 = info.grey0, grey1 = info.grey1, ov0 = info.ov0, ov1 = info.ov1, t_start = info.t_start, threads = info.threads }
   local msg = string.format("%s: %d partials in %d rows, %d thread%s", basename(path), info.tracks, info.rows, info.pairs, info.pairs == 1 and "" or "s")
   if self.env.on_open(path) then
     self.env.set_status(msg)
@@ -281,6 +335,10 @@ function Page:geom(W, H, top)
   local function box(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x = x, y = y, w = w, h = h } end
   g.sl_time = box("sl_time", 40, 394, 300, 10)
   g.sl_freq = box("sl_freq", 420, 394, 300, 10)
+  local function obox(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top, true); if x then return { x = x, y = y, w = w, h = h } end end
+  g.dd_curve = obox("dd_curve", 740, 394, 150, 22)
+  g.sl_gain_a = obox("sl_gain_a", 660, 52, 200, 10)
+  g.sl_gain_b = obox("sl_gain_b", 660, 196, 200, 10)
   local function rect(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x, y, w, h } end
   g.btn = {
     back = rect("btn_back", W - 120, 6, 90, 24),
@@ -288,6 +346,8 @@ function Page:geom(W, H, top)
     load_b = rect("btn_load_b", 40, 188, 110, 24), edit_b = rect("btn_edit_b", 158, 188, 190, 24), open_b = rect("btn_use_b", 356, 188, 290, 24),
     make = rect("btn_make", 40, 434, 190, 32),
   }
+  local ax, ay, aw, ah = self:el("btn_audition", 240, 434, 110, 32, top, true)
+  if ax then g.btn.audition = { ax, ay, aw, ah } end
   local function pt(id, dx, dy, always) local x, y = self:el(id, dx, dy, 0, 0, top, not always); if x then return { x = x, y = y } end end
   g.texts = { title = pt("txt_title", 40, 8), threads = pt("txt_threads", 40, 416), hint = pt("txt_make_hint", 244, 443),
               message = pt("txt_message", 40, 478, true), help1 = pt("txt_help1", 40, 506), help2 = pt("txt_help2", 40, 524) }
@@ -319,14 +379,81 @@ function Page:slider_value(g, which, mx)
   else self.tol_cents = math.floor((10 + frac * 590) / 10 + 0.5) * 10 end
 end
 
+-- The gain of a sound (dB): its slider, -24 .. +12, sticks at 0.
+local GAIN_MIN, GAIN_MAX = -24, 12
+local CURVES = { { "smooth", "Smooth" }, { "linear", "Linear" }, { "equal", "Equal power" }, { "s", "S curve" } }
+local function curve_name(k) for _, c in ipairs(CURVES) do if c[1] == k then return c[2] end end return k end
+function Page:gain_value(g, slot, mx)
+  local s = self[slot]
+  local sl = g["sl_gain_" .. slot]
+  if not (s and sl) then return end
+  local db = GAIN_MIN + clamp((mx - sl.x) / sl.w, 0, 1) * (GAIN_MAX - GAIN_MIN)
+  db = math.floor(db * 2 + 0.5) / 2
+  if math.abs(db) < 0.75 then db = 0 end
+  s.gain_db = db
+end
+
+local function block_at(self, g, mx, my)
+  for _, slot in ipairs({ "a", "b" }) do
+    local s = self[slot]
+    local lane = (slot == "a") and g.laneA or g.laneB
+    if s and my >= lane.y and my < lane.y + lane.h and mx >= self:tx(g, s.origin + s.d.times[1]) and mx <= self:tx(g, s.origin + sound_end(s)) then return slot end
+  end
+end
+
+-- Zoom with the wheel round the pointer (Shift + wheel scrolls), a drag on the ruler scrolls.
+function Page:zoom(g, mx, wheel, shift)
+  local v = self.view
+  local span = v[2] - v[1]
+  if shift then
+    local d = -wheel / 120 * span * 0.1
+    self.view = { v[1] + d, v[2] + d }
+  else
+    local t = self:tt(g, mx)
+    local k = 0.8 ^ (wheel / 120)
+    local ns = clamp(span * k, 0.05, 3600)
+    local f = (t - v[1]) / span
+    self.view = { t - f * ns, t + (1 - f) * ns }
+  end
+  self.zoomed = true
+end
+
 function Page:mouse(mx, my, cap, wheel)
   local W, H = math.floor(gfx.w), math.floor(gfx.h)
   local g = self:geom(W, H, self.top or 40)
   local down = (cap & 1) ~= 0
+  local right = (cap & 2) ~= 0
+  local shift = (cap & 8) ~= 0
+  if wheel and wheel ~= 0 and my >= g.laneA.y - 20 and my <= g.laneB.y + g.laneB.h + 40 then self:zoom(g, mx, wheel, shift) end
+  if right and not self.prev_right then                           -- right-click on a block removes that sound
+    local slot = block_at(self, g, mx, my)
+    if slot then self:remove(slot) end
+  end
+  self.prev_right = right
+  if down and not self.prev_down and self.dd_open and g.dd_curve then       -- the open list of curves takes this click
+    local dd = g.dd_curve
+    for i, c in ipairs(CURVES) do
+      if mx >= dd.x and mx < dd.x + dd.w and my >= dd.y + i * dd.h and my < dd.y + (i + 1) * dd.h then self.curve = c[1] end
+    end
+    self.dd_open = false
+    self.prev_down = down
+    return
+  end
   if down and not self.prev_down then
     self.drag = nil
     local b = g.btn
-    if inside(b.back, mx, my) then self.env.back()
+    local ctrl = (cap & 4) ~= 0
+    local dd = g.dd_curve
+    if ctrl and not shift and (my >= g.laneA.y and my < g.laneA.y + g.laneA.h or my >= g.laneB.y and my < g.laneB.y + g.laneB.h) then
+      -- Ctrl+click in a lane: a point of the diagonal (low and high in the picture); the second one makes the line, a third starts again
+      local lane = (my < g.laneA.y + g.laneA.h) and g.laneA or g.laneB
+      if #self.diag_pts >= 2 then self.diag_pts = {} end
+      self.diag_pts[#self.diag_pts + 1] = { t = self:tt(g, mx), f = self:y_to_f(lane, my) }
+      self:recount()
+      self.prev_down = down
+      return
+    elseif dd and mx >= dd.x and mx < dd.x + dd.w and my >= dd.y and my < dd.y + dd.h then self.dd_open = true
+    elseif inside(b.back, mx, my) then self.env.back()
     elseif inside(b.load_a, mx, my) then self:choose("a")
     elseif inside(b.edit_a, mx, my) then self:edit_in_editor("a")
     elseif inside(b.open_a, mx, my) then self:use_open_sound("a")
@@ -334,18 +461,30 @@ function Page:mouse(mx, my, cap, wheel)
     elseif inside(b.open_b, mx, my) then self:use_open_sound("b")
     elseif inside(b.load_b, mx, my) then self:choose("b")
     elseif inside(b.make, mx, my) then self:make()
+    elseif b.audition and inside(b.audition, mx, my) then self:audition()
     else
-      for _, which in ipairs({ "sl_time", "sl_freq" }) do
-        local s = g[which]
-        if mx >= s.x - 6 and mx < s.x + s.w + 6 and my >= s.y - 8 and my < s.y + s.h + 8 then
-          self.drag = { kind = "slider", which = which }
-          self:slider_value(g, which, mx)
+      for _, which in ipairs({ "sl_time", "sl_freq", "sl_gain_a", "sl_gain_b" }) do
+        local sl = g[which]
+        if sl and mx >= sl.x - 6 and mx < sl.x + sl.w + 6 and my >= sl.y - 8 and my < sl.y + sl.h + 8 then
+          if which:sub(1, 8) == "sl_gain_" then
+            self.drag = { kind = "gain", slot = which:sub(9) }
+            self:gain_value(g, self.drag.slot, mx)
+          else
+            self.drag = { kind = "slider", which = which }
+            self:slider_value(g, which, mx)
+          end
         end
       end
+      if not self.drag and my >= g.ruler - 4 and my <= g.ruler + 16 and mx >= g.x0 and mx <= g.x1 then
+        local now = reaper.time_precise()
+        local lc = self.last_ruler
+        if lc and now - lc < 0.45 then self.last_ruler = nil; self:fit_view(true)       -- a double-click on the ruler: the whole timeline again
+        else self.last_ruler = now; self.drag = { kind = "pan", x = mx, v0 = self.view[1], v1 = self.view[2], acc = 0 } end
+      end
       if not self.drag then
-        local line = self:current_line()
+        local line = (#self.diag_pts < 2) and self:current_line() or nil
         if line and math.abs(mx - self:tx(g, line)) <= 7 and my >= g.laneA.y - 14 and my <= g.laneB.y + g.laneB.h + 4 then
-          self.drag = { kind = "line" }
+          self.drag = { kind = "line", x = mx, hx = self:tx(g, line), acc = 0 }
         end
       end
       if not self.drag then
@@ -363,10 +502,10 @@ function Page:mouse(mx, my, cap, wheel)
             end
             self.last_click = { slot = slot, t = now, x = mx, y = my }
             local x0, x1 = self:tx(g, self:pos_of(s)), self:tx(g, self:end_of(s))
-            if math.abs(mx - x0) <= 7 then self.drag = { kind = "cut_in", slot = slot }
-            elseif math.abs(mx - x1) <= 7 then self.drag = { kind = "cut_out", slot = slot }
+            if math.abs(mx - x0) <= 7 then self.drag = { kind = "cut_in", slot = slot, x = mx, hx = x0, acc = 0 }
+            elseif math.abs(mx - x1) <= 7 then self.drag = { kind = "cut_out", slot = slot, x = mx, hx = x1, acc = 0 }
             elseif mx >= self:tx(g, s.origin + s.d.times[1]) and mx <= self:tx(g, s.origin + sound_end(s)) then
-              self.drag = { kind = "move", slot = slot, mx0 = mx, origin0 = s.origin }
+              self.drag = { kind = "move", slot = slot, x = mx, acc = 0, origin0 = s.origin }
             end
             if self.drag then break end
           end
@@ -375,19 +514,28 @@ function Page:mouse(mx, my, cap, wheel)
     end
   elseif down and self.drag then
     local d = self.drag
+    if d.x then                                                      -- Shift = fine: a tenth of the movement of the mouse
+      d.acc = d.acc + (mx - d.x) * (shift and 0.1 or 1)
+      d.x = mx
+    end
     if d.kind == "slider" then self:slider_value(g, d.which, mx)
+    elseif d.kind == "gain" then self:gain_value(g, d.slot, mx)
+    elseif d.kind == "pan" then
+      local dt = -d.acc / g.pps
+      self.view = { d.v0 + dt, d.v1 + dt }
+      self.zoomed = true
     elseif d.kind == "line" then
       local lo, hi = self:overlap()
-      if lo then self.line = clamp(self:tt(g, mx), lo, hi) end
+      if lo then self.line = clamp(self:tt(g, d.hx + d.acc), lo, hi) end
     elseif d.kind == "move" then
-      self[d.slot].origin = d.origin0 + (mx - d.mx0) / g.pps
+      self[d.slot].origin = d.origin0 + d.acc / g.pps
     elseif d.kind == "cut_in" then
       local s = self[d.slot]
-      s.t0 = clamp(self:tt(g, mx) - s.origin, s.d.times[1], s.t1 - 0.05)
+      s.t0 = clamp(self:tt(g, d.hx + d.acc) - s.origin, s.d.times[1], s.t1 - 0.05)
       s.full = false
     elseif d.kind == "cut_out" then
       local s = self[d.slot]
-      s.t1 = clamp(self:tt(g, mx) - s.origin, s.t0 + 0.05, sound_end(s))
+      s.t1 = clamp(self:tt(g, d.hx + d.acc) - s.origin, s.t0 + 0.05, sound_end(s))
       s.full = false
     end
   end
@@ -402,7 +550,10 @@ function Page:mouse(mx, my, cap, wheel)
 end
 
 function Page:key(ch)
+  if ch == 27 and (#self.diag_pts > 0 or self.dd_open) then self.diag_pts = {}; self.dd_open = false; self:recount(); return true end     -- Esc: back to a vertical line
   if ch == 13 then self:make(); return true end
+  if ch == 32 then self.env.stop_audition(); return true end
+  if ch == 97 or ch == 65 then self:audition(); return true end
   return false
 end
 
@@ -516,6 +667,29 @@ function Page:draw_tip(g, W, H)
   end
 end
 
+-- The time of the diagonal at a frequency (seconds on the timeline), inside the overlap.
+function Page:diag_time(dg, f, lo, hi)
+  local lf1, lf2 = math.log(dg[2]), math.log(dg[4])
+  local x = (lf2 ~= lf1) and clamp((math.log(f) - lf1) / (lf2 - lf1), 0, 1) or 0
+  return clamp(dg[1] + (dg[3] - dg[1]) * x, lo, hi)
+end
+
+-- The partials of A and of B that make a thread blink orange in their own lane, at their own frequency, over the grey area they cross in.
+function Page:draw_threads(g)
+  local lines = self.thread_lines
+  if not (lines and #lines > 0) then return end
+  local on = (reaper.time_precise() * 2.5) % 1 < 0.5
+  if on then gfx.set(1, 0.62, 0.1, 1) else gfx.set(0.45, 0.25, 0.05, 1) end
+  local l_lane, r_lane = g.laneA, g.laneB
+  if not self.thread_l_is_a then l_lane, r_lane = g.laneB, g.laneA end
+  for _, th in ipairs(lines) do
+    local x0, x1 = self:tx(g, th.t0), self:tx(g, th.t1)
+    local yl, yr = self:f_to_y(l_lane, clamp(th.fl, FMIN, FMAX)), self:f_to_y(r_lane, clamp(th.fr, FMIN, FMAX))
+    gfx.rect(x0, yl - 1, math.max(x1 - x0, 2), 2, 1)
+    gfx.rect(x0, yr - 1, math.max(x1 - x0, 2), 2, 1)
+  end
+end
+
 local function put(pos, str, r, g, b) if pos then text(pos.x, pos.y, str, r, g, b) end end
 
 function Page:draw(W, H, top)
@@ -561,21 +735,54 @@ function Page:draw(W, H, top)
     text(x + 4, g.ruler + 1, string.format(step < 1 and "%.2f s" or "%g s", t), 0.55, 0.58, 0.64)
     t = t + step
   end
-  -- the transition space, the red line and its grey band
+  -- the transition space, the red line and its grey band (or the diagonal)
   local line, lo, hi = self:current_line()
+  local dg = self:diag()
   if lo then
+    local y0, y1 = g.laneA.y, g.laneB.y + g.laneB.h
     gfx.set(0.55, 0.58, 0.65, 0.12)
-    gfx.rect(self:tx(g, lo), g.laneA.y, self:tx(g, hi) - self:tx(g, lo), g.laneB.y + g.laneB.h - g.laneA.y, 1)
+    gfx.rect(self:tx(g, lo), y0, self:tx(g, hi) - self:tx(g, lo), y1 - y0, 1)
     local w = self.tol_time
-    local g0, g1 = math.max(line - w / 2, lo), math.min(line + w / 2, hi)
-    gfx.set(0.6, 0.63, 0.7, 0.35)
-    gfx.rect(self:tx(g, g0), g.laneA.y, math.max(self:tx(g, g1) - self:tx(g, g0), 1), g.laneB.y + g.laneB.h - g.laneA.y, 1)
-    gfx.set(1, 0.23, 0.19, 1)
-    local x = self:tx(g, line)
-    gfx.rect(x - 1, g.laneA.y - 12, 3, g.laneB.y + g.laneB.h - g.laneA.y + 16, 1)
-    gfx.rect(x - 6, g.laneA.y - 14, 13, 8, 1)
-    gfx.setfont(1, "Arial", 12)
-    text(x + 10, g.laneA.y - 16, string.format("the red line  %.2f s", line), 1, 0.45, 0.4)
+    if dg then
+      for _, lane in ipairs({ g.laneA, g.laneB }) do                               -- the grey band follows the diagonal, row by row
+        for y = math.floor(lane.y + 4), math.floor(lane.y + lane.h - 5), 2 do
+          local tc = self:diag_time(dg, self:y_to_f(lane, y), lo, hi)
+          local a0, a1 = math.max(tc - w / 2, lo), math.min(tc + w / 2, hi)
+          gfx.set(0.6, 0.63, 0.7, 0.35)
+          gfx.rect(self:tx(g, a0), y, math.max(self:tx(g, a1) - self:tx(g, a0), 1), 2, 1)
+        end
+        gfx.set(1, 0.23, 0.19, 1)
+        local fa, fb = math.max(dg[2], FMIN), math.min(dg[4], FMAX)
+        for k = 0, 1 do gfx.line(self:tx(g, dg[1]) + k, self:f_to_y(lane, fa), self:tx(g, dg[3]) + k, self:f_to_y(lane, fb)) end
+      end
+      gfx.setfont(1, "Arial", 12)
+      text(self:tx(g, dg[1]) + 10, g.laneA.y - 16, "diagonal", 1, 0.45, 0.4)
+    else
+      local g0, g1 = math.max(line - w / 2, lo), math.min(line + w / 2, hi)
+      gfx.set(0.6, 0.63, 0.7, 0.35)
+      gfx.rect(self:tx(g, g0), y0, math.max(self:tx(g, g1) - self:tx(g, g0), 1), y1 - y0, 1)
+      if g1 - g0 > 0.01 then                                                          -- the curve of the crossover: s runs from 0 (only the first sound) to 1 (only the second)
+        gfx.set(1, 1, 1, 0.75)
+        local px, py
+        for k = 0, 40 do
+          local cx = self:tx(g, g0 + (g1 - g0) * k / 40)
+          local cy = y1 - cross.shape(self.curve, k / 40) * (y1 - y0)
+          if px then gfx.line(px, py, cx, cy); gfx.line(px, py + 1, cx, cy + 1) end
+          px, py = cx, cy
+        end
+      end
+      gfx.set(1, 0.23, 0.19, 1)
+      local x = self:tx(g, line)
+      gfx.rect(x - 1, g.laneA.y - 12, 3, y1 - y0 + 16, 1)
+      gfx.rect(x - 6, g.laneA.y - 14, 13, 8, 1)
+      gfx.setfont(1, "Arial", 12)
+      text(x + 10, g.laneA.y - 16, string.format("%.3f s", line), 1, 0.45, 0.4)
+      if #self.diag_pts == 1 then                                                     -- the first point of a diagonal waits for the second
+        local pt = self.diag_pts[1]
+        gfx.set(1, 0.23, 0.19, 1)
+        for _, lane in ipairs({ g.laneA, g.laneB }) do gfx.circle(self:tx(g, pt.t), self:f_to_y(lane, pt.f), 4, 1, 1) end
+      end
+    end
   elseif self.a and self.b then
     gfx.setfont(1, "Arial", 12)
     text(g.x0, g.ruler + 26, "the used parts do not overlap: no transition, A and then B, nothing is faded", 0.75, 0.78, 0.84)
@@ -595,15 +802,34 @@ function Page:draw(W, H, top)
     gfx.set(0.35, 0.38, 0.43, 1)
     gfx.rect(s.x, s.y, s.w, s.h, 0)
   end
-  slider(g.sl_time, "Time tolerance (the grey area)", self.tol_time < 0.005 and "hard line" or string.format("%.2f s", self.tol_time), math.sqrt(math.min(self.tol_time / self:time_max(), 1)))
-  slider(g.sl_freq, "Frequency tolerance (which partials are one thread)", string.format("%d cents", self.tol_cents), (self.tol_cents - 10) / 590)
+  self:draw_threads(g)
+  for _, slot in ipairs({ "a", "b" }) do
+    local sl = g["sl_gain_" .. slot]
+    if sl and self[slot] then
+      local db = self[slot].gain_db or 0
+      slider(sl, "Level " .. slot:upper(), string.format("%+.1f dB", db), (db - GAIN_MIN) / (GAIN_MAX - GAIN_MIN))
+    end
+  end
+  slider(g.sl_time, "Time tolerance", self.tol_time < 0.005 and "hard line" or string.format("%.2f s", self.tol_time), math.sqrt(math.min(self.tol_time / self:time_max(), 1)))
+  slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", self.tol_cents), (self.tol_cents - 10) / 590)
   gfx.setfont(1, "Arial", 12)
+  gfx.setfont(1, "Arial", 24)
   local est = self.threads_est                                              -- only the count (nothing else is written here)
   if est == -1 then put(g.texts.threads, "threads: counted when made", 0.6, 0.64, 0.7)
   elseif est then
     if est > 0 then put(g.texts.threads, string.format("%d thread%s", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
     else put(g.texts.threads, "no threads", 1, 0.5, 0.3) end
   end
+  if g.dd_curve then
+    local dd = g.dd_curve
+    gfx.setfont(1, "Arial", 13)
+    text(dd.x, dd.y - 20, "Curve", 0.9, 0.92, 0.96)
+    gfx.set(0.16, 0.18, 0.22, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 1)
+    gfx.set(0.35, 0.38, 0.43, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 0)
+    text(dd.x + 8, dd.y + (dd.h - 14) / 2, curve_name(self.curve), 1, 0.9, 0.5)
+    text(dd.x + dd.w - 16, dd.y + (dd.h - 14) / 2, "v", 0.7, 0.72, 0.78)
+  end
+  if g.btn.audition then button(g.btn.audition, self:label("btn_audition", "AUDITION"), { 0.95, 0.75, 0.3 }, self.a ~= nil and self.b ~= nil) end
   button(g.btn.make, self:label("btn_make", "MAKE RESULT"), { 0.45, 0.85, 0.6 }, self.a ~= nil and self.b ~= nil)
   gfx.setfont(1, "Arial", 12)
   put(g.texts.hint, "writes a new .ats file and opens it in the editor (A and B stay as they are); Enter does the same", 0.6, 0.64, 0.7)
@@ -612,6 +838,16 @@ function Page:draw(W, H, top)
   put(g.texts.help2, "The partials of A and B that are close in frequency (the tolerance) become one thread that moves from A's frequency to B's.", 0.55, 0.58, 0.64)
   self:draw_info_marks(g)
   self:draw_tip(g, W, H)
+  if self.dd_open and g.dd_curve then                                          -- the list of curves, over everything
+    local dd = g.dd_curve
+    gfx.setfont(1, "Arial", 13)
+    for i, c in ipairs(CURVES) do
+      local y = dd.y + i * dd.h
+      gfx.set(0.1, 0.11, 0.14, 1); gfx.rect(dd.x, y, dd.w, dd.h, 1)
+      gfx.set(0.35, 0.38, 0.43, 1); gfx.rect(dd.x, y, dd.w, dd.h, 0)
+      text(dd.x + 8, y + (dd.h - 14) / 2, c[2], c[1] == self.curve and 1 or 0.85, c[1] == self.curve and 0.9 or 0.87, c[1] == self.curve and 0.5 or 0.9)
+    end
+  end
 end
 
 return M

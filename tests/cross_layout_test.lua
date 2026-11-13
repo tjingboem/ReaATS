@@ -2,6 +2,7 @@
 -- The CROSS page, in pixels of the default window (1100 x 640). Elements that are not here use the page's own default place.
 return {
   el = {
+    btn_audition       = { x = 240, y = 474, w = 120, h = 32, label = "AUDITION" },
     btn_back           = { x = 980, y = 46, w = 90, h = 24, label = "EDITOR" },
     btn_edit_a         = { x = 158, y = 84, w = 190, h = 24, label = "EDIT A IN THE EDITOR" },
     btn_edit_b         = { x = 158, y = 228, w = 190, h = 24, label = "EDIT B IN THE EDITOR" },
@@ -10,12 +11,15 @@ return {
     btn_make           = { x = 40, y = 474, w = 190, h = 32, label = "MAKE RESULT" },
     btn_use_a          = { x = 356, y = 84, w = 290, h = 24, label = "USE THE EDITOR'S SOUND AS A" },
     btn_use_b          = { x = 356, y = 228, w = 290, h = 24, label = "USE THE EDITOR'S SOUND AS B" },
+    dd_curve           = { x = 740, y = 434, w = 150, h = 22, label = "Curve (menu)" },
     lane_a             = { x = 40, y = 120, w = 1020, h = 104, label = "Lane A (time across)" },
     lane_b             = { x = 40, y = 260, w = 1020, h = 104, label = "Lane B (time across)" },
     ruler              = { x = 40, y = 370, w = 1020, h = 16, label = "Ruler" },
     scale_hz_a         = { x = 2, y = 124, w = 34, h = 96, label = "Frequency numbers, lane A" },
     scale_hz_b         = { x = 2, y = 264, w = 34, h = 96, label = "Frequency numbers, lane B" },
     sl_freq            = { x = 420, y = 434, w = 300, h = 10, label = "Frequency tolerance (slider)" },
+    sl_gain_a          = { x = 660, y = 90, w = 200, h = 10, label = "Level A (slider)" },
+    sl_gain_b          = { x = 660, y = 234, w = 200, h = 10, label = "Level B (slider)" },
     sl_time            = { x = 40, y = 434, w = 300, h = 10, label = "Time tolerance (slider)" },
     txt_make_hint      = { x = 244, y = 483, w = 700, h = 16, label = "Hint beside MAKE RESULT" },
     txt_message        = { x = 40, y = 518, w = 1020, h = 16, label = "Message" },

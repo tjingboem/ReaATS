@@ -207,5 +207,49 @@
     "y": 264,
     "w": 34,
     "h": 96
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_gain_a",
+    "label": "Level A (slider)",
+    "shape": "box",
+    "x": 660,
+    "y": 90,
+    "w": 200,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_gain_b",
+    "label": "Level B (slider)",
+    "shape": "box",
+    "x": 660,
+    "y": 234,
+    "w": 200,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "dd_curve",
+    "label": "Curve (menu)",
+    "shape": "box",
+    "x": 740,
+    "y": 434,
+    "w": 150,
+    "h": 22
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_audition",
+    "label": "AUDITION",
+    "shape": "box",
+    "x": 240,
+    "y": 474,
+    "w": 120,
+    "h": 32
   }
 ]

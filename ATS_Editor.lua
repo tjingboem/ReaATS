@@ -2226,6 +2226,31 @@ function W.draw_cross_line()
       end
     end
   end
+  if r.diag then                                                           -- a diagonal line: low and high point of the picture (display only)
+    local lanes = lane_layout(ph)
+    local lane = lanes[1]
+    for _, l in ipairs(lanes) do for _, c in ipairs(l.chans) do if c == cur then lane = l end end end
+    local lpy, lph = py + lane.off, lane.h
+    local d = r.diag
+    local w = (r.grey1 or 0) - (r.grey0 or 0)
+    gfx.set(0.6, 0.63, 0.7, 0.18)
+    for yy = 0, lph - 2, 2 do                                             -- the grey band follows the line row by row
+      local lf1, lf2 = math.log(d[2]), math.log(d[4])
+      local f = view.f0 * (view.f1 / view.f0) ^ (1 - yy / lph)
+      local fx = (lf2 ~= lf1) and clamp((math.log(f) - lf1) / (lf2 - lf1), 0, 1) or 0
+      local tcr = d[1] + (d[3] - d[1]) * fx
+      local x0, x1 = px + tx(tcr - w / 2, pw), px + tx(tcr + w / 2, pw)
+      x0, x1 = math.max(x0, px), math.min(x1, px + pw)
+      if x1 > x0 then gfx.rect(x0, lpy + yy, x1 - x0, 2, 1) end
+    end
+    gfx.set(1, 0.23, 0.19, 0.95)
+    local cx1, cy1, cx2, cy2 = clip_segment(tx(d[1], pw), fy(d[2], lph), tx(d[3], pw), fy(d[4], lph), pw, lph)
+    if cx1 then
+      gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1)
+      gfx.line(px + cx1 + 1, lpy + cy1, px + cx2 + 1, lpy + cy2, 1)
+    end
+    return
+  end
   if x >= px - 7 and x <= px + pw + 7 then
     gfx.set(1, 0.23, 0.19, W.cross_drag and 1 or 0.95)
     gfx.rect(x - 1, py, 3, ph, 1)
@@ -2235,7 +2260,7 @@ end
 -- The line is dragged here (the fine tuning); the CROSS page takes the new place (W.cross.line is on the timeline: the result's time + where its 0 lies).
 function W.cross_line_input(px, py, pw, ph, mx, my, cap)
   local r = W.cross_result()
-  if not r then W.cross_drag = false; return false end
+  if not r or r.diag then W.cross_drag = false; return false end      -- (a diagonal is moved on the CROSS page)
   local down = (cap & 1) ~= 0
   if W.cross_drag then
     if down then
@@ -2994,6 +3019,35 @@ end
 
 -- AUDITION of the selection only (A with a selection): only the selected points sound, from just before the first to just after the last
 -- frame of the selection (the sines only, in the SPACE output; no noise). Always made by the Python program, always made again.
+-- AUDITION of a sound that is only in memory and is not the editor's (the CROSS page: the crossing made in memory, from `from` to `to` seconds): the same
+-- preparation and the same preview as the other auditions, the editor's own sound and undo are not touched. Python when it is found, else the built-in synthesis.
+function W.audition_data(d, from, to)
+  if pending and pending.kind == "print" then set_status("wait: the print is being prepared"); return false end
+  stop_audition()
+  audition_count = audition_count + 1
+  local dir = tmp_dir()
+  local wav = string.format("%s/reaats_audition_%s_%d.wav", dir, session_id, audition_count)
+  local use_noise = d.has_noise and true or false
+  local req = { list = { d }, o = { sines = true, noise = use_noise, from = from, to = to }, dirty_list = { {} } }
+  local job, engine
+  local script = script_dir .. "/python/reaats_synth.py"
+  if reaper.ExecProcess and reaper.file_exists(script) and analysis and not python_missing and (analysis.python or analysis:find_python()) then
+    synth_count = synth_count + 1
+    local id = string.format("%s_s%d", session_id, synth_count)
+    local file = string.format("%s/reaats_%s_ch1.ats", dir, id)
+    if ats.save(file, d, { phase = false }) then
+      job = py_synth.start({ exe = analysis.python.exe, script = script, files = { file }, edits = nil, temp = { file }, wav = wav, dir = dir, id = id,
+                             from = from, to = to, sines = true, noise = use_noise, seed = 12345, cache_dir = dir .. "/reaats_noise_cache" })
+      if job then engine = "Python" else os.remove(file) end
+    end
+  elseif analysis and not analysis.python then python_missing = true end
+  if not job then
+    job, engine = synth.render_multi_job(req.list, { sines = true, noise = use_noise, from = from, to = to, dirty_list = req.dirty_list }), "Lua"
+  end
+  pending = { kind = "audition", selection = true, mode = "the crossing", channels = 1, wav = wav, engine = engine, req = req, job = job }
+  return true
+end
+
 function W.audition_selection()
   if not data then return end
   W.commit()
@@ -4277,6 +4331,8 @@ W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
   memory_warning = function() return W.memory_warning() end,
   relocate = function(path) return Analysis.relocate(path) end,
   on_open = function(path) return load_file(path) end,
+  audition = function(d, from, to) return W.audition_data(d, from, to) end,
+  stop_audition = function() if stop_audition then stop_audition() end end,
   open_in_editor = function(d, file, current, modified)          -- EDIT A / B (or a double-click on a block): that sound, from memory, in the editor
     if W.load_data(d, file, current, modified) then W.showing_cross = false; dirty = true; return true end
     return false

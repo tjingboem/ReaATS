@@ -178,5 +178,59 @@ do
   os.remove(path)
 end
 
+-- the level of a sound (gain): amplitudes times the factor, noise energy times its square
+do
+  local A = sound({ { 200, 0.5 } }, 1.0, HOP, 4.0)
+  local B = sound({ { 800, 0.5 } }, 1.0, HOP)
+  local d = cross.build({ a = { d = A, pos = 0, gain = 0.5 }, b = { d = B, pos = 2.0 }, line = 0, tol_time = 0 })
+  local r = rows_at(d, 0.5)
+  check("gain 0.5: the amplitude 0.5 becomes 0.25", #r == 1 and math.abs(r[1][1] - 0.25) < 1e-9, r[1] and r[1][1])
+  check("and the noise energy 4.0 becomes 1.0", math.abs(d.noise[3][50] - 1.0) < 1e-9, d.noise[3][50])
+end
+-- the curves: A 200 / 400 Hz and B 205 / 800 Hz overlap from 1.0 to 2.0; in the middle of the grey area (1.5) s = 0.5
+do
+  local A = sound({ { 200, 0.5 }, { 400, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 }, { 800, 0.5 } }, 2.0, HOP)
+  local function mid(curve)
+    local d = cross.build({ a = { d = A, pos = 0 }, b = { d = B, pos = 1.0 }, line = 1.5, tol_time = 0.4, tol_cents = 100, curve = curve })
+    local r = rows_at(d, 1.5)
+    local thread, lone = nil, nil
+    for _, x in ipairs(r) do if x[2] < 300 then thread = x[1] elseif math.abs(x[2] - 400) < 1 then lone = x[1] end end
+    return thread, lone
+  end
+  local th, lone = mid("smooth")
+  check("smooth: a thread keeps its level (0.5), a lone partial is at cos(pi/4) of it", math.abs(th - 0.5) < 1e-6 and math.abs(lone - 0.5 * math.cos(math.pi / 4)) < 1e-6, th .. " " .. tostring(lone))
+  th, lone = mid("linear")
+  check("linear: the lone partial is at half", math.abs(th - 0.5) < 1e-6 and math.abs(lone - 0.25) < 1e-6, th .. " " .. tostring(lone))
+  th, lone = mid("equal")
+  check("equal power: the thread is louder in the middle (cos + sin = 0.707)", math.abs(th - 0.5 * 2 * math.cos(math.pi / 4)) < 1e-6 and math.abs(lone - 0.5 * math.cos(math.pi / 4)) < 1e-6, th .. " " .. tostring(lone))
+  local d = cross.build({ a = { d = A, pos = 0 }, b = { d = B, pos = 1.0 }, line = 1.5, tol_time = 0.4, tol_cents = 100, curve = "s" })
+  local r = rows_at(d, 1.4)                                                    -- a quarter of the way: the S is still lower than the cosine step
+  local lone_s
+  for _, x in ipairs(r) do if math.abs(x[2] - 400) < 1 then lone_s = x[1] end end
+  local d2 = cross.build({ a = { d = A, pos = 0 }, b = { d = B, pos = 1.0 }, line = 1.5, tol_time = 0.4, tol_cents = 100 })
+  local lone_c
+  for _, x in ipairs(rows_at(d2, 1.4)) do if math.abs(x[2] - 400) < 1 then lone_c = x[1] end end
+  check("S: little has happened a quarter of the way (louder A than the cosine step)", lone_s > lone_c, tostring(lone_s) .. " " .. tostring(lone_c))
+end
+-- a diagonal line: the low partials cross first, the high ones later (hard line, so each partial just switches at its own moment)
+do
+  local A = sound({ { 200, 0.5 }, { 2000, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 800, 0.5 }, { 3000, 0.5 } }, 2.0, HOP)
+  local d, info = cross.build({ a = { d = A, pos = 0 }, b = { d = B, pos = 1.0 }, line = 1.5, tol_time = 0, tol_cents = 10, diag = { 1.2, 100, 1.8, 4000 } })
+  local function has(t, f) for _, x in ipairs(rows_at(d, t)) do if math.abs(x[2] - f) < 1 then return true end end return false end
+  check("A's 200 Hz has crossed at 1.5 s (its moment is 1.31 s)", not has(1.5, 200) and has(1.2, 200))
+  check("A's 2000 Hz is still there at 1.5 s (its moment is 1.69 s)", has(1.5, 2000) and not has(1.75, 2000))
+  check("B's 800 Hz starts at 1.54 s, B's 3000 Hz at 1.75 s", not has(1.5, 800) and has(1.6, 800) and not has(1.7, 3000) and has(1.8, 3000))
+  check("the info tells the diagonal", info.diag and math.abs(info.diag[1] - 1.2) < 1e-9 and info.diag[2] == 100)
+end
+-- the count tells where the threads are (for the blinking on the CROSS page)
+do
+  local A = sound({ { 200, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 } }, 2.0, HOP)
+  local info = cross.count({ a = { d = A, pos = 0 }, b = { d = B, pos = 1.0 }, line = 1.5, tol_time = 0.4, tol_cents = 100 })
+  check("the count lists the thread with both frequencies and its time", info.pairs == 1 and info.threads[1] and math.abs(info.threads[1].fl - 200) < 1e-6 and math.abs(info.threads[1].fr - 205) < 1e-6 and info.threads[1].t0 < info.threads[1].t1 and info.l_is_a, info.threads and info.threads[1] and info.threads[1].fl)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

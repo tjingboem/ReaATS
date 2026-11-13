@@ -9,6 +9,7 @@ local edited_path = scratch .. "cx_test_edit.ats"
 local edited_path2 = scratch .. "cx_test_edit2.ats"
 local edited_path3 = scratch .. "cx_test_edit3.ats"
 local edited_path4 = scratch .. "cx_test_edit4.ats"
+for i = 1, 40 do os.remove(scratch .. "cx_test_cross" .. i .. ".ats") end         -- (results of earlier runs: the numbers would climb)
 os.remove(edited_path)
 os.remove(edited_path2)
 os.remove(edited_path3)
@@ -41,6 +42,7 @@ local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
 local clock_skew = 0
+local previews = 0
 local dialog_calls, dialog_ok, dialog_text = 0, false, ""
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
@@ -52,7 +54,9 @@ reaper = {
   MB = function() return 6 end,
   JS_Dialog_BrowseForSaveFile = function() return 0, "" end,
   JS_Dialog_BrowseForOpenFiles = function() return 1, load_path end,
-  PCM_Source_CreateFromFile = function() return nil end,
+  PCM_Source_CreateFromFile = function(p) return { path = p } end,
+  Xen_StartSourcePreview = function() previews = previews + 1; return true end,
+  Xen_StopSourcePreview = function() return true end,
   GetUserInputs = function() dialog_calls = dialog_calls + 1; return dialog_ok, dialog_text end,
   file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
   GetUserFileNameForRead = function() return true, work end,
@@ -87,6 +91,12 @@ local function drag(x0, y0, x1, y1) gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y 
 local last_col, orange_lines = {}, 0
 local old_set = gfx.set
 gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
+local orange_rects, old_rect = 0, gfx.rect
+gfx.rect = function(...)
+  local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.62) < 1e-6 and math.abs(c[3] - 0.1) < 1e-6 then orange_rects = orange_rects + 1 end
+  return old_rect(...)
+end
 gfx.line = function()
   local c = last_col
   if c[1] and ((math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.62) < 1e-6 and math.abs(c[3] - 0.1) < 1e-6) or (math.abs(c[1] - 0.45) < 1e-6 and math.abs(c[2] - 0.25) < 1e-6)) then orange_lines = orange_lines + 1 end
@@ -129,7 +139,7 @@ else
 end
 assert(thumb_blits > 0, "the low resolution images of the sounds are drawn (image buffers 20 and 21)")
 -- B starts half over the end of A: there is an overlap, so there is a red line
-assert(saw("the red line"), "the red line is there inside the overlap: " .. tostring(saw("overlap")))
+assert(saw("^%d+%.%d%d%d s$"), "the red line is there inside the overlap: " .. tostring(saw("overlap")))
 
 -- a double-click on block B opens that sound in the editor; "B = THE OPEN SOUND" brings the file back
 click(700, 300); click(700, 300); strings = {}; frame()
@@ -141,6 +151,11 @@ click(356 + 10, 40 + 188 + 10); strings = {}; frame()
 assert(saw("the sound of the editor is B now: cx_second%.ats"), "USE THE EDITOR'S SOUND AS B: " .. tostring(saw("loaded") or saw("unsaved") or saw("no sound")))
 -- how many threads the recipe would make is counted (A's 200 and 800 Hz meet B's 205 and 800 Hz inside the overlap)
 assert(saw("^2 threads$"), "the page counts the threads: " .. tostring(saw("thread")))
+do                                                                                 -- the partials of the threads blink in both lanes of the page
+  local before = orange_rects
+  for i = 1, 4 do clock_skew = clock_skew + 0.2; strings = {}; frame() end
+  assert(orange_rects - before >= 2, "orange partials are drawn in the lanes: " .. (orange_rects - before))
+end
 -- the time tolerance slider: its left end is a hard line
 click(40, 40 + 394 + 5); strings = {}; frame()
 assert(saw("^hard line$"), "the slider at its left end: hard line: " .. tostring(saw("s$")))
@@ -175,7 +190,7 @@ do
   local tmax = r0.times[r0.frames]
   local line_before
   click(394 + 10, 6 + 9); strings = {}; frame()
-  line_before = tonumber((saw("the red line  ([%d%.]+) s") or ""):match("the red line  ([%d%.]+) s"))
+  line_before = tonumber((saw("^%d+%.%d%d%d s$") or ""):match("^(%d+%.%d%d%d)"))
   script.keys = { 27 }; frame(); strings = {}; frame()
   assert(line_before, "the page tells where the red line is: " .. tostring(saw("red line")))
   -- the line in the editor is at (line - start) / tmax of the picture (62 .. 1050); drag its handle 120 px to the right
@@ -184,7 +199,7 @@ do
   strings = {}; frame()
   assert(saw("^the red line: [%d%.]+ s"), "the line moves in the editor: " .. tostring(saw("red line") or saw("selected")))
   click(394 + 10, 6 + 9); strings = {}; frame()
-  local line_after = tonumber((saw("the red line  ([%d%.]+) s") or ""):match("the red line  ([%d%.]+) s"))
+  local line_after = tonumber((saw("^%d+%.%d%d%d s$") or ""):match("^(%d+%.%d%d%d)"))
   assert(line_after and line_after > line_before + 0.01, "the CROSS page has the new place: " .. tostring(line_before) .. " -> " .. tostring(line_after))
   script.keys = { 27 }; frame(); strings = {}; frame()
 end
@@ -216,7 +231,7 @@ do
   local from = blit_x[21] + blit_w[21] / 2
   drag(math.floor(from), 300, math.floor(from + want - blit_x[21]), 300); strings = {}; frame()
   assert(blit_x[21] < blit_x[20], "B now starts before A: " .. blit_x[21] .. " " .. blit_x[20])
-  assert(saw("^the red line  [%d%.]+ s"), "B before A overlaps again: " .. tostring(saw("overlap") or saw("do not overlap")))
+  assert(saw("^%d+%.%d%d%d s$"), "B before A overlaps again: " .. tostring(saw("overlap") or saw("do not overlap")))
   local pre = scratch .. "cx_test_cross3.ats"
   os.remove(pre)
   click(40 + 20, 40 + 434 + 10); strings = {}; frame()
@@ -259,7 +274,58 @@ do
   click(356 + 10, 40 + 44 + 10); strings = {}; frame()
   assert(saw("the sound of the editor is A now"), "USE THE EDITOR'S SOUND AS A needs no saving: " .. tostring(saw("save") or saw("sound")))
   assert(not saw("save it first"), "no demand to save")
+  -- level of a sound: its slider (layout sl_gain_a at 660, 90; 200 wide, -24 .. +12 dB, sticks at 0)
+  click(660, 90 + 5); strings = {}; frame()
+  assert(saw("^%-24%.0 dB$"), "the level slider at its left end: -24 dB: " .. tostring(saw("dB")))
+  click(660 + 133, 90 + 5); strings = {}; frame()
+  assert(saw("^%+0%.0 dB$"), "and back at 0 dB (it sticks)")
+  -- the curve menu (layout dd_curve at 740, 434; the list opens below it)
+  click(740 + 10, 434 + 10); strings = {}; frame()
+  assert(saw("^Equal power$") and saw("^S curve$"), "the menu lists the curves: " .. tostring(saw("Smooth")))
+  click(740 + 10, 434 + 22 * 2 + 10); strings = {}; frame()                   -- Linear
+  assert(not saw("^S curve$") and saw("^Linear$"), "a choice closes the menu and shows the curve")
+  -- AUDITION on the page: the crossing is made in memory and played (nothing is written)
+  do
+    local before_files = io.open(scratch .. "cx_test_cross5.ats", "rb"); if before_files then before_files:close() end
+    click(240 + 10, 474 + 10)
+    for i = 1, 600 do strings = {}; frame(); if previews > 0 then break end end
+    assert(previews > 0, "AUDITION plays the crossing from memory: " .. previews)
+    script.keys = { 32 }; strings = {}; frame()                                  -- Space stops
+  end
+  -- Ctrl+click twice in a lane: a diagonal; Esc takes it away again
+  local function ctrl_click(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
+  ctrl_click(blit_x[21] + 40, 150); ctrl_click(blit_x[21] + 140, 200); strings = {}; frame()
+  assert(saw("diagonal"), "two Ctrl+clicks make a diagonal line: " .. tostring(saw("red line")))
+  -- MAKE with the diagonal: the result file opens in the editor and its diagonal is drawn over the picture (no crash, the line is not draggable)
+  script.keys = { 13 }; strings = {}; frame(); strings = {}; frame(); frame(); frame()
+  assert(not saw("CROSS: sound A flows into sound B"), "the page is left after MAKE")
+  click(394 + 10, 6 + 9); strings = {}; frame()
+  script.keys = { 27 }; strings = {}; frame(); strings = {}; frame()
+  assert(saw("^%d+%.%d%d%d s$") and not saw("diagonal"), "Esc gives the vertical line back (and stays on the page)")
+  -- Shift = fine drag: a tenth of the mouse movement
+  do
+    local bx = blit_x[21]
+    local mid = bx + blit_w[21] / 2
+    gfx.mouse_cap = 1 | 8; gfx.mouse_x, gfx.mouse_y = mid, 300; frame()
+    gfx.mouse_x = mid + 50; frame(); gfx.mouse_x = mid + 100; frame()
+    local moved = blit_x[21] - bx                                                -- (read while the button is still down: letting go fits the view again)
+    gfx.mouse_cap = 0; frame(); strings = {}; frame()
+    assert(math.abs(moved - 10) < 1.5, "Shift: 100 px of the mouse move the block 10 px: " .. tostring(moved))
+  end
+  -- the wheel zooms round the pointer, a double-click on the ruler fits everything again
+  do
+    local w0 = blit_w[21]
+    gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 500, 300, 240; strings = {}; frame(); gfx.mouse_wheel = 0; strings = {}; frame()
+    assert(blit_w[21] > w0 * 1.3, "the wheel zooms in: " .. w0 .. " -> " .. blit_w[21])
+    click(300, 370 + 5); click(300, 370 + 5); strings = {}; frame()
+    assert(math.abs(blit_w[21] - w0) < 2, "a double-click on the ruler fits the timeline: " .. blit_w[21])
+  end
+  -- right-click on a block removes the sound (B has changes that are not in a file: the question is answered with yes by the mock)
+  do
+    gfx.mouse_cap = 2; gfx.mouse_x, gfx.mouse_y = blit_x[21] + 30, 300; strings = {}; frame(); gfx.mouse_cap = 0; frame()
+    assert(saw("B removed"), "a right-click removes B: " .. tostring(saw("removed") or saw("B")))
+  end
   script.keys = { 27 }; frame()
 end
-os.remove(expected); os.remove(scratch .. "cx_test_cross2.ats"); os.remove(second)
+os.remove(expected); os.remove(scratch .. "cx_test_cross2.ats"); os.remove(scratch .. "cx_test_cross4.ats"); os.remove(second)
 print("CROSS page OK: button, page, A from the open sound, B from a file, the red line, the sliders, MAKE RESULT opens a new numbered file in the editor")
