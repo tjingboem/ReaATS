@@ -110,7 +110,12 @@ assert(saw("CROSS: sound A flows into sound B"), "and the button opens it again"
 
 -- A = the sound that is open in the editor (it was opened with O: a file, not modified)
 click(356 + 10, 84 + 10); strings = {}; frame()
-assert(saw("cx_test%.ats") and saw("used 0%.00 %- 0%.49 s of 0%.50 s"), "A is the open sound: " .. tostring(saw("cx_test") or saw("unsaved") or saw("no sound")))
+gfx.mouse_x, gfx.mouse_y = 948, 120 + 16; strings = {}; frame()   -- the mouse is on the little i of block A (top right of its used part): the box shows the information
+assert(saw("sound A: cx_test%.ats") and saw("used 0%.00 %- 0%.49 s of 0%.50 s") and saw("partials, %d+ frames, hop"), "A is the open sound: " .. tostring(saw("cx_test") or saw("unsaved") or saw("no sound")))
+gfx.mouse_x, gfx.mouse_y = 5, 5; strings = {}; frame()
+assert(not saw("^used 0%.00") and not saw("^sound A: "), "away from the block the picture is free of text")
+gfx.mouse_x, gfx.mouse_y = 300, 170; strings = {}; frame()
+assert(saw("^i$") and not saw("^sound A: "), "on the block (not on the i) there is no box, and the i is drawn")
 -- B from a file (the open-file dialog is a stub)
 load_path = second
 click(40 + 10, 40 + 188 + 10); strings = {}; frame()
@@ -142,6 +147,7 @@ assert(not saw("^hard line$"), "moved: a time tolerance")
 
 -- the cut: drag the right handle of A to the left (A ends at 0.49 s, x = 629 in this window): less of A is used
 drag(629, 160, 529, 160); strings = {}; frame()
+gfx.mouse_x, gfx.mouse_y = 529 - 16, 120 + 16; strings = {}; frame()
 local used = saw("used 0%.00 %- 0%.4%d s of 0%.50 s")
 assert(used and not used:find("0%.49 s of"), "the right handle was dragged: A is cut: " .. tostring(saw("used")))
 

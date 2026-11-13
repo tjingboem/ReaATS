@@ -1,0 +1,189 @@
+[
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_title",
+    "label": "CROSS: sound A flows into sound B",
+    "shape": "box",
+    "x": 40,
+    "y": 48,
+    "w": 400,
+    "h": 20
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_back",
+    "label": "EDITOR",
+    "shape": "box",
+    "x": 980,
+    "y": 46,
+    "w": 90,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_load_a",
+    "label": "LOAD A",
+    "shape": "box",
+    "x": 40,
+    "y": 84,
+    "w": 110,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_edit_a",
+    "label": "EDIT A IN THE EDITOR",
+    "shape": "box",
+    "x": 158,
+    "y": 84,
+    "w": 190,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_use_a",
+    "label": "USE THE EDITOR'S SOUND AS A",
+    "shape": "box",
+    "x": 356,
+    "y": 84,
+    "w": 290,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "lane_a",
+    "label": "Lane A (time across)",
+    "shape": "box",
+    "x": 40,
+    "y": 120,
+    "w": 1020,
+    "h": 104
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_load_b",
+    "label": "LOAD B",
+    "shape": "box",
+    "x": 40,
+    "y": 228,
+    "w": 110,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_edit_b",
+    "label": "EDIT B IN THE EDITOR",
+    "shape": "box",
+    "x": 158,
+    "y": 228,
+    "w": 190,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_use_b",
+    "label": "USE THE EDITOR'S SOUND AS B",
+    "shape": "box",
+    "x": 356,
+    "y": 228,
+    "w": 290,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "lane_b",
+    "label": "Lane B (time across)",
+    "shape": "box",
+    "x": 40,
+    "y": 260,
+    "w": 1020,
+    "h": 104
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "ruler",
+    "label": "Ruler",
+    "shape": "box",
+    "x": 40,
+    "y": 370,
+    "w": 1020,
+    "h": 16
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_time",
+    "label": "Time tolerance (slider)",
+    "shape": "box",
+    "x": 40,
+    "y": 434,
+    "w": 300,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_freq",
+    "label": "Frequency tolerance (slider)",
+    "shape": "box",
+    "x": 420,
+    "y": 434,
+    "w": 300,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_threads",
+    "label": "Thread count (text)",
+    "shape": "box",
+    "x": 40,
+    "y": 456,
+    "w": 1020,
+    "h": 16
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_make",
+    "label": "MAKE RESULT",
+    "shape": "box",
+    "x": 40,
+    "y": 474,
+    "w": 190,
+    "h": 32
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_make_hint",
+    "label": "Hint beside MAKE RESULT",
+    "shape": "box",
+    "x": 244,
+    "y": 483,
+    "w": 700,
+    "h": 16
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_message",
+    "label": "Message",
+    "shape": "box",
+    "x": 40,
+    "y": 518,
+    "w": 1020,
+    "h": 16
+  }
+]

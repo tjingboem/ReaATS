@@ -4273,6 +4273,7 @@ analysis = Analysis.new({
   back = function() showing_analysis = false; dirty = true end,
 })
 W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
+  layout = dofile(script_dir .. "/lib/cross_layout.lua"),
   available_memory = available_memory,
   memory_warning = function() return W.memory_warning() end,
   relocate = function(path) return Analysis.relocate(path) end,

@@ -254,19 +254,35 @@ function Page:make()
 end
 
 -- ------------------------------------------------------------------ geometry
+-- The places come from the layout (lib/cross_layout.lua, made by tools/gen_cross_layout.py from the ReaLayout file) in pixels of the default window; an
+-- element that is not in the layout has the default place below. The layout's y counts from the top of the window, the page starts `top` (40) from it.
+function Page:el(id, dx, dy, dw, dh, top)
+  local lay = self.env.layout and self.env.layout.el and self.env.layout.el[id]
+  if lay then return lay.x, lay.y - 40 + top, lay.w, lay.h end
+  return dx, top + dy, dw, dh
+end
+
 function Page:geom(W, H, top)
-  local g = { x0 = 40, x1 = W - 40 }
-  g.laneA = { y = top + 80, h = 104 }
-  g.laneB = { y = top + 220, h = 104 }
-  g.ruler = top + 330
-  g.sl_time = { x = 40, y = top + 394, w = 300, h = 10 }
-  g.sl_freq = { x = 40 + 380, y = top + 394, w = 300, h = 10 }
+  local g = { texts = {} }
+  local ax, ay, aw, ah = self:el("lane_a", 40, 80, W - 80, 104, top)
+  local bx, by, bw, bh = self:el("lane_b", 40, 220, W - 80, 104, top)
+  g.x0, g.x1 = ax, ax + aw
+  g.laneA, g.laneB = { y = ay, h = ah }, { y = by, h = bh }
+  local rx, ry = self:el("ruler", 40, 330, aw, 16, top)
+  g.ruler = ry
+  local function box(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x = x, y = y, w = w, h = h } end
+  g.sl_time = box("sl_time", 40, 394, 300, 10)
+  g.sl_freq = box("sl_freq", 420, 394, 300, 10)
+  local function rect(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x, y, w, h } end
   g.btn = {
-    back = { W - 120, top + 6, 90, 24 },
-    load_a = { 40, top + 44, 110, 24 }, edit_a = { 158, top + 44, 190, 24 }, open_a = { 356, top + 44, 290, 24 },
-    load_b = { 40, top + 188, 110, 24 }, edit_b = { 158, top + 188, 190, 24 }, open_b = { 356, top + 188, 290, 24 },
-    make = { 40, top + 434, 190, 32 },
+    back = rect("btn_back", W - 120, 6, 90, 24),
+    load_a = rect("btn_load_a", 40, 44, 110, 24), edit_a = rect("btn_edit_a", 158, 44, 190, 24), open_a = rect("btn_use_a", 356, 44, 290, 24),
+    load_b = rect("btn_load_b", 40, 188, 110, 24), edit_b = rect("btn_edit_b", 158, 188, 190, 24), open_b = rect("btn_use_b", 356, 188, 290, 24),
+    make = rect("btn_make", 40, 434, 190, 32),
   }
+  local function pt(id, dx, dy) local x, y = self:el(id, dx, dy, 0, 0, top); return { x = x, y = y } end
+  g.texts = { title = pt("txt_title", 40, 8), threads = pt("txt_threads", 40, 416), hint = pt("txt_make_hint", 244, 443),
+              message = pt("txt_message", 40, 478), help1 = pt("txt_help1", 40, 506), help2 = pt("txt_help2", 40, 524) }
   g.pps = (g.x1 - g.x0) / math.max(self.view[2] - self.view[1], 1e-6)
   return g
 end
@@ -420,24 +436,78 @@ function Page:draw_block(g, slot)
   gfx.set(1, 1, 1, 0.95)                                                   -- the handles of the cut
   gfx.rect(ux0 - 2, lane.y + 4, 4, lane.h - 8, 1)
   gfx.rect(ux1 - 2, lane.y + 4, 4, lane.h - 8, 1)
-  local tx0 = math.max(ux0, g.x0) + 10
-  gfx.set(0.03, 0.04, 0.06, 0.72)                                          -- a dark strip behind the name, so that it reads on the image
-  gfx.rect(tx0 - 4, lane.y + 7, 300, 32, 1)
-  gfx.setfont(1, "Arial", 14)
-  gfx.set(col[1], col[2], col[3], 1)
-  gfx.x, gfx.y = tx0, lane.y + 9
-  gfx.drawstr(s.name)
-  gfx.setfont(1, "Arial", 12)
-  gfx.set(0.85, 0.87, 0.9, 1)
-  gfx.x, gfx.y = tx0, lane.y + 25
-  gfx.drawstr(string.format("used %.2f - %.2f s of %.2f s   hop %.0f ms   %d partials", s.t0, s.t1, s.d.dur, s.d.frame_size / s.d.sr * 1000, s.d.partials))
+end
+
+-- The little "i" of a block: a circle in the top right corner of the USED part (it moves along when the sound is cut, and stays inside the window).
+local INFO_R = 8
+function Page:info_pos(g, slot)
+  local s = self[slot]
+  if not s then return nil end
+  local lane = (slot == "a") and g.laneA or g.laneB
+  local x = math.min(self:tx(g, self:end_of(s)), g.x1) - INFO_R - 8
+  x = math.max(x, math.max(self:tx(g, self:pos_of(s)), g.x0) + INFO_R + 8)
+  return x, lane.y + 4 + INFO_R + 4
+end
+
+function Page:draw_info_marks(g)
+  for _, slot in ipairs({ "a", "b" }) do
+    local x, y = self:info_pos(g, slot)
+    if x then
+      local col = (slot == "a") and BLUE or GREEN
+      local hot = self.info_hover == slot
+      gfx.set(0.03, 0.04, 0.06, hot and 0.95 or 0.65); gfx.circle(x, y, INFO_R, 1, 1)
+      gfx.set(col[1], col[2], col[3], 1); gfx.circle(x, y, INFO_R, 0, 1)
+      gfx.setfont(1, "Arial", 13)
+      local w, h = gfx.measurestr("i")
+      gfx.x, gfx.y = x - w / 2, y - h / 2
+      gfx.drawstr("i")
+    end
+  end
+end
+
+-- What is known about a sound is shown in a box while the mouse is on its "i" (the blocks themselves show only the picture).
+function Page:draw_tip(g, W, H)
+  self.info_hover = nil
+  if self.drag then return end
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  for _, slot in ipairs({ "a", "b" }) do
+    local s = self[slot]
+    local x, y = self:info_pos(g, slot)
+    if s and (mx - x) ^ 2 + (my - y) ^ 2 <= (INFO_R + 2) ^ 2 then
+      self.info_hover = slot
+      local col = (slot == "a") and BLUE or GREEN
+      local d = s.d
+      local lines = {
+        "sound " .. slot:upper() .. ": " .. s.name .. (s.edited and "  (changed in the editor)" or ""),
+        string.format("used %.2f - %.2f s of %.2f s", s.t0, s.t1, d.dur),
+        string.format("%d partials, %d frames, hop %.1f ms, %d Hz", d.partials, d.frames, d.frame_size / d.sr * 1000, d.sr),
+        s.path and s.path ~= "" and s.path or "(not saved as a file)",
+      }
+      gfx.setfont(1, "Arial", 13)
+      local w = 0
+      for _, l in ipairs(lines) do w = math.max(w, gfx.measurestr(l)) end
+      local hh
+      w, hh = w + 16, #lines * 18 + 10
+      local bx, by = x + INFO_R - w, y + INFO_R + 6                 -- below the circle, ending at its right side
+      bx = math.max(4, math.min(bx, W - 4 - w))
+      if by + hh > H - 4 then by = y - INFO_R - 6 - hh end
+      gfx.set(0.05, 0.06, 0.09, 0.96); gfx.rect(bx, by, w, hh, 1)
+      gfx.set(col[1], col[2], col[3], 1); gfx.rect(bx, by, w, hh, 0)
+      for i, l in ipairs(lines) do
+        if i == 1 then gfx.set(col[1], col[2], col[3], 1) else gfx.set(0.85, 0.87, 0.9, 1) end
+        gfx.x, gfx.y = bx + 8, by + 6 + (i - 1) * 18
+        gfx.drawstr(l)
+      end
+      return
+    end
+  end
 end
 
 function Page:draw(W, H, top)
   self.top = top
   local g = self:geom(W, H, top)
   gfx.setfont(1, "Arial", 16)
-  text(40, top + 8, "CROSS: sound A flows into sound B", 0.95, 0.72, 0.35)
+  text(g.texts.title.x, g.texts.title.y, "CROSS: sound A flows into sound B", 0.95, 0.72, 0.35)
   button(g.btn.back, "BACK", { 0.9, 0.55, 0.5 })
   button(g.btn.load_a, "LOAD A", BLUE)
   button(g.btn.edit_a, "EDIT A IN THE EDITOR", BLUE, self.a ~= nil)
@@ -503,17 +573,19 @@ function Page:draw(W, H, top)
   slider(g.sl_freq, "Frequency tolerance (which partials are one thread)", string.format("%d cents", self.tol_cents), (self.tol_cents - 10) / 590)
   gfx.setfont(1, "Arial", 12)
   local est = self.threads_est
-  if est == -1 then text(40, g.sl_time.y + 22, "the number of threads is counted when the result is made (the sounds are big)", 0.6, 0.64, 0.7)
+  if est == -1 then text(g.texts.threads.x, g.texts.threads.y, "the number of threads is counted when the result is made (the sounds are big)", 0.6, 0.64, 0.7)
   elseif est then
-    if est > 0 then text(40, g.sl_time.y + 22, string.format("%d thread%s: partials of A and B that sound together inside the grey area and are close in frequency (the orange blinking partials in the editor)", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
-    else text(40, g.sl_time.y + 22, "no threads: no partial of A and partial of B sound together inside the grey area within the frequency tolerance. A shorter grey area or a wider frequency tolerance may help.", 1, 0.5, 0.3) end
+    if est > 0 then text(g.texts.threads.x, g.texts.threads.y, string.format("%d thread%s: partials of A and B that sound together inside the grey area and are close in frequency (the orange blinking partials in the editor)", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
+    else text(g.texts.threads.x, g.texts.threads.y, "no threads: no partial of A and partial of B sound together inside the grey area within the frequency tolerance. A shorter grey area or a wider frequency tolerance may help.", 1, 0.5, 0.3) end
   end
   button(g.btn.make, "MAKE RESULT", { 0.45, 0.85, 0.6 }, self.a ~= nil and self.b ~= nil)
   gfx.setfont(1, "Arial", 12)
-  text(g.btn.make[1] + g.btn.make[3] + 14, g.btn.make[2] + 9, "writes a new .ats file and opens it in the editor (A and B stay as they are); Enter does the same", 0.6, 0.64, 0.7)
-  if self.message then text(40, top + 478, self.message, 1, 0.8, 0.45) end
-  text(40, top + 506, "Drag a block to place it in time. Drag the white handles at its ends to use only a part of the file. Drag the red line inside the overlap. Double-click a block (or EDIT) to edit that sound in the editor: what you change there comes back as that sound, without saving.", 0.55, 0.58, 0.64)
-  text(40, top + 524, "The partials of A and B that are close in frequency (the tolerance) become one thread that moves from A's frequency to B's.", 0.55, 0.58, 0.64)
+  text(g.texts.hint.x, g.texts.hint.y, "writes a new .ats file and opens it in the editor (A and B stay as they are); Enter does the same", 0.6, 0.64, 0.7)
+  if self.message then text(g.texts.message.x, g.texts.message.y, self.message, 1, 0.8, 0.45) end
+  text(g.texts.help1.x, g.texts.help1.y, "Drag a block to place it in time. Drag the white handles at its ends to use only a part of the file. Drag the red line inside the overlap. Double-click a block (or EDIT) to edit that sound in the editor: what you change there comes back as that sound, without saving.", 0.55, 0.58, 0.64)
+  text(g.texts.help2.x, g.texts.help2.y, "The partials of A and B that are close in frequency (the tolerance) become one thread that moves from A's frequency to B's.", 0.55, 0.58, 0.64)
+  self:draw_info_marks(g)
+  self:draw_tip(g, W, H)
 end
 
 return M
