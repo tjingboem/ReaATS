@@ -32,7 +32,7 @@ function M.new(env)
   self.cur = nil                                    -- THE selected block (in either lane): the level slider changes it; it is shown with a thick frame
   self.next_id = 1
   self.lines = {}                                   -- by transition key: the red line (seconds on the timeline)
-  self.diags = {}                                   -- by transition key: the points of a diagonal { t (timeline s), f (Hz) } x 2 (Ctrl+click in a lane)
+  self.diags = {}                                   -- by transition key: the points of a FREE line { t (timeline s), f (Hz) } (at least two; used when the transition's curve is Free)
   self.tol_time, self.tol_cents = 0.6, 100          -- the tolerances a transition has until its own are set (see tol_of)
   self.tr_set = {}                                  -- by transition key: { time, cents } = the tolerances of that transition
   self.active = nil                                 -- the key of the transition whose red line is active: the sliders change its tolerances
@@ -126,13 +126,12 @@ function Page:line_of(tr)
   return v
 end
 
--- The diagonal of a transition: { t1, f1, t2, f2 } with the low point first, or nil (a vertical line).
-function Page:diag_of(tr)
+-- The FREE line of a transition: its points sorted by frequency (at least two), or nil when its curve is not Free (a vertical line).
+function Page:free_of(tr)
+  if not tr or self:curve_of(tr) ~= "free" then return nil end
   local p = self.diags[tr.key]
   if not p or #p < 2 then return nil end
-  local lo, hi = p[1], p[2]
-  if lo.f > hi.f then lo, hi = hi, lo end
-  return { lo.t, lo.f, hi.t, hi.f }
+  return cross.sort_points(p)
 end
 
 -- UNDO (tjingboem, 13 Nov 2026: "i accidentally deleted a ats file in crossing. Can we have a Ctrl+Z function here?"): the recipe (the sounds with their place, cuts and
@@ -198,7 +197,7 @@ function Page:spec()
   for i, b in ipairs(self:sorted()) do blocks[i] = block_spec(self, b) end
   for _, tr in ipairs(self:transitions()) do
     local tt, tc = self:tol_of(tr)
-    steps[tr.k] = { line = self:line_of(tr), diag = self:diag_of(tr), tol_time = tt, tol_cents = tc, curve = self:curve_of(tr) }
+    steps[tr.k] = { line = self:line_of(tr), free = self:free_of(tr), tol_time = tt, tol_cents = tc, curve = self:curve_of(tr) }
   end
   return { blocks = blocks, steps = steps, tol_time = self.tol_time, tol_cents = self.tol_cents, curve = self.curve }
 end
@@ -214,7 +213,7 @@ function Page:recount()
     if cells > 3e6 then
       self.counts[tr.key] = -1                                                      -- (too big to count in advance)
     else
-      local info = cross.count({ a = block_spec(self, l), b = block_spec(self, r), line = self:line_of(tr), diag = self:diag_of(tr),
+      local info = cross.count({ a = block_spec(self, l), b = block_spec(self, r), line = self:line_of(tr), free = self:free_of(tr),
                                  tol_time = select(1, self:tol_of(tr)), tol_cents = select(2, self:tol_of(tr)), curve = self:curve_of(tr) })
       if info then
         total = total + info.pairs
@@ -535,7 +534,7 @@ end
 
 -- The gain of the selected sound (dB): the one level slider, -24 .. +12, sticks at 0.
 local GAIN_MIN, GAIN_MAX = -24, 12
-local CURVES = { { "smooth", "Smooth" }, { "linear", "Linear" }, { "equal", "Equal power" }, { "s", "S curve" } }
+local CURVES = { { "smooth", "Smooth" }, { "linear", "Linear" }, { "equal", "Equal power" }, { "s", "S curve" }, { "free", "Free" } }
 local function curve_name(k) for _, c in ipairs(CURVES) do if c[1] == k then return c[2] end end return k end
 function Page:gain_value(g, mx)
   local s, sl = self.cur, g.sl_gain
@@ -608,6 +607,31 @@ function Page:settle(b)
   if best and math.abs(best - pos) > 1e-9 then b.origin = best - b.t0 end
 end
 
+-- A transition becomes Free: two red points appear, one at the lowest and one at the highest frequency of the pictures, on its present red line (when it has points
+-- already, from an earlier time, they come back).
+function Page:start_free(tr)
+  local pts = self.diags[tr.key]
+  if pts and #pts >= 2 then return end
+  local t = self:line_of(tr)
+  self.diags[tr.key] = { { t = t, f = FMIN }, { t = t, f = FMAX } }
+end
+
+-- The point of a free line under the pointer: { tr, pt, lane } or nil (only transitions that are Free have points; the points are drawn in both lanes).
+function Page:point_at(g, mx, my)
+  for _, tr in ipairs(self:transitions()) do
+    local pts = self:free_of(tr) and self.diags[tr.key]
+    if pts then
+      for _, pt in ipairs(pts) do
+        for _, ln in ipairs({ "a", "b" }) do
+          local lane = g.lane[ln]
+          local x, y = self:tx(g, pt.t), self:f_to_y(lane, pt.f)
+          if (mx - x) ^ 2 + (my - y) ^ 2 <= 64 then return { tr = tr, pt = pt, lane = lane } end
+        end
+      end
+    end
+  end
+end
+
 function Page:mouse(mx, my, cap, wheel)
   local W, H = math.floor(gfx.w), math.floor(gfx.h)
   local g = self:geom(W, H, self.top or 40)
@@ -615,9 +639,21 @@ function Page:mouse(mx, my, cap, wheel)
   local right = (cap & 2) ~= 0
   local shift = (cap & 8) ~= 0
   if wheel and wheel ~= 0 and my >= g.laneA.y - 20 and my <= g.laneB.y + g.laneB.h + 40 then self:zoom(g, mx, wheel, shift) end
-  if right and not self.prev_right then                           -- right-click on a block removes that sound
-    local b = self:block_at(g, mx, my)
-    if b then self:remove(b) end
+  if right and not self.prev_right then                           -- right-click on a red point removes it (two stay); on a block it removes that sound
+    local hit = self:point_at(g, mx, my)
+    if hit then
+      local pts = self.diags[hit.tr.key]
+      if #pts > 2 then
+        self:push_undo()
+        for i, q in ipairs(pts) do if q == hit.pt then table.remove(pts, i); break end end
+        self:recount()
+      else
+        self:say("two points stay")
+      end
+    else
+      local b = self:block_at(g, mx, my)
+      if b then self:remove(b) end
+    end
   end
   self.prev_right = right
   if down and not self.prev_down and self.dd_open and g.dd_curve then       -- the open list of curves takes this click
@@ -629,7 +665,9 @@ function Page:mouse(mx, my, cap, wheel)
         if tr then
           local v = self.tr_set[tr.key] or { time = self.tol_time, cents = self.tol_cents }
           v.curve = c[1]; self.tr_set[tr.key] = v
+          if c[1] == "free" then self:start_free(tr) end
         else self.curve = c[1] end
+        self:recount()
       end
     end
     self.dd_open = false
@@ -644,7 +682,7 @@ function Page:mouse(mx, my, cap, wheel)
     local dd = g.dd_curve
     local in_lane = my >= g.laneA.y and my < g.laneA.y + g.laneA.h or my >= g.laneB.y and my < g.laneB.y + g.laneB.h
     if ctrl and not shift and in_lane then
-      -- Ctrl+click in a lane: a point of the diagonal of the transition at that moment (low and high in the picture); the second one makes the line, a third starts again
+      -- Ctrl+click in a lane: a NEW POINT in the free line of the transition at that moment (a transition that is not Free becomes Free first)
       local t = self:tt(g, mx)
       local best, bd
       for _, tr in ipairs(self:transitions()) do
@@ -654,10 +692,14 @@ function Page:mouse(mx, my, cap, wheel)
       if best then
         local lane = (my < g.laneA.y + g.laneA.h) and g.laneA or g.laneB
         self:push_undo(pre)
-        local pts = self.diags[best.key] or {}
-        if #pts >= 2 then pts = {} end
-        pts[#pts + 1] = { t = t, f = self:y_to_f(lane, my) }
-        self.diags[best.key] = pts
+        if self:curve_of(best) ~= "free" then
+          local v = self.tr_set[best.key] or { time = self.tol_time, cents = self.tol_cents }
+          v.curve = "free"; self.tr_set[best.key] = v
+          self.diags[best.key] = nil
+          self:start_free(best)
+        end
+        local pts = self.diags[best.key]
+        pts[#pts + 1] = { t = clamp(t, best.lo, best.hi), f = self:y_to_f(lane, my) }
         self.active = best.key
         self:recount()
       else
@@ -698,9 +740,16 @@ function Page:mouse(mx, my, cap, wheel)
         if lc and now - lc < 0.45 then self.last_ruler = nil; self:fit_view(true)       -- a double-click on the ruler: the whole timeline again
         else self.last_ruler = now; self.drag = { kind = "pan", x = mx, v0 = self.view[1], v1 = self.view[2], acc = 0 } end
       end
+      if not self.drag then                                           -- a red point of a free line: dragged in time and frequency
+        local hit = self:point_at(g, mx, my)
+        if hit then
+          self.drag = { kind = "fpoint", key = hit.tr.key, tr = hit.tr, pt = hit.pt, lane = hit.lane }
+          self.active = hit.tr.key
+        end
+      end
       if not self.drag then
-        for _, tr in ipairs(self:transitions()) do                    -- the red line of a transition (a diagonal is moved by making a new one)
-          if not self:diag_of(tr) then
+        for _, tr in ipairs(self:transitions()) do                    -- the red line of a transition (a free line has its points instead)
+          if not self:free_of(tr) then
             local lx = self:tx(g, self:line_of(tr))
             if math.abs(mx - lx) <= 7 and my >= g.laneA.y - 14 and my <= g.laneB.y + g.laneB.h + 4 then
               self.drag = { kind = "line", key = tr.key, tr = tr, x = mx, hx = lx, acc = 0 }
@@ -754,6 +803,9 @@ function Page:mouse(mx, my, cap, wheel)
       local dt = -d.acc / g.pps
       self.view = { d.v0 + dt, d.v1 + dt }
       self.zoomed = true
+    elseif d.kind == "fpoint" then
+      d.pt.t = clamp(self:tt(g, mx), d.tr.lo, d.tr.hi)
+      d.pt.f = self:y_to_f(d.lane, my)
     elseif d.kind == "line" then
       self.lines[d.key] = clamp(self:tt(g, d.hx + d.acc), d.tr.lo, d.tr.hi)
     elseif d.kind == "move" then
@@ -794,7 +846,7 @@ function Page:mouse(mx, my, cap, wheel)
 end
 
 function Page:key(ch)
-  if ch == 27 and (next(self.diags) ~= nil or self.dd_open) then self.diags = {}; self.dd_open = false; self:recount(); return true end     -- Esc: back to vertical lines
+  if ch == 27 and self.dd_open then self.dd_open = false; return true end                                  -- Esc closes the curve menu
   if ch == 9 then                                                                 -- Tab: the next transition becomes the active one
     local trs, cur = self:transitions(), self:active_tr()
     for i, tr in ipairs(trs) do if cur and tr.key == cur.key then self.active = trs[i % #trs + 1].key; return true end end
@@ -849,6 +901,23 @@ function Page:draw_lane(g, lane)
   end
 end
 
+-- Nothing is drawn outside the lanes (tjingboem, 14 Nov 2026: "prevent the overflow on the left"): a zoomed timeline puts blocks, bands and lines left of the first
+-- and right of the last pixel of the lanes, over the frequency numbers. gfx cannot clip, so everything is cut to [g.x0, g.x1] by hand.
+function Page:crect(g, x, y, w, h)
+  local x0, x1 = math.max(x, g.x0), math.min(x + w, g.x1)
+  if x1 > x0 then gfx.rect(x0, y, x1 - x0, h, 1) end
+end
+function Page:cline(g, xa, ya, xb, yb)
+  if xa > xb then xa, ya, xb, yb = xb, yb, xa, ya end
+  if xb < g.x0 or xa > g.x1 then return end
+  if xb == xa then gfx.line(xa, ya, xb, yb); return end
+  local function at(x) return ya + (yb - ya) * (x - xa) / (xb - xa) end
+  local nx0, ny0, nx1, ny1 = xa, ya, xb, yb
+  if xa < g.x0 then nx0, ny0 = g.x0, at(g.x0) end
+  if xb > g.x1 then nx1, ny1 = g.x1, at(g.x1) end
+  gfx.line(nx0, ny0, nx1, ny1)
+end
+
 -- A block shows only its USED part (tjingboem, 14 Nov 2026: what is cut away must not hide the other sounds, and "when we want to find out what is before the ats block,
 -- we can drag again to make the selection bigger"): the cut-away rest of the file is not drawn; the handles at the ends of the block are dragged outwards to use more
 -- of the file (up to its ends) and the picture grows with them.
@@ -857,26 +926,36 @@ function Page:draw_block(g, s)
   local col = LANE_COL[s.lane]
   local fx0, fx1 = self:tx(g, s.origin + s.d.times[1]), self:tx(g, s.origin + sound_end(s))
   local ux0, ux1 = self:tx(g, self:pos_of(s)), self:tx(g, self:end_of(s))
+  local cx0, cx1 = math.max(ux0, g.x0), math.min(ux1, g.x1)                          -- the part of the block that is inside the lanes
+  if cx1 <= cx0 then return end
   local bw = fx1 - fx0
-  if s.thumb and bw > 1 and ux1 > ux0 then
-    local f0, f1 = (ux0 - fx0) / bw, (ux1 - fx0) / bw
+  local y, h = lane.y + 4, lane.h - 8
+  if s.thumb and bw > 1 then
+    local f0, f1 = (cx0 - fx0) / bw, (cx1 - fx0) / bw
     gfx.set(1, 1, 1, 1)
-    gfx.blit(s.tid, 1, 0, f0 * THUMB_W, 0, (f1 - f0) * THUMB_W, THUMB_H, ux0, lane.y + 4, ux1 - ux0, lane.h - 8)
+    gfx.blit(s.tid, 1, 0, f0 * THUMB_W, 0, (f1 - f0) * THUMB_W, THUMB_H, cx0, y, cx1 - cx0, h)
+  end
+  local function frame(inset, thick)                                                  -- the frame of the used part; a side that lies outside the lanes is left open
+    for k = inset, inset + thick - 1 do
+      gfx.line(cx0, y + k, cx1, y + k); gfx.line(cx0, y + h - 1 - k, cx1, y + h - 1 - k)
+      if ux0 >= g.x0 then gfx.line(ux0 + k, y + k, ux0 + k, y + h - 1 - k) end
+      if ux1 <= g.x1 then gfx.line(ux1 - 1 - k, y + k, ux1 - 1 - k, y + h - 1 - k) end
+    end
   end
   gfx.set(col[1], col[2], col[3], 1)
-  gfx.rect(ux0, lane.y + 4, ux1 - ux0, lane.h - 8, 0)
+  frame(0, 1)
   if self.cur then                                                                   -- THE selected block stands out: a thick white frame; the other blocks are dimmed
     if self.cur == s then
       gfx.set(1, 1, 1, 0.95)
-      for k = 1, 3 do gfx.rect(ux0 + k, lane.y + 4 + k, ux1 - ux0 - 2 * k, lane.h - 8 - 2 * k, 0) end
+      frame(1, 3)
     else
       gfx.set(0, 0, 0, 0.45)
-      gfx.rect(ux0, lane.y + 4, ux1 - ux0, lane.h - 8, 1)
+      gfx.rect(cx0, y, cx1 - cx0, h, 1)
     end
   end
-  gfx.set(1, 1, 1, 0.95)                                                   -- the handles of the cut
-  gfx.rect(ux0 - 2, lane.y + 4, 4, lane.h - 8, 1)
-  gfx.rect(ux1 - 2, lane.y + 4, 4, lane.h - 8, 1)
+  gfx.set(1, 1, 1, 0.95)                                                   -- the handles of the cut (only where they are inside the lanes)
+  if ux0 >= g.x0 and ux0 <= g.x1 then gfx.rect(ux0 - 2, y, 4, h, 1) end
+  if ux1 >= g.x0 and ux1 <= g.x1 then gfx.rect(ux1 - 2, y, 4, h, 1) end
 end
 
 -- The little "i" of a block: a circle in the top right corner of the USED part (it moves along when the sound is cut, and stays inside the window).
@@ -939,13 +1018,6 @@ function Page:draw_tip(g, W, H)
   end
 end
 
--- The time of the diagonal at a frequency (seconds on the timeline), inside the overlap.
-function Page:diag_time(dg, f, lo, hi)
-  local lf1, lf2 = math.log(dg[2]), math.log(dg[4])
-  local x = (lf2 ~= lf1) and clamp((math.log(f) - lf1) / (lf2 - lf1), 0, 1) or 0
-  return clamp(dg[1] + (dg[3] - dg[1]) * x, lo, hi)
-end
-
 -- The partials that make a thread blink orange in their own lane, at their own frequency, over the grey area they cross in.
 function Page:draw_threads(g)
   local lines = self.thread_lines
@@ -957,8 +1029,8 @@ function Page:draw_threads(g)
     if on then gfx.set(1, 0.62, 0.1, fade) else gfx.set(0.45, 0.25, 0.05, fade) end
     local x0, x1 = self:tx(g, th.t0), self:tx(g, th.t1)
     local yl, yr = self:f_to_y(g.lane[th.lane_l], clamp(th.fl, FMIN, FMAX)), self:f_to_y(g.lane[th.lane_r], clamp(th.fr, FMIN, FMAX))
-    gfx.rect(x0, yl - 1, math.max(x1 - x0, 2), 2, 1)
-    gfx.rect(x0, yr - 1, math.max(x1 - x0, 2), 2, 1)
+    self:crect(g, x0, yl - 1, math.max(x1 - x0, 2), 2)
+    self:crect(g, x0, yr - 1, math.max(x1 - x0, 2), 2)
   end
 end
 
@@ -967,32 +1039,38 @@ local function put(pos, str, r, g, b) if pos then text(pos.x, pos.y, str, r, g, 
 -- One transition: the shaded overlap, the grey band, the curve and the red line (or the diagonal).
 function Page:draw_transition(g, tr)
   local line, lo, hi = self:line_of(tr), tr.lo, tr.hi
-  local dg = self:diag_of(tr)
+  local fr = self:free_of(tr)
   local cur = self:active_tr()
   local act = (cur ~= nil and cur.key == tr.key)
   local fade = act and 1 or 0.3                                                      -- the transitions that are not active are fainter
   local y0, y1 = g.laneA.y, g.laneB.y + g.laneB.h
   gfx.set(0.55, 0.58, 0.65, 0.12 * fade)
-  gfx.rect(self:tx(g, lo), y0, self:tx(g, hi) - self:tx(g, lo), y1 - y0, 1)
+  self:crect(g, self:tx(g, lo), y0, self:tx(g, hi) - self:tx(g, lo), y1 - y0)
   local w = select(1, self:tol_of(tr))
-  if dg then
-    for _, lane in ipairs({ g.laneA, g.laneB }) do                               -- the grey band follows the diagonal, row by row
+  if fr then
+    for _, lane in ipairs({ g.laneA, g.laneB }) do                               -- the grey band follows the free line, row by row
+      local px, py
       for y = math.floor(lane.y + 4), math.floor(lane.y + lane.h - 5), 2 do
-        local tc = self:diag_time(dg, self:y_to_f(lane, y), lo, hi)
+        local tc = cross.free_time(fr, self:y_to_f(lane, y), lo, hi)
         local a0, a1 = math.max(tc - w / 2, lo), math.min(tc + w / 2, hi)
         gfx.set(0.6, 0.63, 0.7, 0.35 * fade)
-        gfx.rect(self:tx(g, a0), y, math.max(self:tx(g, a1) - self:tx(g, a0), 1), 2, 1)
+        self:crect(g, self:tx(g, a0), y, math.max(self:tx(g, a1) - self:tx(g, a0), 1), 2)
       end
-      gfx.set(1, 0.23, 0.19, fade)
-      local fa, fb = math.max(dg[2], FMIN), math.min(dg[4], FMAX)
-      for k = 0, 1 do gfx.line(self:tx(g, dg[1]) + k, self:f_to_y(lane, fa), self:tx(g, dg[3]) + k, self:f_to_y(lane, fb)) end
+      gfx.set(1, 0.23, 0.19, fade)                                                -- the line itself, from the lowest to the highest frequency of the lane
+      for y = math.floor(lane.y + 4), math.floor(lane.y + lane.h - 4), 2 do
+        local x = self:tx(g, cross.free_time(fr, self:y_to_f(lane, y), lo, hi))
+        if px then for k = 0, 1 do self:cline(g, px + k, py, x + k, y) end end
+        px, py = x, y
+      end
+      for _, pt in ipairs(self.diags[tr.key]) do                                  -- the red points
+        local cx = self:tx(g, pt.t)
+        if cx >= g.x0 and cx <= g.x1 then gfx.circle(cx, self:f_to_y(lane, pt.f), 5, 1, 1) end
+      end
     end
-    gfx.setfont(1, "Arial", 12)
-    text(self:tx(g, dg[1]) + 10, g.laneA.y - 16, "diagonal", 1, 0.45, 0.4, fade)
   else
     local g0, g1 = math.max(line - w / 2, lo), math.min(line + w / 2, hi)
     gfx.set(0.6, 0.63, 0.7, 0.35 * fade)
-    gfx.rect(self:tx(g, g0), y0, math.max(self:tx(g, g1) - self:tx(g, g0), 1), y1 - y0, 1)
+    self:crect(g, self:tx(g, g0), y0, math.max(self:tx(g, g1) - self:tx(g, g0), 1), y1 - y0)
     if g1 - g0 > 0.01 then                                                          -- the LEVELS over the grey area: the first sound falls, the second rises (equal power crosses higher than linear)
       gfx.set(1, 1, 1, 0.75 * fade)
       local cv = self:curve_of(tr)
@@ -1004,23 +1082,20 @@ function Page:draw_transition(g, tr)
         local cx = self:tx(g, g0 + (g1 - g0) * k / 40)
         local cyl, cyr = y1 - wl * (y1 - y0), y1 - wr * (y1 - y0)
         if pxl then
-          gfx.line(pxl, pyl, cx, cyl); gfx.line(pxl, pyl + 1, cx, cyl + 1)
-          gfx.line(pxl, pyr, cx, cyr); gfx.line(pxl, pyr + 1, cx, cyr + 1)
+          self:cline(g, pxl, pyl, cx, cyl); self:cline(g, pxl, pyl + 1, cx, cyl + 1)
+          self:cline(g, pxl, pyr, cx, cyr); self:cline(g, pxl, pyr + 1, cx, cyr + 1)
         end
         pxl, pyl, pyr = cx, cyl, cyr
       end
     end
-    gfx.set(1, 0.23, 0.19, fade)
     local x = self:tx(g, line)
-    gfx.rect(x - 1, g.laneA.y - 12, 3, y1 - y0 + 16, 1)
-    gfx.rect(x - 6, g.laneA.y - 14, 13, 8, 1)
-    gfx.setfont(1, "Arial", 12)
-    text(x + 10, g.laneA.y - 16, string.format("%.3f s", line), 1, 0.45, 0.4, fade)
-  end
-  local pts = self.diags[tr.key]
-  if pts and #pts == 1 then                                                         -- the first point of a diagonal waits for the second
-    gfx.set(1, 0.23, 0.19, fade)
-    for _, lane in ipairs({ g.laneA, g.laneB }) do gfx.circle(self:tx(g, pts[1].t), self:f_to_y(lane, pts[1].f), 4, 1, 1) end
+    if x >= g.x0 and x <= g.x1 then                                                 -- (the red line is only drawn where it is inside the lanes)
+      gfx.set(1, 0.23, 0.19, fade)
+      gfx.rect(x - 1, g.laneA.y - 12, 3, y1 - y0 + 16, 1)
+      gfx.rect(x - 6, g.laneA.y - 14, 13, 8, 1)
+      gfx.setfont(1, "Arial", 12)
+      text(x + 10, g.laneA.y - 16, string.format("%.3f s", line), 1, 0.45, 0.4, fade)
+    end
   end
 end
 

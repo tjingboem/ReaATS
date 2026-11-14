@@ -222,7 +222,7 @@ do
   check("A's 200 Hz has crossed at 1.5 s (its moment is 1.31 s)", not has(1.5, 200) and has(1.2, 200))
   check("A's 2000 Hz is still there at 1.5 s (its moment is 1.69 s)", has(1.5, 2000) and not has(1.75, 2000))
   check("B's 800 Hz starts at 1.54 s, B's 3000 Hz at 1.75 s", not has(1.5, 800) and has(1.6, 800) and not has(1.7, 3000) and has(1.8, 3000))
-  check("the info tells the diagonal", info.diag and math.abs(info.diag[1] - 1.2) < 1e-9 and info.diag[2] == 100)
+  check("the info tells the points of the line", info.free and #info.free == 2 and math.abs(info.free[1].t - 1.2) < 1e-9 and info.free[1].f == 100)
 end
 -- the count tells where the threads are (for the blinking on the CROSS page)
 do
@@ -284,6 +284,14 @@ do
   check("linear: both sounds at half in the middle", math.abs(wl - 0.5) < 1e-9 and math.abs(wr - 0.5) < 1e-9)
   wl, wr = cross.weights("equal", cross.shape("equal", 0.5))
   check("equal power: both at 0.707 in the middle (they cross higher)", math.abs(wl - math.sqrt(0.5)) < 1e-9 and math.abs(wr - math.sqrt(0.5)) < 1e-9)
+end
+
+-- a FREE line: three points make a bend; the line goes on beyond the end points (two points run from the lowest to the highest frequency)
+do
+  local pts = { { t = 1.5, f = 400 }, { t = 1.2, f = 100 }, { t = 1.8, f = 1600 } }
+  check("between the points the time follows the line (log frequency: 200 Hz is half way from 100 to 400)", math.abs(cross.free_time(pts, 200, 0, 9) - 1.35) < 1e-9, cross.free_time(pts, 200, 0, 9))
+  check("above the highest point the last piece goes on (6400 Hz: 2.1 s), kept inside the overlap", math.abs(cross.free_time(pts, 6400, 0, 9) - 2.1) < 1e-9 and cross.free_time(pts, 6400, 0, 1.9) == 1.9)
+  check("below the lowest point the first piece goes on (50 Hz: 1.05 s)", math.abs(cross.free_time(pts, 50, 0, 9) - 1.05) < 1e-9, cross.free_time(pts, 50, 0, 9))
 end
 
 print(string.format("%d passed, %d failed", ok, fails))

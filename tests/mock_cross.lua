@@ -96,11 +96,17 @@ local old_set = gfx.set
 gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
 local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
+local red_circles = 0
+local old_circle = gfx.circle
+gfx.circle = function(...)
+  local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then red_circles = red_circles + 1 end
+  return old_circle(...)
+end
 local sel_frame, sel_dim, play_rects = 0, 0, 0
 gfx.rect = function(...)
   local c = last_col
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.9) < 1e-6 and math.abs(c[3] - 0.3) < 1e-6 then play_rects = play_rects + 1 end
-  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 1) < 1e-6 and math.abs(c[3] - 1) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 and select("#", ...) == 5 and select(5, ...) == 0 then sel_frame = sel_frame + 1 end
   if c[1] and c[1] == 0 and c[2] == 0 and c[3] == 0 and math.abs((c[4] or 1) - 0.45) < 1e-6 then sel_dim = sel_dim + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then
     if math.abs((c[4] or 1) - 1) < 1e-6 then red_full = red_full + 1 elseif math.abs((c[4] or 1) - 0.3) < 1e-6 then red_faint = red_faint + 1 end
@@ -110,16 +116,17 @@ gfx.rect = function(...)
 end
 gfx.line = function()
   local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 1) < 1e-6 and math.abs(c[3] - 1) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 then sel_frame = sel_frame + 1 end
   if c[1] and ((math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.62) < 1e-6 and math.abs(c[3] - 0.1) < 1e-6) or (math.abs(c[1] - 0.45) < 1e-6 and math.abs(c[2] - 0.25) < 1e-6)) then orange_lines = orange_lines + 1 end
   return 0
 end
 local thumb_blits = 0
-local blit_x, blit_w, blit_y = {}, {}, {}
+local blit_x, blit_w, blit_y, blit_sw = {}, {}, {}, {}
 gfx.blit = function(src, _, _, sx, _, sw, _, dx, dy, dw)
   if src and src >= 20 then                                   -- (a block shows only its used part)
     thumb_blits = thumb_blits + 1
     blit_seq[#blit_seq + 1] = src
-    blit_x[src] = dx; blit_w[src] = dw; blit_y[src] = dy                    -- (the used part of the block)
+    blit_x[src] = dx; blit_w[src] = dw; blit_y[src] = dy; blit_sw[src] = sw     -- (the used part of the block, as far as it is inside the lanes)
   end
   return 0
 end
@@ -361,16 +368,22 @@ do
     play_rects = 0; strings = {}; frame()
     assert(play_rects == 0, "and it is gone when the sound is stopped")
   end
-  -- Ctrl+click twice in a lane: a diagonal; Esc takes it away again
+  -- Ctrl+click in a lane: the transition becomes FREE (two red points at the lowest and highest frequency, plus the new one); the Curve menu says Free; the menu takes it back
   local function ctrl_click(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
   ctrl_click(blit_x[21] + 40, 150); ctrl_click(blit_x[21] + 140, 200); strings = {}; frame()
-  assert(saw("diagonal"), "two Ctrl+clicks make a diagonal line: " .. tostring(saw("red line")))
-  -- MAKE with the diagonal: the result file opens in the editor and its diagonal is drawn over the picture (no crash, the line is not draggable)
+  assert(saw("^Free$"), "a Ctrl+click makes the transition Free: " .. tostring(saw("^Smooth$") or saw("^Linear$")))
+  -- MAKE with the free line: the result file opens in the editor and its free line is drawn over the picture (no crash, the line is not draggable)
   script.keys = { 13 }; strings = {}; frame(); strings = {}; frame(); frame(); frame()
   assert(not saw("CROSS: sound A flows into sound B"), "the page is left after MAKE")
   click(394 + 10, 6 + 9); strings = {}; frame()
-  script.keys = { 27 }; strings = {}; frame(); strings = {}; frame()
-  assert(saw("^%d+%.%d%d%d s$") and not saw("diagonal"), "Esc gives the vertical line back (and stays on the page)")
+  click(740 + 10, 434 + 10); strings = {}; frame()                              -- the Curve menu opens: Smooth takes the free line away (the vertical line is back)
+  click(740 + 10, 434 + 22 + 10); strings = {}; frame(); strings = {}; frame()
+  assert(saw("^%d+%.%d%d%d s$") and saw("^Smooth$") and not saw("^Free$"), "Smooth gives the vertical line back (and stays on the page)")
+  click(740 + 10, 434 + 10); click(740 + 10, 434 + 22 * 5 + 10); strings = {}; frame()      -- Free from the menu: the two points appear
+  assert(saw("^Free$"), "Free from the menu")
+  red_circles = 0; strings = {}; frame()
+  assert(red_circles >= 4, "two red points in each lane appear: " .. red_circles)
+  click(740 + 10, 434 + 10); click(740 + 10, 434 + 22 * 1 + 10); strings = {}; frame()      -- (back to Smooth for the rest of the test)
   -- Shift = fine drag: a tenth of the mouse movement
   do
     local bx = blit_x[21]
@@ -385,7 +398,10 @@ do
   do
     local w0 = blit_w[21]
     gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 500, 300, 240; strings = {}; frame(); gfx.mouse_wheel = 0; strings = {}; frame()
-    assert(blit_w[21] > w0 * 1.3, "the wheel zooms in: " .. w0 .. " -> " .. blit_w[21])
+    assert(blit_w[21] > w0 * 1.3 or blit_sw[21] < 600, "the wheel zooms in (the block grows, or it is cut at the edge of the lanes): " .. w0 .. " -> " .. blit_w[21] .. " " .. tostring(blit_sw[21]))
+    for i = 1, 6 do gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 1000, 300, 240; strings = {}; frame(); gfx.mouse_wheel = 0 end   -- zoomed far in: blocks run out of the lanes at the left
+    strings = {}; frame()
+    assert(blit_x[21] >= 40 - 0.01 and blit_x[20] >= 40 - 0.01, "nothing is drawn left of the lanes: " .. tostring(blit_x[20]) .. " " .. tostring(blit_x[21]))
     click(300, 370 + 5); click(300, 370 + 5); strings = {}; frame()
     assert(math.abs(blit_w[21] - w0) < 2, "a double-click on the ruler fits the timeline: " .. blit_w[21])
   end

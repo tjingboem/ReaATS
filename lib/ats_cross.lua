@@ -103,6 +103,25 @@ local function weights(curve, sv)
 end
 M.weights = weights                                                 -- (the CROSS page draws the two level curves in the grey area)
 
+-- A FREE line: points { t (seconds), f (Hz) }, at least two, in any order. The moment at which a partial of frequency f crosses is found between the points
+-- (straight in log frequency, from the point below to the point above); below the lowest and above the highest point the line goes on with the slope of its
+-- first / last piece, so a line of two points runs from the lowest to the highest frequency. The moment is kept inside [lo, hi] (the overlap).
+function M.free_time(pts, f, lo, hi)
+  local n = #pts
+  local lf = LOG(math.max(f, 1))
+  local i = 1
+  while i < n - 1 and lf > LOG(pts[i + 1].f) do i = i + 1 end
+  local l1, l2 = LOG(pts[i].f), LOG(pts[i + 1].f)
+  local t = (l2 == l1) and pts[i].t or (pts[i].t + (pts[i + 1].t - pts[i].t) * (lf - l1) / (l2 - l1))
+  return clamp(t, lo, hi)
+end
+function M.sort_points(pts)
+  local out = {}
+  for i, p in ipairs(pts) do out[i] = { t = p.t, f = p.f } end
+  table.sort(out, function(a, b) return a.f < b.f end)
+  return out
+end
+
 -- spec = { a = { d, t0, t1, pos }, b = { d, t0, t1, pos }, line = seconds on the timeline, tol_time = seconds, tol_cents = cents }
 -- Returns the data table of the result and an info table: { rows, frames, hop, pairs, overlap, line, grey0, grey1, ov0, ov1, t_start, threads = { {p, f0, f1} } }
 -- (times in the result's own time, from 0; t_start = where that 0 lies on the timeline; the threads are rows and frames of the result).
@@ -126,24 +145,24 @@ function M.build(spec)
   local rL, rR = resample(L, grid), resample(R, grid)
 
   -- the crossover: s = 0 before the grey area, 1 after it, a step (spec.curve) inside. A vertical red line (`spec.line`) crosses every partial at the same moment;
-  -- with `spec.diag` = { t1, f1, t2, f2 } (a point low and a point high in the picture: seconds on the timeline, Hz) the moment follows the line: a partial
+  -- with `spec.free` = points { t, f } (or `spec.diag` = { t1, f1, t2, f2 }: two points) the moment follows the line (see M.free_time): a partial
   -- crosses where the line passes its (mean) frequency, so the low ones can go first. Tracks and noise bands each take the profile of their own moment.
   local curve = spec.curve or "smooth"
+  if curve == "free" then curve = "smooth" end                                   -- ("free" is a line made of points; the step over the grey area is the smooth one)
   local ov0, ov1 = R.pos, math.min(endL, endR)
   local overlap = ov1 > ov0 + 1e-9
-  local diag = spec.diag
+  local free = spec.free or (spec.diag and { { t = spec.diag[1], f = spec.diag[2] }, { t = spec.diag[3], f = spec.diag[4] } })
+  if free and #free >= 2 then free = M.sort_points(free) else free = nil end
   local tc_v, w_time = nil, math.max(spec.tol_time or 0, 0)
   if overlap then tc_v = clamp(spec.line or (ov0 + ov1) / 2, ov0, ov1) end
   local function tc_at(freq)
-    if not diag then return tc_v end
-    local lf1, lf2 = LOG(diag[2]), LOG(diag[4])
-    local x = (lf2 ~= lf1) and clamp((LOG(math.max(freq, 1)) - lf1) / (lf2 - lf1), 0, 1) or 0
-    return clamp(diag[1] + (diag[3] - diag[1]) * x, ov0, ov1)
+    if not free then return tc_v end
+    return M.free_time(free, freq, ov0, ov1)
   end
   local profiles = {}
   local function profile(tc)
     local key = 0
-    if diag then
+    if free then
       key = math.floor((tc - ov0) / math.max(ov1 - ov0, 1e-9) * 63 + 0.5)
       tc = ov0 + key / 63 * (ov1 - ov0)
     end
@@ -304,9 +323,12 @@ function M.build(spec)
     if t.thread then info.threads[#info.threads + 1] = { p = row_of[k], f0 = t.f0, f1 = t.f0 + #t.amp - 1 } end
   end
   if overlap then
-    local mid = profile(tc_at(diag and math.sqrt(diag[2] * diag[4]) or 1))
+    local mid = profile(tc_at(free and math.sqrt(free[1].f * free[#free].f) or 1))
     info.line, info.grey0, info.grey1, info.ov0, info.ov1 = mid.tc - t_start, mid.g0 - t_start, mid.g1 - t_start, ov0 - t_start, ov1 - t_start
-    if diag then info.diag = { diag[1] - t_start, diag[2], diag[3] - t_start, diag[4] } end
+    if free then
+      info.free = {}
+      for i, p in ipairs(free) do info.free[i] = { t = p.t - t_start, f = p.f } end
+    end
   end
   return d, info
 end
@@ -347,14 +369,17 @@ function M.build_timeline(spec)
       acc = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }
     else
       local st = spec.steps and spec.steps[k] or {}
-      d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }, line = st.line, diag = st.diag,
+      d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }, line = st.line, diag = st.diag, free = st.free,
                           tol_time = st.tol_time or spec.tol_time, tol_cents = st.tol_cents or spec.tol_cents, curve = st.curve or spec.curve })
       if not d then return nil, info end
       pairs_total = pairs_total + info.pairs
       if info.overlap then
         local t0 = info.t_start
         local tr = { k = k, line = info.line + t0, grey0 = info.grey0 + t0, grey1 = info.grey1 + t0, ov0 = info.ov0 + t0, ov1 = info.ov1 + t0 }
-        if info.diag then tr.diag = { info.diag[1] + t0, info.diag[2], info.diag[3] + t0, info.diag[4] } end
+        if info.free then
+          tr.free = {}
+          for i, p in ipairs(info.free) do tr.free[i] = { t = p.t + t0, f = p.f } end
+        end
         transitions[#transitions + 1] = tr
       end
       for _, m in ipairs(info.marks) do marks[#marks + 1] = m end
@@ -364,7 +389,7 @@ function M.build_timeline(spec)
   local t_start = info.t_start
   for _, tr in ipairs(transitions) do                                    -- (the times of the result start at 0)
     tr.line, tr.grey0, tr.grey1, tr.ov0, tr.ov1 = tr.line - t_start, tr.grey0 - t_start, tr.grey1 - t_start, tr.ov0 - t_start, tr.ov1 - t_start
-    if tr.diag then tr.diag[1], tr.diag[3] = tr.diag[1] - t_start, tr.diag[3] - t_start end
+    if tr.free then for _, p in ipairs(tr.free) do p.t = p.t - t_start end end
   end
   local threads, seen = {}, {}
   for _, m in ipairs(marks) do
@@ -375,7 +400,7 @@ function M.build_timeline(spec)
     end
   end
   info.transitions, info.threads, info.pairs = transitions, threads, pairs_total
-  info.line, info.grey0, info.grey1, info.ov0, info.ov1, info.diag = nil, nil, nil, nil, nil, nil
+  info.line, info.grey0, info.grey1, info.ov0, info.ov1, info.free = nil, nil, nil, nil, nil, nil
   return d, info
 end
 

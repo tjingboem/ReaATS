@@ -2220,23 +2220,26 @@ end
 -- One transition of the result: its grey band and its red line (or diagonal).
 function W.draw_cross_transition(r, tr, px, py, pw, ph, lpy, lph)
   local w = (tr.grey1 or 0) - (tr.grey0 or 0)
-  if tr.diag then                                                          -- a diagonal line: low and high point of the picture (display only)
-    local d = tr.diag
+  if tr.free then                                                          -- a free line (points low to high in the picture; display only, it is made on the CROSS page)
+    local xc = W.cross_mod or dofile(script_dir .. "/lib/ats_cross.lua")
+    W.cross_mod = xc
     gfx.set(0.6, 0.63, 0.7, 0.18)
-    for yy = 0, lph - 2, 2 do                                             -- the grey band follows the line row by row
-      local lf1, lf2 = math.log(d[2]), math.log(d[4])
-      local f = view.f0 * (view.f1 / view.f0) ^ (1 - yy / lph)
-      local fx = (lf2 ~= lf1) and clamp((math.log(f) - lf1) / (lf2 - lf1), 0, 1) or 0
-      local tcr = d[1] + (d[3] - d[1]) * fx
+    local prev_x, prev_y
+    for yy = 0, lph - 2, 2 do
+      local f = view.f0 * (view.f1 / view.f0) ^ (1 - yy / lph)                 -- the grey band follows the line row by row
+      local tcr = xc.free_time(tr.free, f, tr.ov0 or -1e9, tr.ov1 or 1e9)
       local x0, x1 = px + tx(tcr - w / 2, pw), px + tx(tcr + w / 2, pw)
       x0, x1 = math.max(x0, px), math.min(x1, px + pw)
       if x1 > x0 then gfx.rect(x0, lpy + yy, x1 - x0, 2, 1) end
     end
     gfx.set(1, 0.23, 0.19, 0.95)
-    local cx1, cy1, cx2, cy2 = clip_segment(tx(d[1], pw), fy(d[2], lph), tx(d[3], pw), fy(d[4], lph), pw, lph)
-    if cx1 then
-      gfx.line(px + cx1, lpy + cy1, px + cx2, lpy + cy2, 1)
-      gfx.line(px + cx1 + 1, lpy + cy1, px + cx2 + 1, lpy + cy2, 1)
+    for yy = 0, lph - 1, 2 do
+      local f = view.f0 * (view.f1 / view.f0) ^ (1 - yy / lph)
+      local x = px + tx(xc.free_time(tr.free, f, tr.ov0 or -1e9, tr.ov1 or 1e9), pw)
+      if prev_x and x >= px - 4 and x <= px + pw + 4 and prev_x >= px - 4 and prev_x <= px + pw + 4 then
+        gfx.line(prev_x, prev_y, x, lpy + yy); gfx.line(prev_x + 1, prev_y, x + 1, lpy + yy)
+      end
+      prev_x, prev_y = x, lpy + yy
     end
     return
   end
