@@ -95,8 +95,11 @@ local old_set = gfx.set
 gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
 local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
+local sel_frame, sel_dim = 0, 0
 gfx.rect = function(...)
   local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 1) < 1e-6 and math.abs(c[3] - 1) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 and select("#", ...) == 5 and select(5, ...) == 0 then sel_frame = sel_frame + 1 end
+  if c[1] and c[1] == 0 and c[2] == 0 and c[3] == 0 and math.abs((c[4] or 1) - 0.45) < 1e-6 then sel_dim = sel_dim + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then
     if math.abs((c[4] or 1) - 1) < 1e-6 then red_full = red_full + 1 elseif math.abs((c[4] or 1) - 0.3) < 1e-6 then red_faint = red_faint + 1 end
   end
@@ -304,6 +307,22 @@ do
   assert(saw("^%-24%.0 dB$"), "the level slider at its left end: -24 dB: " .. tostring(saw("dB")))
   click(660 + 133, 90 + 5); strings = {}; frame()
   assert(saw("^%+0%.0 dB$"), "and back at 0 dB (it sticks)")
+  -- ONE selection for both lanes, ONE level slider for the selected block (a block of lane B and one of lane A in turn)
+  do
+    local function pick_a() click(math.floor(blit_x[20] + blit_w[20] * 0.3), 150) end
+    local function pick_b() click(math.floor(blit_x[21] + blit_w[21] * 0.1), 300) end
+    pick_b(); click(660, 90 + 5); strings = {}; frame()
+    assert(saw("^%-24%.0 dB$"), "the level slider changes the selected block of lane B: " .. tostring(saw("dB")))
+    pick_a(); strings = {}; frame()
+    assert(saw("^%+0%.0 dB$") and not saw("^%-24%.0 dB$"), "select a block of lane A: the slider shows that block's own level")
+    pick_b(); strings = {}; frame()
+    assert(saw("^%-24%.0 dB$"), "and the block of lane B kept its level")
+    click(660 + 133, 90 + 5); strings = {}; frame()                              -- (back to 0 dB)
+    assert(saw("^%+0%.0 dB$"))
+    sel_frame, sel_dim = 0, 0
+    strings = {}; frame()
+    assert(sel_frame >= 3 and sel_dim >= 1, "the selected block has the thick frame, the others are dimmed")
+  end
   -- the curve menu (layout dd_curve at 740, 434; the list opens below it)
   click(740 + 10, 434 + 10); strings = {}; frame()
   assert(saw("^Equal power$") and saw("^S curve$"), "the menu lists the curves: " .. tostring(saw("Smooth")))
@@ -330,7 +349,7 @@ do
   -- Shift = fine drag: a tenth of the mouse movement
   do
     local bx = blit_x[21]
-    local mid = bx + blit_w[21] * 0.1                                              -- (not in the middle: a red line may stand there)
+    local mid = bx + blit_w[21] * 0.16                                             -- (not in the middle: a red line may stand there; not where the last click was: that would be a double-click)
     gfx.mouse_cap = 1 | 8; gfx.mouse_x, gfx.mouse_y = mid, 300; frame()
     gfx.mouse_x = mid + 50; frame(); gfx.mouse_x = mid + 100; frame()
     local moved = blit_x[21] - bx                                                -- (read while the button is still down: letting go fits the view again)
@@ -364,6 +383,9 @@ do
     load_path = second
     click(40 + 10, 84 + 10); strings = {}; frame()                                -- LOAD A
     assert(saw("cx_second%.ats loaded") or (os.getenv("REAATS_LOW_MEMORY") and saw("WARNING")), "LOAD A adds a sound: " .. tostring(saw("loaded") or saw("not enough")))
+    sel_frame, sel_dim = 0, 0
+    strings = {}; frame()
+    assert(sel_frame >= 3 and sel_dim >= 1, "with several blocks in a lane the selected one has a thick white frame and the others are dimmed: " .. sel_frame .. " " .. sel_dim)
     assert(blit_x[23] and blit_x[23] > last, "the new block stands behind the others on lane A: " .. tostring(blit_x[23]) .. " " .. tostring(last))
     local from = blit_x[23] + blit_w[23] * 0.1
     drag(math.floor(from), 150, math.floor(from) - 600, 150); strings = {}; frame()      -- dragged left over its neighbours

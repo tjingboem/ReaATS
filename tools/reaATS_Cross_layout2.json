@@ -211,22 +211,11 @@
   {
     "panel": "cross",
     "state": "*",
-    "id": "sl_gain_a",
-    "label": "Level A (slider)",
+    "id": "sl_gain",
+    "label": "Level (slider, the selected block)",
     "shape": "box",
     "x": 660,
     "y": 90,
-    "w": 200,
-    "h": 10
-  },
-  {
-    "panel": "cross",
-    "state": "*",
-    "id": "sl_gain_b",
-    "label": "Level B (slider)",
-    "shape": "box",
-    "x": 660,
-    "y": 234,
     "w": 200,
     "h": 10
   },

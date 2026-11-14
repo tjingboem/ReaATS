@@ -28,7 +28,8 @@ function M.new(env)
   local self = setmetatable({}, Page)
   self.env = env
   self.blocks = {}                                  -- { id, lane ("a" / "b"), path, file, name, d, origin (timeline seconds of file time 0), t0, t1 (the used part, file time), gain_db, tid (image buffer) ... }
-  self.sel = {}                                     -- the selected block of each lane: { a = block, b = block } (the buttons and the level slider act on it)
+  self.sel = {}                                     -- the selected block of each lane: { a = block, b = block } (what EDIT A / EDIT B open)
+  self.cur = nil                                    -- THE selected block (in either lane): the level slider changes it; it is shown with a thick frame
   self.next_id = 1
   self.lines = {}                                   -- by transition key: the red line (seconds on the timeline)
   self.diags = {}                                   -- by transition key: the points of a diagonal { t (timeline s), f (Hz) } x 2 (Ctrl+click in a lane)
@@ -138,6 +139,7 @@ function Page:capture()
     for k, v in pairs(b) do c[k] = v end
     blocks[i] = c
     for lane, sb in pairs(self.sel) do if sb == b then sel_id[lane] = b.id end end
+    if self.cur == b then sel_id.cur = b.id end
   end
   local lines, diags = {}, {}
   for k, v in pairs(self.lines) do lines[k] = v end
@@ -156,9 +158,11 @@ function Page:restore(st)
   self.blocks, self.lines, self.diags = st.blocks, st.lines, st.diags
   self.tol_time, self.tol_cents, self.curve = st.tol_time, st.tol_cents, st.curve
   self.tr_set, self.active = st.tr_set, st.active
-  self.sel = {}
+  self.sel, self.cur = {}, nil
   for _, b in ipairs(self.blocks) do
-    for lane, id in pairs(st.sel_id) do if b.id == id then self.sel[lane] = b end end
+    for lane, id in pairs(st.sel_id) do
+      if b.id == id then if lane == "cur" then self.cur = b else self.sel[lane] = b end end
+    end
     self:make_thumb(b)
   end
   self.zoomed = false
@@ -294,6 +298,7 @@ function Page:add_block(lane, b)
   self:push_undo()
   self.blocks[#self.blocks + 1] = b
   self.sel[lane] = b
+  self.cur = b
   self:make_thumb(b)
   self:recount()
   self:fit_view(true)
@@ -330,6 +335,7 @@ function Page:remove(b)
   self:push_undo()
   for i, o in ipairs(self.blocks) do if o == b then table.remove(self.blocks, i); break end end
   if self.sel[b.lane] == b then self.sel[b.lane] = nil end
+  if self.cur == b then self.cur = nil end
   self:fit_view(true)
   self:recount()
   self:say(b.name .. " removed")
@@ -341,6 +347,7 @@ function Page:edit_in_editor(lane, block)
   local s = block or self:selected(lane)
   if not s then return end
   self.sel[s.lane] = s
+  self.cur = s
   if self.env.open_in_editor(s.d, s.file or s.path, (not s.edited) and s.path or nil, s.edited) then
     self.editing = s
     self.env.set_status(string.format("%s is open in the editor: edit it and press CROSS to come back (nothing needs to be saved)", s.name))
@@ -387,7 +394,7 @@ function Page:use_open_sound(lane)
   if not st.data then self:say("no sound is open in the editor"); return end
   local d = st.data
   for _, o in ipairs(self.blocks) do
-    if o.d == d then self.sel[o.lane] = o; self:say(o.name .. " is on the page already"); return end
+    if o.d == d then self.sel[o.lane] = o; self.cur = o; self:say(o.name .. " is on the page already"); return end
   end
   local s = { d = d, path = st.current or st.file, file = st.file, name = basename(st.file or "sound.ats"), bytes = 0, origin = 0,
               t0 = d.times[1], t1 = d.times[d.frames], full = true, edited = st.modified or (st.current ~= st.file) }
@@ -475,8 +482,7 @@ function Page:geom(W, H, top)
   g.sl_freq = box("sl_freq", 420, 394, 300, 10)
   local function obox(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top, true); if x then return { x = x, y = y, w = w, h = h } end end
   g.dd_curve = obox("dd_curve", 740, 394, 150, 22)
-  g.sl_gain_a = obox("sl_gain_a", 660, 52, 200, 10)
-  g.sl_gain_b = obox("sl_gain_b", 660, 196, 200, 10)
+  g.sl_gain = obox("sl_gain", 660, 52, 200, 10) or obox("sl_gain_a", 660, 52, 200, 10)       -- (one level slider for the selected block; an older layout has sl_gain_a / sl_gain_b: the first is used)
   local function rect(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x, y, w, h } end
   g.btn = {
     back = rect("btn_back", W - 120, 6, 90, 24),
@@ -525,13 +531,12 @@ function Page:slider_value(g, which, mx)
   end
 end
 
--- The gain of the selected sound of a lane (dB): its slider, -24 .. +12, sticks at 0.
+-- The gain of the selected sound (dB): the one level slider, -24 .. +12, sticks at 0.
 local GAIN_MIN, GAIN_MAX = -24, 12
 local CURVES = { { "smooth", "Smooth" }, { "linear", "Linear" }, { "equal", "Equal power" }, { "s", "S curve" } }
 local function curve_name(k) for _, c in ipairs(CURVES) do if c[1] == k then return c[2] end end return k end
-function Page:gain_value(g, lane, mx)
-  local s = self:selected(lane)
-  local sl = g["sl_gain_" .. lane]
+function Page:gain_value(g, mx)
+  local s, sl = self.cur, g.sl_gain
   if not (s and sl) then return end
   local db = GAIN_MIN + clamp((mx - sl.x) / sl.w, 0, 1) * (GAIN_MAX - GAIN_MIN)
   db = math.floor(db * 2 + 0.5) / 2
@@ -662,12 +667,16 @@ function Page:mouse(mx, my, cap, wheel)
     elseif inside(b.make, mx, my) then self:make()
     elseif b.audition and inside(b.audition, mx, my) then self:audition()
     else
-      for _, which in ipairs({ "sl_time", "sl_freq", "sl_gain_a", "sl_gain_b" }) do
+      for _, which in ipairs({ "sl_time", "sl_freq", "sl_gain" }) do
         local sl = g[which]
         if sl and mx >= sl.x - 6 and mx < sl.x + sl.w + 6 and my >= sl.y - 8 and my < sl.y + sl.h + 8 then
-          if which:sub(1, 8) == "sl_gain_" then
-            self.drag = { kind = "gain", lane = which:sub(9) }
-            self:gain_value(g, self.drag.lane, mx)
+          if which == "sl_gain" then
+            if self.cur then
+              self.drag = { kind = "gain" }
+              self:gain_value(g, mx)
+            else
+              self:say("select a block first")
+            end
           else
             self.drag = { kind = "slider", which = which }
             self:slider_value(g, which, mx)
@@ -707,6 +716,7 @@ function Page:mouse(mx, my, cap, wheel)
         local s = hit and hit.s or body
         if s then
           self.sel[s.lane] = s
+          self.cur = s
           local now = reaper.time_precise()
           local lc = self.last_click
           if lc and lc.block == s and now - lc.t < 0.45 and math.abs(mx - lc.x) <= 5 and math.abs(my - lc.y) <= 5 then
@@ -730,7 +740,7 @@ function Page:mouse(mx, my, cap, wheel)
       d.x = mx
     end
     if d.kind == "slider" then self:slider_value(g, d.which, mx)
-    elseif d.kind == "gain" then self:gain_value(g, d.lane, mx)
+    elseif d.kind == "gain" then self:gain_value(g, mx)
     elseif d.kind == "pan" then
       local dt = -d.acc / g.pps
       self.view = { d.v0 + dt, d.v1 + dt }
@@ -845,9 +855,14 @@ function Page:draw_block(g, s)
   gfx.set(col[1], col[2], col[3], 1)
   gfx.rect(fx0, lane.y + 4, fx1 - fx0, lane.h - 8, 0)
   gfx.rect(ux0, lane.y + 4, ux1 - ux0, lane.h - 8, 0)
-  if self.sel[s.lane] == s and #self:lane_blocks(s.lane) > 1 then                 -- the selected block of a lane (the buttons and the level act on it): a second outline
-    gfx.set(1, 1, 1, 0.55)
-    gfx.rect(ux0 + 1, lane.y + 5, ux1 - ux0 - 2, lane.h - 10, 0)
+  if self.cur then                                                                   -- THE selected block stands out: a thick white frame; the other blocks are dimmed
+    if self.cur == s then
+      gfx.set(1, 1, 1, 0.95)
+      for k = 1, 3 do gfx.rect(ux0 + k, lane.y + 4 + k, ux1 - ux0 - 2 * k, lane.h - 8 - 2 * k, 0) end
+    else
+      gfx.set(0, 0, 0, 0.45)
+      gfx.rect(ux0, lane.y + 4, ux1 - ux0, lane.h - 8, 1)
+    end
   end
   gfx.set(1, 1, 1, 0.95)                                                   -- the handles of the cut
   gfx.rect(ux0 - 2, lane.y + 4, 4, lane.h - 8, 1)
@@ -1060,12 +1075,9 @@ function Page:draw(W, H, top)
     gfx.rect(s.x, s.y, s.w, s.h, 0)
   end
   self:draw_threads(g)
-  for _, lane in ipairs({ "a", "b" }) do
-    local sl, s = g["sl_gain_" .. lane], self:selected(lane)
-    if sl and s then
-      local db = s.gain_db or 0
-      slider(sl, "Level " .. lane:upper(), string.format("%+.1f dB", db), (db - GAIN_MIN) / (GAIN_MAX - GAIN_MIN))
-    end
+  if g.sl_gain then
+    local db = self.cur and (self.cur.gain_db or 0) or 0
+    slider(g.sl_gain, "Level", self.cur and string.format("%+.1f dB", db) or "-", (db - GAIN_MIN) / (GAIN_MAX - GAIN_MIN))
   end
   local tt, tc = self:tol_of(self:active_tr())
   slider(g.sl_time, "Time tolerance", tt < 0.005 and "hard line" or string.format("%.2f s", tt), math.sqrt(math.min(tt / self:time_max(), 1)))
