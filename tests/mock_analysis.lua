@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_analysis.lua   (from the ReaATS folder)
 -- The Analysis page end to end: fake gfx and reaper, but the REAL Python engine runs. Clicks use the layout of the page
 -- (see lib/analysis_page.lua: left column x 24.., right column x 556.., rows of 25 px from the top margin of 40, ATS_Editor.lua's ANALYSIS_TOP).

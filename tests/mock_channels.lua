@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 -- Run: lua5.4 tests/mock_channels.lua   (from the ReaATS folder)
 -- Channel sets in the editor: opening name_chK.ats opens the whole set, channel buttons and Tab, per-channel edits and undo,
@@ -702,13 +703,16 @@ do
   click(444 + 40, by); strings = {}; frame()
   assert(saw("^P%-STEREO$"), "a click on SPACE gives pseudo-stereo")
   click(444 + 40, by); strings = {}; frame()
-  assert(saw("^VBAP$") and saw("^OUT$"), "the next click gives VBAP, with its OUT box")
+  assert(saw("^VBAP$") and saw("^4$") and not saw("^OUT$"), "the next click gives VBAP, with its box of outputs (just the number, no word OUT)")
   click(716 + 50, by); click(716 + 50, by); strings = {}; frame()
   assert(saw("^6$"), "a click on the OUT box adds an output (4 -> 6)")
   local kept = reaper.GetExtState("tjingboem_ATSViewer", "space")
   assert(kept:match("^3|") and kept:match("|6$"), "the setting is remembered: " .. tostring(kept))
   click(548 + 24, by); strings = {}; frame()
-  assert(saw("spread 2[0-9]%%") or saw("spread 3[0-9]%%") or saw("spread 24%%"), "the slider sets the spread: " .. tostring(saw("spread") or saw("width")))
+  assert(saw("^spread$") and not saw("%%"), "the label says only spread (no number, no %): " .. tostring(saw("spread") or saw("width")))
+  local kept2 = reaper.GetExtState("tjingboem_ATSViewer", "space")
+  local amt = tonumber(kept2:match("^%d|([%d%.]+)|"))
+  assert(amt and amt > 0.15 and amt < 0.4, "the slider sets the spread (kept as the setting): " .. tostring(kept2))
   click(444 + 40, by); strings = {}; frame()
   assert(saw("^3 channels$"), "and a third click is back at the channels as analysed")
 end

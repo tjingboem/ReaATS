@@ -13,6 +13,7 @@ Anchors, decided from the position in the default window (the window can be resi
   - an element whose centre lies below 85 % of the height hangs on the BOTTOM edge, else on the TOP.
   - the picture is different: its margins (left, right, top, bottom) are taken from 'plot', the channel row's height from 'plot_s' minus 'plot',
     and it stretches with the window.
+The label of an element is written too: a short one (no bracket in it) is the text the editor writes on that button (rename it in ReaLayout to rename the button).
 The file lib/layout.lua is overwritten, never edited by hand.
 """
 import json
@@ -29,9 +30,14 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    src = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "layout.lua")
+    args = [a for a in sys.argv[1:] if a != "--no-labels"]      # (--no-labels: for the tests, which use a fixed layout and the built-in button names)
+    no_labels = "--no-labels" in sys.argv[1:]
+    src = args[0]
+    out = args[1] if len(args) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "layout.lua")
     els = {e["id"]: e for e in json.load(open(src, encoding="utf-8"))}
+    for i in REQUIRED:                                           # (an element that was left out may be the plain copy of the same button: PRINT for PRINT_s)
+        if i not in els and i.endswith("_s") and i[:-2] in els:
+            els[i] = els[i[:-2]]
     missing = [i for i in REQUIRED if i not in els]
     if missing:
         print("missing in the layout: " + ", ".join(missing))
@@ -48,7 +54,8 @@ def main():
         e = els[i]
         ax = "r" if e["x"] + e["w"] / 2.0 > REF_W * 0.72 else "l"
         ay = "b" if e["y"] + e["h"] / 2.0 > REF_H * 0.85 else "t"
-        lines.append('    %-16s = { x = %d, y = %d, w = %d, h = %d, ax = "%s", ay = "%s" },' % (i, e["x"], e["y"], e["w"], e["h"], ax, ay))
+        label = ("" if no_labels else e.get("label", "")).replace("\\", "\\\\").replace('"', '\\"')
+        lines.append('    %-16s = { x = %d, y = %d, w = %d, h = %d, ax = "%s", ay = "%s", label = "%s" },' % (i, e["x"], e["y"], e["w"], e["h"], ax, ay, label))
     lines += ["  },", "}", ""]
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))

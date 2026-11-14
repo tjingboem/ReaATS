@@ -113,10 +113,17 @@ local amp_thresh = 0
 -- The box round the selection with handles that bend it (the "rubber sheet", lib/ats_warp.lua): W.region = the box (t0, t1, f0, f1) the selection
 -- was made with, W.w = the warp being shaped (nil = flat), W.drag = a handle being dragged. Everything about it lives in this one table (the main
 -- chunk of this file is at Lua's limit of 200 local variables).
-local W = { m = dofile(script_dir .. "/lib/ats_warp.lua"), layout = dofile(script_dir .. "/lib/layout.lua"),
+local W = { m = dofile(script_dir .. "/lib/ats_warp.lua"), layout = dofile(rawget(_G, "REAATS_TEST_LAYOUT") or (script_dir .. "/lib/layout.lua")),
             notes = dofile(script_dir .. "/lib/ats_notes.lua") }
 -- The place of an element of the layout (lib/layout.lua) in the window as it is now: x, y, w, h. An element hangs on the edge that the layout says
 -- (right: its distance to the right edge stays what it was in the default window, 1100 wide; bottom: likewise for the height, 640).
+-- The text on a button: the label of its element in the layout when that is a short name (no bracket: a label with a bracket describes the element), else the built-in one.
+function W.btn_label(id, default)
+  local e = W.layout.el[id]
+  local l = e and e.label
+  if l and l ~= "" and not l:find("%(") then return l end
+  return default
+end
 function W.lay(id)
   local e = W.layout.el[id]
   local x, y = e.x, e.y
@@ -129,6 +136,20 @@ end
 function W.say_audition(msg)
   W.audition_note = msg
   if rawget(_G, "REAATS_SHOW_AUDITION_TEXT") then set_status(msg) end
+end
+-- Rounded buttons (tjingboem, 14 Nov 2026: "can you give all the buttons round edges?"): gfx has no filled rounded rectangle, so the fill is two rectangles and four
+-- circles in the colour that is set, the border is gfx.roundrect (a plain rectangle where that is missing).
+function W.rfill(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if r < 2 then gfx.rect(x, y, w, h, 1); return end
+  gfx.rect(x + r, y, w - 2 * r, h, 1)
+  gfx.rect(x, y + r, w, h - 2 * r, 1)
+  gfx.circle(x + r, y + r, r, 1, 1); gfx.circle(x + w - r - 1, y + r, r, 1, 1)
+  gfx.circle(x + r, y + h - r - 1, r, 1, 1); gfx.circle(x + w - r - 1, y + h - r - 1, r, 1, 1)
+end
+function W.rline(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if gfx.roundrect and r >= 2 then gfx.roundrect(x, y, w - 1, h - 1, r, 1) else gfx.rect(x, y, w, h, 0) end
 end
 -- The size of a font in which `label` fits in `w` pixels (13 or the given size at most, 9 at least).
 function W.fit(label, w, size)
@@ -2141,9 +2162,9 @@ function W.draw_pk()
   local function button(rc, text, rgb, lit)
     gfx.set(rgb[1] * (lit == true and 0.55 or 0.15), rgb[2] * (lit == true and 0.55 or 0.15), rgb[3] * (lit == true and 0.55 or 0.15), 1)
     if lit == nil then gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1) end
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
     gfx.set(rgb[1], rgb[2], rgb[3], lit == false and 0.45 or 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
     gfx.setfont(1, "Arial", 12)
     if lit == true then gfx.set(1, 1, 1, 1) elseif lit == false then gfx.set(rgb[1] * 0.65, rgb[2] * 0.65, rgb[3] * 0.65, 1) else gfx.set(rgb[1], rgb[2], rgb[3], 1) end
     gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
@@ -2167,13 +2188,13 @@ end
 function W.cross_rect() return W.lay("btn_cross_s") end
 function W.draw_cross_button()
   local x, y, w, h = W.cross_rect()
-  gfx.set(0.42, 0.30, 0.12, 1)
-  gfx.rect(x, y, w, h, 1)
-  gfx.set(0.95, 0.72, 0.35, 1)
-  gfx.rect(x, y, w, h, 0)
-  local label = "CROSS"
+  gfx.set(0.20, 0.36, 0.33, 1)                                              -- (the colours of the ANALYSIS button: tjingboem, 14 Nov 2026)
+  W.rfill(x, y, w, h)
+  gfx.set(0.50, 0.85, 0.78, 1)
+  W.rline(x, y, w, h)
+  local label = W.btn_label("btn_cross_s", "CROSS")
   W.fit(label, w, 13)
-  gfx.set(1, 0.95, 0.85, 1)
+  gfx.set(0.93, 1, 0.98, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
@@ -2293,11 +2314,11 @@ function W.draw_max_partials_button()
   local x, y, w, h = W.max_partials_rect()
   local enabled = any_sel()
   gfx.set(enabled and 0.20 or 0.15, enabled and 0.38 or 0.17, enabled and 0.42 or 0.19, 1)
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(enabled and 0.45 or 0.3, enabled and 0.92 or 0.34, enabled and 1 or 0.37, 1)
-  gfx.rect(x, y, w, h, 0)
+  W.rline(x, y, w, h)
   gfx.setfont(1, "Arial", 13)
-  local label = "MAX PARTIALS"
+  local label = W.btn_label("btn_maxpart_s", "MAX PARTIALS")
   gfx.set(enabled and 1 or 0.42, enabled and 1 or 0.44, enabled and 1 or 0.46, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
@@ -2314,13 +2335,13 @@ function W.notes_rect() return W.lay("btn_notes_s") end
 
 function W.draw_notes_button()
   local x, y, w, h = W.notes_rect()
-  gfx.set(0.30, 0.22, 0.40, 1)
-  gfx.rect(x, y, w, h, 1)
-  gfx.set(0.72, 0.60, 0.92, 1)
-  gfx.rect(x, y, w, h, 0)
-  local label = "EXPORT NOTES"
+  gfx.set(0.36, 0.27, 0.16, 1)                                              -- (amber, like EXPORT .ats FILE: tjingboem, 14 Nov 2026)
+  W.rfill(x, y, w, h)
+  gfx.set(0.90, 0.72, 0.45, 1)
+  W.rline(x, y, w, h)
+  local label = W.btn_label("btn_notes_s", "EXPORT NOTES")
   W.fit(label, w, 14)
-  gfx.set(0.97, 0.94, 1, 1)
+  gfx.set(1, 0.96, 0.90, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
@@ -2689,9 +2710,9 @@ function W.draw_notes_panel()
   gfx.drawstr(string.format("found %d partials: %d notes on %d channels, %d left out", #g.tracks, g.kept, g.members, g.dropped))
   local function button(rc, text, rgb)
     gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
     gfx.set(rgb[1], rgb[2], rgb[3], 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
     gfx.setfont(1, "Arial", 12)
     gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
     gfx.drawstr(text)
@@ -2741,11 +2762,11 @@ function W.draw_space()
   local x, y, w, h = table.unpack(r.button)
   if sp.mode == 1 then gfx.set(0.18, 0.27, 0.36, 1)
   else gfx.set(sp.mode == 2 and 0.30 or 0.12, sp.mode == 2 and 0.26 or 0.28, sp.mode == 2 and 0.12 or 0.34, 1) end
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   if sp.mode == 1 then gfx.set(0.55, 0.72, 0.95, 1)
   elseif sp.mode == 2 then gfx.set(0.95, 0.75, 0.35, 1)
   else gfx.set(0.45, 0.85, 1, 1) end
-  gfx.rect(x, y, w, h, 0)
+  W.rline(x, y, w, h)
   local label = W.space_label(sp.mode)
   W.fit(label, w, 13)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
@@ -2760,18 +2781,17 @@ function W.draw_space()
   gfx.setfont(1, "Arial", 11)
   gfx.set(0.7, 0.74, 0.8, on and 1 or 0.5)
   gfx.x, gfx.y = r.pct[1], r.pct[2]
-  gfx.drawstr(string.format("%s %d%%", sp.mode == 3 and "spread" or "width", math.floor(sp.amount * 100 + 0.5)))
+  gfx.drawstr(sp.mode == 3 and "spread" or "width")                             -- (only the word: the slider shows the value; tjingboem, 14 Nov 2026)
   if sp.mode == 3 then
     local ox, oy, ow, oh = table.unpack(r.out)
-    gfx.set(0.18, 0.2, 0.23, 1)
-    gfx.rect(ox + 36, oy, ow - 36, oh, 1)
+    gfx.set(0.18, 0.2, 0.23, 1)                                                   -- (just the number of outputs in its box: the word OUT is gone, tjingboem 14 Nov 2026)
+    gfx.rect(ox, oy, ow, oh, 1)
     gfx.set(0.45, 0.85, 1, 1)
-    gfx.rect(ox + 36, oy, ow - 36, oh, 0)
+    gfx.rect(ox, oy, ow, oh, 0)
     gfx.setfont(1, "Arial", 13)
-    gfx.x, gfx.y = ox, oy + 2
-    gfx.drawstr("OUT")
-    gfx.x, gfx.y = ox + 44, oy + 2
-    gfx.drawstr(tostring(sp.channels))
+    local num = tostring(sp.channels)
+    gfx.x, gfx.y = ox + (ow - gfx.measurestr(num)) / 2, oy + (oh - 13) / 2
+    gfx.drawstr(num)
   end
 end
 -- A click on the SPACE controls. Returns true when it was one (and starts the slider drag).
@@ -2900,9 +2920,9 @@ function W.draw_gain()
   gfx.x, gfx.y = tx0 + tw - gfx.measurestr("+20"), ty + 12; gfx.drawstr("+20")
   local function button(rc, text, rgb)
     gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
     gfx.set(rgb[1], rgb[2], rgb[3], 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
     gfx.setfont(1, "Arial", 12)
     gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
     gfx.drawstr(text)
@@ -3006,9 +3026,9 @@ function W.draw_slant()
   gfx.x, gfx.y = tx0 + tw - gfx.measurestr("less at right"), ty + 12; gfx.drawstr("less at right")
   local function button(rc, text, rgb)
     gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
     gfx.set(rgb[1], rgb[2], rgb[3], 1)
-    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
     gfx.setfont(1, "Arial", 12)
     gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
     gfx.drawstr(text)
@@ -3503,10 +3523,10 @@ local function export_rect() return W.lay("btn_export_s") end
 local function draw_export_button()
   local x, y, w, h = export_rect()
   gfx.set(0.36, 0.27, 0.16, 1)
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(0.90, 0.72, 0.45, 1)
-  gfx.rect(x, y, w, h, 0)
-  local label = "EXPORT .ats FILE"
+  W.rline(x, y, w, h)
+  local label = W.btn_label("btn_export_s", "EXPORT .ats FILE")
   W.fit(label, w, 14)
   gfx.set(1, 0.96, 0.90, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
@@ -3519,10 +3539,10 @@ local function analyse_rect() return W.lay("btn_analyse_s") end
 local function draw_analyse_button()
   local x, y, w, h = analyse_rect()
   gfx.set(0.20, 0.36, 0.33, 1)
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(0.50, 0.85, 0.78, 1)
-  gfx.rect(x, y, w, h, 0)
-  local label = "ANALYSE"
+  W.rline(x, y, w, h)
+  local label = W.btn_label("btn_analyse_s", "ANALYSE")
   W.fit(label, w, 14)
   gfx.set(0.93, 1, 0.98, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
@@ -3545,9 +3565,9 @@ end
 function W.draw_empty_analyse_button()
   local x, y, w, h = W.empty_analyse_rect()
   gfx.set(0.20, 0.36, 0.33, 1)
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(0.50, 0.85, 0.78, 1)
-  gfx.rect(x, y, w, h, 0)
+  W.rline(x, y, w, h)
   gfx.setfont(1, "Arial", 15)
   local label = "ANALYSE or IMPORT FILE"
   gfx.set(0.93, 1, 0.98, 1)
@@ -3563,11 +3583,11 @@ local function draw_print_button()
   else
     gfx.set(0.22, 0.30, 0.46, 1)
   end
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(0.55, 0.68, 0.92, 1)
-  gfx.rect(x, y, w, h, 0)
+  W.rline(x, y, w, h)
   gfx.setfont(1, "Arial", 14)
-  local label = "PRINT"
+  local label = W.btn_label("btn_print_s", "PRINT")
   gfx.set(0.93, 0.96, 1, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
@@ -3629,9 +3649,9 @@ local function draw_channel_buttons()
     local tc = tint_of(i)
     local x, y, w, h = channel_button_rect(i)
     if c.on then gfx.set(tc[1] * 0.45, tc[2] * 0.45, tc[3] * 0.45, 1) else gfx.set(0.16, 0.18, 0.22, 1) end
-    gfx.rect(x, y, w, h, 1)
+    W.rfill(x, y, w, h)
     if c.on then gfx.set(tc[1], tc[2], tc[3], 1) else gfx.set(0.35, 0.38, 0.43, 1) end
-    gfx.rect(x, y, w, h, 0)
+    W.rline(x, y, w, h)
     local label = tostring(i) .. (((i == cur and modified) or (i ~= cur and c.modified)) and "*" or "")
     gfx.set(1, 1, 1, c.on and 1 or 0.5)
     gfx.x = x + (w - gfx.measurestr(label)) / 2
@@ -3750,16 +3770,16 @@ end
 local function draw_audition_button()
   local x, y, w, h = audition_rect()
   if pending and (math.floor(reaper.time_precise() * 2.5) % 2 == 0) then
-    gfx.set(0.36, 0.80, 0.56, 1)                                  -- blinking: the sound is being prepared
+    gfx.set(0.42, 0.58, 0.90, 1)                                  -- blinking: the sound is being prepared (the colours of PRINT: tjingboem, 14 Nov 2026)
   else
-    gfx.set(0.18, 0.42, 0.30, 1)
+    gfx.set(0.22, 0.30, 0.46, 1)
   end
-  gfx.rect(x, y, w, h, 1)
-  gfx.set(0.45, 0.80, 0.60, 1)
-  gfx.rect(x, y, w, h, 0)
+  W.rfill(x, y, w, h)
+  gfx.set(0.55, 0.68, 0.92, 1)
+  W.rline(x, y, w, h)
   gfx.setfont(1, "Arial", 14)
-  local label = "AUDITION"
-  gfx.set(0.92, 1, 0.95, 1)
+  local label = W.btn_label("btn_audition_s", "AUDITION")
+  gfx.set(0.93, 0.96, 1, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
   gfx.drawstr(label)
@@ -3769,9 +3789,9 @@ local function draw_start_button()
   local x, y, w, h = start_rect()
   local away = playhead > 0.0005
   gfx.set(away and 0.30 or 0.14, away and 0.24 or 0.16, away and 0.10 or 0.2, 1)
-  gfx.rect(x, y, w, h, 1)
+  W.rfill(x, y, w, h)
   gfx.set(away and 0.95 or 0.4, away and 0.75 or 0.43, away and 0.35 or 0.5, 1)
-  gfx.rect(x, y, w, h, 0)
+  W.rline(x, y, w, h)
   local label = (w < 44) and "|<" or (away and string.format("|< %.1f s", playhead) or "|< start")     -- (a small button in the layout: only the arrow)
   W.fit(label, w, 12)
   gfx.set(1, away and 0.9 or 0.65, away and 0.6 or 0.7, 1)

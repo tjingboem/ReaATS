@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_notes.lua   (from the ReaATS folder)
 -- The EXPORT NOTES button: asks how many partials, writes <name>_notes1.mid next to the .ats file and puts the notes on a new track.
 -- Fixture: 4 flat partials (200, 400, 800, 1600 Hz) with amplitudes 0.9, 0.2, 0.5, 0.7.

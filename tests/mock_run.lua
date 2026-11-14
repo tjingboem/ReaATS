@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 no_py_synth = false
 -- Run: lua5.4 tests/mock_run.lua   (from the ATSEditor folder)
@@ -297,7 +298,7 @@ do
     local cur, colours = { 0, 0, 0 }, {}
     gfx.set = function(r, g, b, a) cur = { r, g, b }; return real_set(r, g, b, a) end
     gfx.rect = function(x, y, w, h, f)
-      if w == 86 and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
+      if (w == 86 or w == 76) and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
       return real_rect(x, y, w, h, f)
     end
     local n_before = #previews
@@ -359,7 +360,7 @@ do
   local cur, colours = { 0, 0, 0 }, {}
   gfx.set = function(r, g, b, a) cur = { r, g, b }; return real_set(r, g, b, a) end
   gfx.rect = function(x, y, w, h, f)
-    if w == 62 and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
+    if (w == 62 or w == 52) and h == 20 and f == 1 then colours[string.format("%.2f", cur[2])] = true end
     return real_rect(x, y, w, h, f)
   end
   local function key_print()

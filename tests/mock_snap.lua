@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_snap.lua   (from the ReaATS folder)
 -- The ReaSnap side of the editor: window title number, snapshot restore, Close All. Fake gfx / reaper.
 local root = os.getenv("PWD")

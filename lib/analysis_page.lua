@@ -830,11 +830,25 @@ local function text(x, y, s, r, g, b, a)
   gfx.drawstr(s)
 end
 
+-- Rounded buttons (tjingboem, 14 Nov 2026): the fill is two rectangles and four circles, the border is gfx.roundrect (a plain rectangle where that is missing).
+local function rfill(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if r < 2 then gfx.rect(x, y, w, h, 1); return end
+  gfx.rect(x + r, y, w - 2 * r, h, 1)
+  gfx.rect(x, y + r, w, h - 2 * r, 1)
+  gfx.circle(x + r, y + r, r, 1, 1); gfx.circle(x + w - r - 1, y + r, r, 1, 1)
+  gfx.circle(x + r, y + h - r - 1, r, 1, 1); gfx.circle(x + w - r - 1, y + h - r - 1, r, 1, 1)
+end
+local function rline(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if gfx.roundrect and r >= 2 then gfx.roundrect(x, y, w - 1, h - 1, r, 1) else gfx.rect(x, y, w, h, 0) end
+end
+
 function Page:button(x, y, w, h, label, rgb, action)
   gfx.set(rgb[1], rgb[2], rgb[3], 1)
-  gfx.rect(x, y, w, h, 1)
+  rfill(x, y, w, h)
   gfx.set(rgb[1] + 0.25, rgb[2] + 0.25, rgb[3] + 0.25, 1)
-  gfx.rect(x, y, w, h, 0)
+  rline(x, y, w, h)
   gfx.setfont(1, "Arial", 14)
   gfx.set(1, 1, 1, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2

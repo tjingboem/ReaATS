@@ -792,13 +792,27 @@ end
 -- ------------------------------------------------------------------ drawing
 local function text(x, y, s, r, g, b, a) gfx.set(r or 0.85, g or 0.87, b or 0.9, a or 1); gfx.x, gfx.y = x, y; gfx.drawstr(s) end
 
+-- Rounded buttons (tjingboem, 14 Nov 2026): the fill is two rectangles and four circles, the border is gfx.roundrect (a plain rectangle where that is missing).
+local function rfill(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if r < 2 then gfx.rect(x, y, w, h, 1); return end
+  gfx.rect(x + r, y, w - 2 * r, h, 1)
+  gfx.rect(x, y + r, w, h - 2 * r, 1)
+  gfx.circle(x + r, y + r, r, 1, 1); gfx.circle(x + w - r - 1, y + r, r, 1, 1)
+  gfx.circle(x + r, y + h - r - 1, r, 1, 1); gfx.circle(x + w - r - 1, y + h - r - 1, r, 1, 1)
+end
+local function rline(x, y, w, h)
+  local r = math.max(0, math.min(5, math.floor(h / 2), math.floor(w / 2)))
+  if gfx.roundrect and r >= 2 then gfx.roundrect(x, y, w - 1, h - 1, r, 1) else gfx.rect(x, y, w, h, 0) end
+end
+
 local function button(r, label, rgb, enabled)
   rgb = rgb or { 0.5, 0.75, 0.95 }
   local k = (enabled == false) and 0.12 or 0.4
   gfx.set(rgb[1] * k, rgb[2] * k, rgb[3] * k, 1)
-  gfx.rect(r[1], r[2], r[3], r[4], 1)
+  rfill(r[1], r[2], r[3], r[4])
   gfx.set(rgb[1], rgb[2], rgb[3], (enabled == false) and 0.4 or 1)
-  gfx.rect(r[1], r[2], r[3], r[4], 0)
+  rline(r[1], r[2], r[3], r[4])
   gfx.setfont(1, "Arial", 13)
   gfx.x, gfx.y = r[1] + (r[3] - gfx.measurestr(label)) / 2, r[2] + (r[4] - 14) / 2
   gfx.drawstr(label)

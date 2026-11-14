@@ -1,3 +1,4 @@
+REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_partials_knob.lua   (from the ReaATS folder)
 -- The MAX PARTIALS button (bottom left, where the keyboard-shortcut hint lines used to be): greyed out with no selection, otherwise
 -- opens REAPER's own text-input dialog (positive: keep that many loudest, negative: that many weakest) and applies right away, one
