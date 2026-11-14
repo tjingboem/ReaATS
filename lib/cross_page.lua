@@ -36,7 +36,7 @@ function M.new(env)
   self.tol_time, self.tol_cents = 0.6, 100          -- the tolerances a transition has until its own are set (see tol_of)
   self.tr_set = {}                                  -- by transition key: { time, cents } = the tolerances of that transition
   self.active = nil                                 -- the key of the transition whose red line is active: the sliders change its tolerances
-  self.curve = "smooth"                             -- the shape of the crossover (see ats_cross): smooth, linear, equal, s
+  self.curve = "smooth"                             -- the shape of the crossover (see ats_cross): smooth, linear, equal, s; what a transition has until its own is set (see curve_of)
   self.view = { 0, 10 }
   self.drag, self.prev_down = nil, false
   self.message = nil
@@ -102,6 +102,12 @@ function Page:transitions()
 end
 
 -- The tolerances of a transition (its own once they were set, else the page's).
+-- The curve of a transition (its own once it was chosen, else the page's).
+function Page:curve_of(tr)
+  local v = tr and self.tr_set[tr.key]
+  return (v and v.curve) or self.curve
+end
+
 function Page:tol_of(tr)
   local v = tr and self.tr_set[tr.key]
   return (v and v.time) or self.tol_time, (v and v.cents) or self.tol_cents
@@ -145,7 +151,7 @@ function Page:capture()
   for k, v in pairs(self.lines) do lines[k] = v end
   for k, pts in pairs(self.diags) do local c = {}; for i, p in ipairs(pts) do c[i] = { t = p.t, f = p.f } end; diags[k] = c end
   local tr_set = {}
-  for k, v in pairs(self.tr_set) do tr_set[k] = { time = v.time, cents = v.cents } end
+  for k, v in pairs(self.tr_set) do tr_set[k] = { time = v.time, cents = v.cents, curve = v.curve } end
   return { blocks = blocks, sel_id = sel_id, lines = lines, diags = diags, tr_set = tr_set, active = self.active, tol_time = self.tol_time, tol_cents = self.tol_cents, curve = self.curve }
 end
 function Page:push_undo(state)
@@ -192,7 +198,7 @@ function Page:spec()
   for i, b in ipairs(self:sorted()) do blocks[i] = block_spec(self, b) end
   for _, tr in ipairs(self:transitions()) do
     local tt, tc = self:tol_of(tr)
-    steps[tr.k] = { line = self:line_of(tr), diag = self:diag_of(tr), tol_time = tt, tol_cents = tc }
+    steps[tr.k] = { line = self:line_of(tr), diag = self:diag_of(tr), tol_time = tt, tol_cents = tc, curve = self:curve_of(tr) }
   end
   return { blocks = blocks, steps = steps, tol_time = self.tol_time, tol_cents = self.tol_cents, curve = self.curve }
 end
@@ -200,18 +206,22 @@ end
 -- How many threads the present recipe would make (counted when something is let go, not while it moves): every transition is counted between the two sounds
 -- that meet there. Skipped for big sounds (the count resamples both).
 function Page:recount()
-  self.threads_est, self.thread_lines = nil, nil
+  self.threads_est, self.thread_lines, self.counts = nil, nil, {}
   local total, lines = 0, {}
   for _, tr in ipairs(self:transitions()) do
     local l, r = tr.l, tr.r
     local cells = l.d.partials * l.d.frames + r.d.partials * r.d.frames
-    if cells > 3e6 then self.threads_est = -1; return end
-    local info = cross.count({ a = block_spec(self, l), b = block_spec(self, r), line = self:line_of(tr), diag = self:diag_of(tr),
-                               tol_time = select(1, self:tol_of(tr)), tol_cents = select(2, self:tol_of(tr)), curve = self.curve })
-    if info then
-      total = total + info.pairs
-      for _, th in ipairs(info.threads) do
-        lines[#lines + 1] = { lane_l = l.lane, lane_r = r.lane, fl = th.fl, fr = th.fr, t0 = th.t0, t1 = th.t1, key = tr.key }
+    if cells > 3e6 then
+      self.counts[tr.key] = -1                                                      -- (too big to count in advance)
+    else
+      local info = cross.count({ a = block_spec(self, l), b = block_spec(self, r), line = self:line_of(tr), diag = self:diag_of(tr),
+                                 tol_time = select(1, self:tol_of(tr)), tol_cents = select(2, self:tol_of(tr)), curve = self:curve_of(tr) })
+      if info then
+        total = total + info.pairs
+        self.counts[tr.key] = info.pairs
+        for _, th in ipairs(info.threads) do
+          lines[#lines + 1] = { lane_l = l.lane, lane_r = r.lane, fl = th.fl, fr = th.fr, t0 = th.t0, t1 = th.t1, key = tr.key }
+        end
       end
     end
   end
@@ -613,7 +623,14 @@ function Page:mouse(mx, my, cap, wheel)
   if down and not self.prev_down and self.dd_open and g.dd_curve then       -- the open list of curves takes this click
     local dd = g.dd_curve
     for i, c in ipairs(CURVES) do
-      if mx >= dd.x and mx < dd.x + dd.w and my >= dd.y + i * dd.h and my < dd.y + (i + 1) * dd.h and c[1] ~= self.curve then self:push_undo(); self.curve = c[1] end
+      if mx >= dd.x and mx < dd.x + dd.w and my >= dd.y + i * dd.h and my < dd.y + (i + 1) * dd.h and c[1] ~= self:curve_of(self:active_tr()) then
+        self:push_undo()
+        local tr = self:active_tr()
+        if tr then
+          local v = self.tr_set[tr.key] or { time = self.tol_time, cents = self.tol_cents }
+          v.curve = c[1]; self.tr_set[tr.key] = v
+        else self.curve = c[1] end
+      end
     end
     self.dd_open = false
     self.prev_down = down
@@ -976,14 +993,21 @@ function Page:draw_transition(g, tr)
     local g0, g1 = math.max(line - w / 2, lo), math.min(line + w / 2, hi)
     gfx.set(0.6, 0.63, 0.7, 0.35 * fade)
     gfx.rect(self:tx(g, g0), y0, math.max(self:tx(g, g1) - self:tx(g, g0), 1), y1 - y0, 1)
-    if g1 - g0 > 0.01 then                                                          -- the curve of the crossover: s runs from 0 (only the first sound) to 1 (only the second)
+    if g1 - g0 > 0.01 then                                                          -- the LEVELS over the grey area: the first sound falls, the second rises (equal power crosses higher than linear)
       gfx.set(1, 1, 1, 0.75 * fade)
-      local px, py
+      local cv = self:curve_of(tr)
+      local pxl, pyl, pyr
       for k = 0, 40 do
+        local sv = cross.shape(cv, k / 40)
+        local wl, wr = cross.weights(cv, sv)
+        if k == 0 then wl, wr = 1, 0 elseif k == 40 then wl, wr = 0, 1 end
         local cx = self:tx(g, g0 + (g1 - g0) * k / 40)
-        local cy = y1 - cross.shape(self.curve, k / 40) * (y1 - y0)
-        if px then gfx.line(px, py, cx, cy); gfx.line(px, py + 1, cx, cy + 1) end
-        px, py = cx, cy
+        local cyl, cyr = y1 - wl * (y1 - y0), y1 - wr * (y1 - y0)
+        if pxl then
+          gfx.line(pxl, pyl, cx, cyl); gfx.line(pxl, pyl + 1, cx, cyl + 1)
+          gfx.line(pxl, pyr, cx, cyr); gfx.line(pxl, pyr + 1, cx, cyr + 1)
+        end
+        pxl, pyl, pyr = cx, cyl, cyr
       end
     end
     gfx.set(1, 0.23, 0.19, fade)
@@ -1086,7 +1110,8 @@ function Page:draw(W, H, top)
   slider(g.sl_time, "Time tolerance", tt < 0.005 and "hard line" or string.format("%.2f s", tt), math.sqrt(math.min(tt / self:time_max(), 1)))
   slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", tc), (tc - 10) / 590)
   gfx.setfont(1, "Arial", 24)
-  local est = self.threads_est                                              -- only the count (nothing else is written here)
+  local cur_tr = self:active_tr()                                           -- the count of the ACTIVE transition (the one the sliders and the menu work on)
+  local est = cur_tr and self.counts and self.counts[cur_tr.key] or self.threads_est      -- only the count (nothing else is written here)
   if est == -1 then put(g.texts.threads, "threads: counted when made", 0.6, 0.64, 0.7)
   elseif est then
     if est > 0 then put(g.texts.threads, string.format("%d thread%s", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
@@ -1098,7 +1123,7 @@ function Page:draw(W, H, top)
     text(dd.x, dd.y - 20, "Curve", 0.9, 0.92, 0.96)
     gfx.set(0.16, 0.18, 0.22, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 1)
     gfx.set(0.35, 0.38, 0.43, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 0)
-    text(dd.x + 8, dd.y + (dd.h - 14) / 2, curve_name(self.curve), 1, 0.9, 0.5)
+    text(dd.x + 8, dd.y + (dd.h - 14) / 2, curve_name(self:curve_of(self:active_tr())), 1, 0.9, 0.5)
     text(dd.x + dd.w - 16, dd.y + (dd.h - 14) / 2, "v", 0.7, 0.72, 0.78)
   end
   local ready = #self.blocks >= 2
@@ -1118,7 +1143,8 @@ function Page:draw(W, H, top)
       local y = dd.y + i * dd.h
       gfx.set(0.1, 0.11, 0.14, 1); gfx.rect(dd.x, y, dd.w, dd.h, 1)
       gfx.set(0.35, 0.38, 0.43, 1); gfx.rect(dd.x, y, dd.w, dd.h, 0)
-      text(dd.x + 8, y + (dd.h - 14) / 2, c[2], c[1] == self.curve and 1 or 0.85, c[1] == self.curve and 0.9 or 0.87, c[1] == self.curve and 0.5 or 0.9)
+      local on = (c[1] == self:curve_of(self:active_tr()))
+      text(dd.x + 8, y + (dd.h - 14) / 2, c[2], on and 1 or 0.85, on and 0.9 or 0.87, on and 0.5 or 0.9)
     end
   end
 end

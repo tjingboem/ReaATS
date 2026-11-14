@@ -101,6 +101,7 @@ local function weights(curve, sv)
   if curve == "linear" then return 1 - sv, sv end
   return math.cos(PI / 2 * sv), math.sin(PI / 2 * sv)
 end
+M.weights = weights                                                 -- (the CROSS page draws the two level curves in the grey area)
 
 -- spec = { a = { d, t0, t1, pos }, b = { d, t0, t1, pos }, line = seconds on the timeline, tol_time = seconds, tol_cents = cents }
 -- Returns the data table of the result and an info table: { rows, frames, hop, pairs, overlap, line, grey0, grey1, ov0, ov1, t_start, threads = { {p, f0, f1} } }
@@ -312,7 +313,7 @@ end
 
 -- A TIMELINE of any number of sounds (the CROSS page: blocks in two lanes). The sounds are taken in the order they start; each one flows into what came before it
 -- (the crossing made so far), at its own red line. spec = { blocks = { { d, t0, t1, pos, gain } ... }, steps = { [k] = { line, diag } } (k = the place of a sound in the
--- order of starting, 2 ..; a step may have its own tol_time and tol_cents), tol_time, tol_cents (for steps that have none), curve }. Without an overlap a sound just follows the one before it. Returns the data table and an info:
+-- order of starting, 2 ..; a step may have its own tol_time, tol_cents and curve), tol_time, tol_cents (for steps that have none), curve }. Without an overlap a sound just follows the one before it. Returns the data table and an info:
 -- { rows, frames, hop, pairs, tracks, t_start, transitions = { { k, line, grey0, grey1, ov0, ov1, diag } (seconds from the start of the result) }, threads = { {p, f0, f1} } }.
 local function locate(d, t_start, hop, mark)
   local fi = math.floor((mark.t - t_start) / hop + 0.5) + 1
@@ -347,7 +348,7 @@ function M.build_timeline(spec)
     else
       local st = spec.steps and spec.steps[k] or {}
       d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }, line = st.line, diag = st.diag,
-                          tol_time = st.tol_time or spec.tol_time, tol_cents = st.tol_cents or spec.tol_cents, curve = spec.curve })
+                          tol_time = st.tol_time or spec.tol_time, tol_cents = st.tol_cents or spec.tol_cents, curve = st.curve or spec.curve })
       if not d then return nil, info end
       pairs_total = pairs_total + info.pairs
       if info.overlap then

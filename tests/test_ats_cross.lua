@@ -268,5 +268,23 @@ do
         and math.abs(info.transitions[2].grey1 - info.transitions[2].grey0) < 1e-9 and info.pairs == 1, info and info.transitions[2].grey1)
 end
 
+-- every transition may have its own curve (a step with curve): linear for the first, equal power for the second
+do
+  local A = sound({ { 200, 0.5 }, { 400, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 }, { 800, 0.5 } }, 2.0, HOP)
+  local d = cross.build_timeline({ blocks = { { d = A, pos = 0 }, { d = B, pos = 1.0 } }, steps = { [2] = { line = 1.5, tol_time = 0.4, curve = "linear" } }, tol_time = 0.4, tol_cents = 100, curve = "smooth" })
+  local lone
+  for _, x in ipairs(rows_at(d, 1.5)) do if math.abs(x[2] - 400) < 1 then lone = x[1] end end
+  check("the step's own curve wins over the page's: linear gives half (0.25), smooth would give 0.354", lone and math.abs(lone - 0.25) < 1e-6, lone)
+end
+
+-- the level curves the page draws (weights of the first and second sound at the middle of the grey area)
+do
+  local wl, wr = cross.weights("linear", cross.shape("linear", 0.5))
+  check("linear: both sounds at half in the middle", math.abs(wl - 0.5) < 1e-9 and math.abs(wr - 0.5) < 1e-9)
+  wl, wr = cross.weights("equal", cross.shape("equal", 0.5))
+  check("equal power: both at 0.707 in the middle (they cross higher)", math.abs(wl - math.sqrt(0.5)) < 1e-9 and math.abs(wr - math.sqrt(0.5)) < 1e-9)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -343,6 +343,11 @@ do
   assert(saw("^Equal power$") and saw("^S curve$"), "the menu lists the curves: " .. tostring(saw("Smooth")))
   click(740 + 10, 434 + 22 * 2 + 10); strings = {}; frame()                   -- Linear
   assert(not saw("^S curve$") and saw("^Linear$"), "a choice closes the menu and shows the curve")
+  -- the curve belongs to the active transition: Tab to the next one shows its own (Smooth), Tab back shows Linear again
+  script.keys = { 9 }; strings = {}; frame(); strings = {}; frame()
+  assert(saw("^Smooth$") and not saw("^Linear$"), "the next transition has its own curve: " .. tostring(saw("^Smooth$") or saw("^Linear$")))
+  script.keys = { 9 }; strings = {}; frame(); strings = {}; frame()
+  assert(saw("^Linear$"), "and the first one kept Linear")
   -- AUDITION on the page: the crossing is made in memory and played (nothing is written)
   do
     local before_files = io.open(scratch .. "cx_test_cross5.ats", "rb"); if before_files then before_files:close() end
