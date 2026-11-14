@@ -67,6 +67,7 @@ reaper = {
 dofile("ATS_Editor.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end          -- O: open the fixture
 
+local blit_seq = {}
 local function frame(setup)
   if setup then setup() end
   local fn = deferred; deferred = nil
@@ -114,7 +115,14 @@ gfx.line = function()
 end
 local thumb_blits = 0
 local blit_x, blit_w, blit_y = {}, {}, {}
-gfx.blit = function(src, _, _, _, _, _, _, dx, dy, dw) if src and src >= 20 then thumb_blits = thumb_blits + 1; blit_x[src] = dx; blit_w[src] = dw; blit_y[src] = dy end return 0 end
+gfx.blit = function(src, _, _, sx, _, sw, _, dx, dy, dw)
+  if src and src >= 20 then                                   -- (a block shows only its used part)
+    thumb_blits = thumb_blits + 1
+    blit_seq[#blit_seq + 1] = src
+    blit_x[src] = dx; blit_w[src] = dw; blit_y[src] = dy                    -- (the used part of the block)
+  end
+  return 0
+end
 strings = {}; frame()
 assert(saw("^CROSS$"), "the CROSS button is drawn")
 assert(not saw("^MASTER$"), "and the MASTER button is gone")
@@ -308,6 +316,12 @@ do
   assert(saw("^%-24%.0 dB$"), "the level slider at its left end: -24 dB: " .. tostring(saw("dB")))
   click(660 + 133, 90 + 5); strings = {}; frame()
   assert(saw("^%+0%.0 dB$"), "and back at 0 dB (it sticks)")
+  -- a block shows only its used part: one picture per block and frame (what is cut away is not drawn, so it can never hide another sound)
+  do
+    blit_seq = {}
+    strings = {}; frame()
+    assert(#blit_seq >= 3 and #blit_seq <= 5, "one picture per block: " .. #blit_seq)
+  end
   -- ONE selection for both lanes, ONE level slider for the selected block (a block of lane B and one of lane A in turn)
   do
     local function pick_a() click(math.floor(blit_x[20] + blit_w[20] * 0.3), 150) end

@@ -541,7 +541,7 @@ function Page:block_at(g, mx, my)
   local found
   for _, s in ipairs(self.blocks) do
     local lane = g.lane[s.lane]
-    if my >= lane.y and my < lane.y + lane.h and mx >= self:tx(g, s.origin + s.d.times[1]) and mx <= self:tx(g, s.origin + sound_end(s)) then found = s end
+    if my >= lane.y and my < lane.y + lane.h and mx >= self:tx(g, self:pos_of(s)) and mx <= self:tx(g, self:end_of(s)) then found = s end      -- (only the used part is there)
   end
   return found
 end
@@ -832,20 +832,21 @@ function Page:draw_lane(g, lane)
   end
 end
 
+-- A block shows only its USED part (tjingboem, 14 Nov 2026: what is cut away must not hide the other sounds, and "when we want to find out what is before the ats block,
+-- we can drag again to make the selection bigger"): the cut-away rest of the file is not drawn; the handles at the ends of the block are dragged outwards to use more
+-- of the file (up to its ends) and the picture grows with them.
 function Page:draw_block(g, s)
   local lane = g.lane[s.lane]
   local col = LANE_COL[s.lane]
   local fx0, fx1 = self:tx(g, s.origin + s.d.times[1]), self:tx(g, s.origin + sound_end(s))
   local ux0, ux1 = self:tx(g, self:pos_of(s)), self:tx(g, self:end_of(s))
-  -- the image of the whole file; the parts that are cut away are dimmed, the used part (the grey box) has handles at its ends
   local bw = fx1 - fx0
-  gfx.set(1, 1, 1, 1)
-  if s.thumb and bw > 1 then gfx.blit(s.tid, 1, 0, 0, 0, THUMB_W, THUMB_H, fx0, lane.y + 4, bw, lane.h - 8) end
-  gfx.set(0, 0, 0, 0.62)
-  if ux0 > fx0 then gfx.rect(fx0, lane.y + 4, ux0 - fx0, lane.h - 8, 1) end
-  if ux1 < fx1 then gfx.rect(ux1, lane.y + 4, fx1 - ux1, lane.h - 8, 1) end
+  if s.thumb and bw > 1 and ux1 > ux0 then
+    local f0, f1 = (ux0 - fx0) / bw, (ux1 - fx0) / bw
+    gfx.set(1, 1, 1, 1)
+    gfx.blit(s.tid, 1, 0, f0 * THUMB_W, 0, (f1 - f0) * THUMB_W, THUMB_H, ux0, lane.y + 4, ux1 - ux0, lane.h - 8)
+  end
   gfx.set(col[1], col[2], col[3], 1)
-  gfx.rect(fx0, lane.y + 4, fx1 - fx0, lane.h - 8, 0)
   gfx.rect(ux0, lane.y + 4, ux1 - ux0, lane.h - 8, 0)
   if self.cur then                                                                   -- THE selected block stands out: a thick white frame; the other blocks are dimmed
     if self.cur == s then
