@@ -409,21 +409,13 @@ function Page:y_to_f(lane, y)
   return FMIN * (FMAX / FMIN) ^ fr
 end
 
--- Listens to the crossing without making a file: the result is built in memory and played from a little before the first transition to a little after the last.
+-- Listens to the crossing without making a file: the result is built in memory and played from its start to its end; a playhead moves along the timeline.
 function Page:audition()
   if #self.blocks < 2 then self:say("load two sounds first"); return end
   local d, info = cross.build_timeline(self:spec())
   if not d then self:say("cannot audition: " .. tostring(info)); return end
-  local from, to = 0, nil
-  local trs = info.transitions
-  if #trs > 0 then
-    local k1 = self:transitions()
-    local half1 = select(1, self:tol_of(k1[1])) / 2
-    local half2 = select(1, self:tol_of(k1[#k1])) / 2
-    from = math.max(0, trs[1].line - half1 - 1.5)
-    to = math.min(d.dur, trs[#trs].line + half2 + 1.5)
-  end
-  if not self.env.audition(d, from, to) then return end
+  self.aud_t_start = info.t_start                                                  -- (where the start of the result lies on the timeline: for the playhead)
+  if not self.env.audition(d, 0, nil) then return end                              -- always from 0 s to the end (tjingboem, 14 Nov 2026)
   self:say("listening")
 end
 
@@ -1058,6 +1050,16 @@ function Page:draw(W, H, top)
   if #trs == 0 and #self.blocks >= 2 then
     gfx.setfont(1, "Arial", 12)
     text(g.x0, g.ruler + 26, "the used parts do not overlap: no transition, one sound and then the next, nothing is faded", 0.75, 0.78, 0.84)
+  end
+  -- the playhead: only where the crossing plays now (it cannot be set by hand), from the start of the result to its end
+  local ppos = self.env.play_pos and self.env.play_pos()
+  if ppos and self.aud_t_start then
+    local px = self:tx(g, self.aud_t_start + ppos)
+    if px >= g.x0 - 1 and px <= g.x1 + 1 then
+      gfx.set(1, 0.9, 0.3, 1)
+      gfx.rect(px - 1, g.laneA.y - 4, 3, g.laneB.y + g.laneB.h - g.laneA.y + 8, 1)
+      gfx.rect(px - 5, g.laneA.y - 8, 11, 6, 1)
+    end
   end
   -- the sliders
   local function slider(s, label, value, frac)

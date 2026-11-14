@@ -1055,6 +1055,7 @@ function stop_audition()
   end
   preview_until = 0
   play = nil
+  W.cross_play = nil
 end
 
 -- Renders the current data to `wav` (pure Lua, lib/ats_synth.lua; no other program needed). Returns the
@@ -1243,7 +1244,11 @@ function start_preview(p, wav, dur, t_start, how)
   if src and reaper.Xen_StartSourcePreview then
     reaper.Xen_StartSourcePreview(src, 1.0, false)
     preview_until = reaper.time_precise() + dur
-    play = { start = t_start or 0, t0 = reaper.time_precise(), dur = dur }
+    if p.cross then                                                        -- the crossing of the CROSS page: its own playhead there, the editor's playhead is left alone
+      W.cross_play = { start = t_start or 0, t0 = reaper.time_precise(), dur = dur }
+    else
+      play = { start = t_start or 0, t0 = reaper.time_precise(), dur = dur }
+    end
     local chan_note = ""
     if (p.channels or 1) > 2 then chan_note = ", " .. p.channels .. " channels mixed down to stereo"
     elseif (p.channels or 1) == 2 then chan_note = ", stereo" end
@@ -3066,7 +3071,7 @@ function W.audition_data(d, from, to)
   if not job then
     job, engine = synth.render_multi_job(req.list, { sines = true, noise = use_noise, from = from, to = to, dirty_list = req.dirty_list }), "Lua"
   end
-  pending = { kind = "audition", selection = true, mode = "the crossing", channels = 1, wav = wav, engine = engine, req = req, job = job }
+  pending = { kind = "audition", selection = true, cross = true, mode = "the crossing", channels = 1, wav = wav, engine = engine, req = req, job = job }
   return true
 end
 
@@ -4356,6 +4361,13 @@ W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
   relocate = function(path) return Analysis.relocate(path) end,
   on_open = function(path) return load_file(path) end,
   audition = function(d, from, to) return W.audition_data(d, from, to) end,
+  play_pos = function()                                          -- where the crossing plays now (seconds in the result), or nil
+    local c = W.cross_play
+    if not c then return nil end
+    local now = reaper.time_precise()
+    if now > c.t0 + c.dur + 0.05 then W.cross_play = nil; return nil end
+    return c.start + (now - c.t0)
+  end,
   stop_audition = function() if stop_audition then stop_audition() end end,
   open_in_editor = function(d, file, current, modified)          -- EDIT A / B (or a double-click on a block): that sound, from memory, in the editor
     if W.load_data(d, file, current, modified) then W.showing_cross = false; dirty = true; return true end

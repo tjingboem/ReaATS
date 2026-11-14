@@ -95,9 +95,10 @@ local old_set = gfx.set
 gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
 local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
-local sel_frame, sel_dim = 0, 0
+local sel_frame, sel_dim, play_rects = 0, 0, 0
 gfx.rect = function(...)
   local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.9) < 1e-6 and math.abs(c[3] - 0.3) < 1e-6 then play_rects = play_rects + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 1) < 1e-6 and math.abs(c[3] - 1) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 and select("#", ...) == 5 and select(5, ...) == 0 then sel_frame = sel_frame + 1 end
   if c[1] and c[1] == 0 and c[2] == 0 and c[3] == 0 and math.abs((c[4] or 1) - 0.45) < 1e-6 then sel_dim = sel_dim + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then
@@ -334,7 +335,12 @@ do
     click(240 + 10, 474 + 10)
     for i = 1, 600 do strings = {}; frame(); if previews > 0 then break end end
     assert(previews > 0, "AUDITION plays the crossing from memory: " .. previews)
+    play_rects = 0
+    clock_skew = clock_skew + 0.1; strings = {}; frame()
+    assert(play_rects >= 2, "a playhead is drawn on the timeline while it plays: " .. play_rects)
     script.keys = { 32 }; strings = {}; frame()                                  -- Space stops
+    play_rects = 0; strings = {}; frame()
+    assert(play_rects == 0, "and it is gone when the sound is stopped")
   end
   -- Ctrl+click twice in a lane: a diagonal; Esc takes it away again
   local function ctrl_click(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
