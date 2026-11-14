@@ -1,3 +1,4 @@
+REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layout_test.lua"       -- (the Analysis page layout the clicks are made for)
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 -- Run: lua5.4 tests/mock_channels.lua   (from the ReaATS folder)

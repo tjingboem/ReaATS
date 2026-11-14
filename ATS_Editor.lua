@@ -3877,11 +3877,13 @@ local function draw_header(px, py, pw, ph, plain)
   -- its numbers for a few seconds (the name and the star stay; there is no line of its own for messages). The Analysis page (plain) keeps the old lines at the top.
   local ix, iy = px, 8
   if not plain then ix, iy = W.lay("hdr_info_s") end
-  text_at(ix, iy, head)
-  if (not plain) and status_msg and reaper.time_precise() < status_until then
-    text_at(ix + gfx.measurestr(head) + 16, iy, status_msg, 0.6, 0.95, 0.6)
-  else
-    text_at(ix + gfx.measurestr(head), iy, tail)
+  if not plain then                                                       -- (the Analysis page does not show the file line of the sound in the editor: tjingboem, 14 Nov 2026)
+    text_at(ix, iy, head)
+    if status_msg and reaper.time_precise() < status_until then
+      text_at(ix + gfx.measurestr(head) + 16, iy, status_msg, 0.6, 0.95, 0.6)
+    else
+      text_at(ix + gfx.measurestr(head), iy, tail)
+    end
   end
   if not plain then
     draw_checkbox()
@@ -4340,7 +4342,7 @@ end
 
 gfx.init(TITLE, 1100, 640)
 analysis = Analysis.new({
-  layout = dofile(script_dir .. "/lib/analysis_layout.lua"),
+  layout = dofile(rawget(_G, "REAATS_TEST_ANALYSIS_LAYOUT") or (script_dir .. "/lib/analysis_layout.lua")),
   serial = Serial, wav_info = wav_info, script_dir = script_dir, ext_section = EXT_SECTION,
   on_open = function(path) return load_file(path) end,
   set_status = set_status,

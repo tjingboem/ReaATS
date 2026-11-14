@@ -1,3 +1,4 @@
+REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layout_test.lua"       -- (the Analysis page layout the clicks are made for)
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_cross.lua   (from the ReaATS folder)
 -- The CROSS button and page: two blocks (A, B), dragging, the cut, the red line, the sliders, MAKE RESULT (a new file that opens in the editor).

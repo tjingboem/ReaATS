@@ -1,3 +1,4 @@
+REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layout_test.lua"       -- (the Analysis page layout the clicks are made for)
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_analysis.lua   (from the ReaATS folder)
 -- The Analysis page end to end: fake gfx and reaper, but the REAL Python engine runs. Clicks use the layout of the page
@@ -348,7 +349,9 @@ enter(260, 314, "100")
 expire_status()
 click(600, 614)
 pump_done()
-assert(saw("   1%.00 s   "), "only the 1 s the item plays should be analysed (the editor header says how long the result is)")
+local made = (saw("^analysed (%S+%.ats)") or ""):match("^analysed (%S+%.ats)")          -- (the status says which file was made: its length is read from the file)
+local hdr = made and dofile("lib/ats_file.lua").header(scratch .. made)
+assert(hdr and math.abs(hdr.frames * hdr.frame_size / hdr.sr - 1.0) < 0.05, "only the 1 s the item plays should be analysed: " .. tostring(made) .. " " .. tostring(hdr and hdr.frames))
 print("the selected item: only its part is analysed")
 
 -- an item that runs past the end of its file (a few samples, or more) is analysed up to the end of the file
@@ -359,7 +362,9 @@ enter(260, 314, "100")
 expire_status()
 click(600, 614)
 pump_done()
-assert(saw("   11%.50 s   "), "an item past the end of the file is analysed up to the end: " .. table.concat(strings, " / ", 1, math.min(#strings, 60)))
+local made2 = (saw("^analysed (%S+%.ats)") or ""):match("^analysed (%S+%.ats)")
+local hdr2 = made2 and dofile("lib/ats_file.lua").header(scratch .. made2)
+assert(hdr2 and math.abs(hdr2.frames * hdr2.frame_size / hdr2.sr - 11.5) < 0.1, "an item past the end of the file is analysed up to the end: " .. tostring(made2) .. " " .. tostring(hdr2 and hdr2.frames))
 print("an item that runs past the end of the file is cut to the file")
 
 -- 7b. Cancel, leaving the page while it runs, the import button, an engine that never starts

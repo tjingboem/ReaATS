@@ -1,3 +1,4 @@
+REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layout_test.lua"       -- (the Analysis page layout the clicks are made for)
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_notes.lua   (from the ReaATS folder)
 -- The EXPORT NOTES button: asks how many partials, writes <name>_notes1.mid next to the .ats file and puts the notes on a new track.
