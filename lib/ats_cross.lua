@@ -212,16 +212,22 @@ function M.build(spec)
   local used_L, used_R = {}, {}
   local marks = {}
   local pair_info = {}                                                 -- for the CROSS page: where each thread is (seconds on the timeline, Hz)
+  local n_hard, n_short, n_l, n_r, n_together = 0, 0, 0, 0, 0                    -- (why there may be no threads: counted for the CROSS page)
   if overlap then
     local cands = {}
     for li, tl in ipairs(tL) do
       local pr = profile(tc_at(tl.fm))
+      if not (pr.g0f and pr.g1f) then n_hard = n_hard + 1
+      elseif pr.g1f - pr.g0f + 1 < MIN_TOGETHER then n_short = n_short + 1 end
       if pr.g0f and pr.g1f and pr.g1f >= pr.g0f and tl.f0 <= pr.g0f then   -- the partial of L that goes on from before the grey area ...
+        n_l = n_l + 1
         local g0f, g1f = pr.g0f, pr.g1f
         for ri, tr in ipairs(tR) do
           if tr.f1 >= g1f and tr.f0 <= g1f then                       -- ... and the partial of R that goes on after it
+            n_r = n_r + 1
             local lo, hi = math.max(tl.f0, tr.f0, g0f), math.min(tl.f1, tr.f1, g1f)
             if hi - lo + 1 >= MIN_TOGETHER then                       -- they sound together for a few frames inside the grey area
+              n_together = n_together + 1
               local sum = 0
               for f = lo, hi do sum = sum + math.abs(1200 * LOG(rR.frq[tr.p][f] / rL.frq[tl.p][f]) / LOG2) end
               local mean = sum / (hi - lo + 1)
@@ -269,7 +275,20 @@ function M.build(spec)
       end
     end
   end
-  if spec.count_only then return nil, { pairs = pair_count, threads = pair_info, l_is_a = (L == A) } end
+  if spec.count_only then
+    local reason
+    if pair_count == 0 then
+      if not overlap then reason = "no overlap"
+      elseif n_hard > 0 and n_l == 0 then reason = "hard line"
+      elseif n_short > 0 and n_l == 0 then reason = "band too short"
+      elseif #tL == 0 then reason = "first sound silent"
+      elseif n_l == 0 then reason = "first sound silent here"
+      elseif n_r == 0 then reason = "second sound silent here"
+      elseif n_together == 0 then reason = "no common frames"
+      else reason = "frequencies too far" end
+    end
+    return nil, { pairs = pair_count, threads = pair_info, l_is_a = (L == A), reason = reason }
+  end
   local function weighted(tr, rs, which, used)
     for k, t in ipairs(tr) do
       if not used[k] then

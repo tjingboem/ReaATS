@@ -224,7 +224,7 @@ end
 -- How many threads the present recipe would make (counted when something is let go, not while it moves): every transition is counted between the two sounds
 -- that meet there. Skipped for big sounds (the count resamples both).
 function Page:recount()
-  self.threads_est, self.thread_lines, self.counts = nil, nil, {}
+  self.threads_est, self.thread_lines, self.counts, self.reasons = nil, nil, {}, {}
   local total, lines = 0, {}
   for _, tr in ipairs(self:transitions()) do
     local l, r = tr.l, tr.r
@@ -237,6 +237,7 @@ function Page:recount()
       if info then
         total = total + info.pairs
         self.counts[tr.key] = info.pairs
+        self.reasons[tr.key] = info.reason
         for _, th in ipairs(info.threads) do
           lines[#lines + 1] = { lane_l = l.lane, lane_r = r.lane, fl = th.fl, fr = th.fr, t0 = th.t0, t1 = th.t1, key = tr.key }
         end
@@ -508,7 +509,7 @@ function Page:geom(W, H, top)
   }
   local ax, ay, aw, ah = self:el("btn_audition", 240, 434, 110, 32, top, true)
   if ax then g.btn.audition = { ax, ay, aw, ah } end
-  local function pt(id, dx, dy, always) local x, y = self:el(id, dx, dy, 0, 0, top, not always); if x then return { x = x, y = y } end end
+  local function pt(id, dx, dy, always) local x, y, w, h = self:el(id, dx, dy, 0, 0, top, not always); if x then return { x = x, y = y, w = (w and w > 0) and w or nil, h = h } end end
   g.texts = { title = pt("txt_title", 40, 8), threads = pt("txt_threads", 40, 416), hint = pt("txt_make_hint", 244, 443),
               message = pt("txt_message", 40, 478, true), help1 = pt("txt_help1", 40, 506), help2 = pt("txt_help2", 40, 524) }
   local function sc(id, lane, dx)                                  -- the numbers of the frequency scale: a box whose height is the height of the picture
@@ -1031,6 +1032,35 @@ end
 -- A block shows only its USED part (tjingboem, 14 Nov 2026: what is cut away must not hide the other sounds, and "when we want to find out what is before the ats block,
 -- we can drag again to make the selection bigger"): the cut-away rest of the file is not drawn; the handles at the ends of the block are dragged outwards to use more
 -- of the file (up to its ends) and the picture grows with them.
+-- How much a block sounds at the moment T of the timeline (0 .. 1), for lighting up the blocks while the crossing plays (tjingboem, 15 Nov 2026: "light up the ats block that is being
+-- played, so that we see when it is Lane A or B and follow the transition from one lane to another"): 0 outside the block; inside it 1, times the weight it has in the crossing
+-- of a transition at that moment (the first sound falls and the second rises over the grey band, along the chosen curve), times the level of its envelope (not over 1).
+function Page:play_intensity(b, T)
+  if T < self:pos_of(b) or T > self:end_of(b) then return 0 end
+  local v = 1
+  for _, tr in ipairs(self:transitions()) do
+    if (tr.l == b or tr.r == b) and T >= tr.lo and T <= tr.hi then
+      local w = select(1, self:tol_of(tr))
+      local line = self:line_of(tr)
+      local g0, g1 = math.max(line - w / 2, tr.lo), math.min(line + w / 2, tr.hi)
+      local sv
+      if g1 - g0 < 1e-3 then sv = (T >= line) and 1 or 0
+      elseif T <= g0 then sv = 0
+      elseif T >= g1 then sv = 1
+      else
+        local cv = self:curve_of(tr)
+        sv = cross.shape((cv == "free") and "smooth" or cv, (T - g0) / (g1 - g0))
+      end
+      local wl, wr = cross.weights((self:curve_of(tr) == "free") and "smooth" or self:curve_of(tr), sv)
+      if sv >= 1 then wl = 0 end
+      if sv <= 0 then wr = 0 end
+      v = v * ((tr.l == b) and wl or wr)
+    end
+  end
+  if b.env then v = v * math.min(1, 10 ^ (env_level(self:env_display(b), T - b.origin) / 20)) end
+  return clamp(v, 0, 1)
+end
+
 function Page:draw_block(g, s)
   local lane = g.lane[s.lane]
   local col = LANE_COL[s.lane]
@@ -1054,6 +1084,13 @@ function Page:draw_block(g, s)
   end
   gfx.set(col[1], col[2], col[3], 1)
   frame(0, 1)
+  local lit = self.play_T and self:play_intensity(s, self.play_T) or 0                -- the block that is playing now lights up (in a transition both, by their weights)
+  if lit > 0.02 then
+    gfx.set(1, 0.97, 0.8, 0.10 * lit)
+    gfx.rect(cx0, y, cx1 - cx0, h, 1)
+    gfx.set(1, 0.97, 0.8, 0.55 * lit)
+    gfx.rect(cx0, y, cx1 - cx0, 2, 1)                                               -- (and a thin bar along the top)
+  end
   if self.cur then                                                                   -- THE selected block stands out: a thick white frame; the other blocks are dimmed
     if self.cur == s then
       gfx.set(1, 1, 1, 0.95)
@@ -1165,7 +1202,24 @@ function Page:draw_threads(g)
   end
 end
 
-local function put(pos, str, r, g, b) if pos then text(pos.x, pos.y, str, r, g, b) end end
+-- Text that follows the size of its element (the layout is the spec): the font gets smaller until the text fits the width, then it is cut with ...
+local function fit_text(str, w, size, min)
+  if not w then gfx.setfont(1, "Arial", size); return str end
+  while size > min do
+    gfx.setfont(1, "Arial", size)
+    if gfx.measurestr(str) <= w then return str end
+    size = size - 1
+  end
+  gfx.setfont(1, "Arial", min)
+  if gfx.measurestr(str) <= w then return str end
+  while #str > 3 and gfx.measurestr(str .. "...") > w do str = str:sub(1, -2) end
+  return (str:gsub("%s*$", "")) .. "..."
+end
+local function put(pos, str, r, g, b, size, min)
+  if not pos then return end
+  if size then str = fit_text(str, pos.w, size, min or 12) end
+  text(pos.x, pos.y, str, r, g, b)
+end
 
 -- One transition: the shaded overlap, the grey band, the curve and the red line (or the diagonal).
 function Page:draw_transition(g, tr)
@@ -1233,6 +1287,8 @@ end
 function Page:draw(W, H, top)
   self.top = top
   local g = self:geom(W, H, top)
+  local ppos0 = self.env.play_pos and self.env.play_pos()
+  self.play_T = (ppos0 and self.aud_t_start) and (self.aud_t_start + ppos0) or nil              -- (the moment that plays, on the timeline; nil when nothing plays)
   local la, lb = self:selected("a"), self:selected("b")
   gfx.setfont(1, "Arial", 16)
   put(g.texts.title, self:label("txt_title", "CROSS: sound A flows into sound B"), 0.95, 0.72, 0.35)
@@ -1295,9 +1351,16 @@ function Page:draw(W, H, top)
   -- the sliders
   local function slider(s, label, value, frac)
     gfx.setfont(1, "Arial", 13)
-    text(s.x, s.y - 20, label, 0.9, 0.92, 0.96)
-    gfx.set(1, 0.9, 0.5, 1)
-    gfx.x = s.x + s.w - gfx.measurestr(value); gfx.y = s.y - 20; gfx.drawstr(value)
+    local lw = gfx.measurestr(label)
+    if s.x - lw - 14 >= 8 then                                                       -- (room at the left: the label stands beside the slider, the value after it; sliders can then be stacked close)
+      text(s.x - 8 - lw, s.y - 2, label, 0.9, 0.92, 0.96)
+      gfx.set(1, 0.9, 0.5, 1)
+      gfx.x, gfx.y = s.x + s.w + 8, s.y - 2; gfx.drawstr(value)
+    else                                                                             -- (otherwise above it, the value at the right end)
+      text(s.x, s.y - 20, label, 0.9, 0.92, 0.96)
+      gfx.set(1, 0.9, 0.5, 1)
+      gfx.x = s.x + s.w - gfx.measurestr(value); gfx.y = s.y - 20; gfx.drawstr(value)
+    end
     gfx.set(0.16, 0.18, 0.22, 1)
     gfx.rect(s.x, s.y, s.w, s.h, 1)
     gfx.set(0.85, 0.6, 0.25, 0.6)
@@ -1311,18 +1374,23 @@ function Page:draw(W, H, top)
   local tt, tc = self:tol_of(self:active_tr())
   slider(g.sl_time, "Time tolerance", tt < 0.005 and "hard line" or string.format("%.2f s", tt), math.sqrt(math.min(tt / self:time_max(), 1)))
   slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", tc), (tc - 10) / 1190)
-  gfx.setfont(1, "Arial", 24)
+  gfx.setfont(1, "Arial", 20)
   local cur_tr = self:active_tr()                                           -- the count of the ACTIVE transition (the one the sliders and the menu work on)
   local est = cur_tr and self.counts and self.counts[cur_tr.key] or self.threads_est      -- only the count (nothing else is written here)
-  if est == -1 then put(g.texts.threads, "threads: counted when made", 0.6, 0.64, 0.7)
+  if est == -1 then put(g.texts.threads, "threads: counted when made", 0.6, 0.64, 0.7, 20, 12)
   elseif est then
-    if est > 0 then put(g.texts.threads, string.format("%d thread%s", est, est == 1 and "" or "s"), 1, 0.62, 0.1)
-    else put(g.texts.threads, "no threads", 1, 0.5, 0.3) end
+    if est > 0 then put(g.texts.threads, string.format("%d thread%s", est, est == 1 and "" or "s"), 1, 0.62, 0.1, 20, 12)
+    else
+      local why = cur_tr and self.reasons and self.reasons[cur_tr.key]                -- (why: a hard line, a sound that is silent there, partials too far apart ...)
+      put(g.texts.threads, why and ("no threads: " .. why) or "no threads", 1, 0.5, 0.3, 20, 12)
+    end
   end
   if g.dd_curve then
     local dd = g.dd_curve
     gfx.setfont(1, "Arial", 13)
-    text(dd.x, dd.y - 20, "Curve", 0.9, 0.92, 0.96)
+    local cw = gfx.measurestr("Curve")
+    if dd.x - cw - 14 >= 8 then text(dd.x - 8 - cw, dd.y + (dd.h - 14) / 2, "Curve", 0.9, 0.92, 0.96)        -- (beside the box when there is room, else above it)
+    else text(dd.x, dd.y - 20, "Curve", 0.9, 0.92, 0.96) end
     gfx.set(0.16, 0.18, 0.22, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 1)
     gfx.set(0.35, 0.38, 0.43, 1); gfx.rect(dd.x, dd.y, dd.w, dd.h, 0)
     text(dd.x + 8, dd.y + (dd.h - 14) / 2, curve_name(self:curve_of(self:active_tr())), 1, 0.9, 0.5)
@@ -1333,7 +1401,7 @@ function Page:draw(W, H, top)
   button(g.btn.make, self:label("btn_make", "MAKE RESULT"), { 0.45, 0.85, 0.6 }, ready)
   gfx.setfont(1, "Arial", 12)
   put(g.texts.hint, "writes a new .ats file and opens it in the editor (the sounds stay as they are); Enter does the same", 0.6, 0.64, 0.7)
-  if self.message then text(g.texts.message.x, g.texts.message.y, self.message, 1, 0.8, 0.45) end      -- (a message is never left out)
+  if self.message then put(g.texts.message, self.message, 1, 0.8, 0.45, 12, 9) end      -- (a message is never left out; it is made to fit the width of its element)
   put(g.texts.help1, "Drag a block to place it in time. Drag the white handles at its ends to use only a part of the file. Drag the red line inside the overlap. Double-click a block (or EDIT) to edit that sound in the editor: what you change there comes back as that sound, without saving.", 0.55, 0.58, 0.64)
   put(g.texts.help2, "The partials of two sounds that are close in frequency (the tolerance) become one thread that moves from the first frequency to the second.", 0.55, 0.58, 0.64)
   self:draw_info_marks(g)

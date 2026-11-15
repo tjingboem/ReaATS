@@ -109,9 +109,10 @@ gfx.circle = function(...)
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then red_circles = red_circles + 1 end
   return old_circle(...)
 end
-local sel_frame, sel_dim, play_rects = 0, 0, 0
+local sel_frame, sel_dim, play_rects, lit_rects = 0, 0, 0, 0
 gfx.rect = function(...)
   local c = last_col
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.97) < 1e-6 and math.abs(c[3] - 0.8) < 1e-6 then lit_rects = lit_rects + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.9) < 1e-6 and math.abs(c[3] - 0.3) < 1e-6 then play_rects = play_rects + 1 end
   if c[1] and c[1] == 0 and c[2] == 0 and c[3] == 0 and math.abs((c[4] or 1) - 0.45) < 1e-6 then sel_dim = sel_dim + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then
@@ -321,6 +322,9 @@ do
     assert(q2 and q2 ~= v1, "and the slider changes that one: " .. tostring(q2))
     script.keys = { 9 }; strings = {}; frame(); strings = {}; frame()
     assert(slider_time() == v1, "Tab again: the first transition kept " .. tostring(v1) .. ": " .. tostring(slider_time()))
+    click(40, 434 + 5); strings = {}; frame()                                    -- a hard line: no threads, and the page says why
+    assert(saw("^no threads: hard line$"), "no threads, with the reason: " .. tostring(saw("thread")))
+    click(40 + 120, 434 + 5); strings = {}; frame()
     red_full, red_faint = 0, 0
     strings = {}; frame()
     assert(red_full > 0 and red_faint > 0, "the active red line is drawn in full, the other one faint: " .. red_full .. " " .. red_faint)
@@ -384,12 +388,13 @@ do
     click(240 + 10, 474 + 10)
     for i = 1, 600 do strings = {}; frame(); if previews > 0 then break end end
     assert(previews > 0, "AUDITION plays the crossing from memory: " .. previews)
-    play_rects = 0
+    play_rects, lit_rects = 0, 0
     clock_skew = clock_skew + 0.1; strings = {}; frame()
     assert(play_rects >= 2, "a playhead is drawn on the timeline while it plays: " .. play_rects)
+    assert(lit_rects >= 1, "the block that plays is lit up: " .. lit_rects)
     script.keys = { 32 }; strings = {}; frame()                                  -- Space stops
-    play_rects = 0; strings = {}; frame()
-    assert(play_rects == 0, "and it is gone when the sound is stopped")
+    play_rects, lit_rects = 0, 0; strings = {}; frame()
+    assert(play_rects == 0 and lit_rects == 0, "and the playhead and the lit block are gone when the sound is stopped")
   end
   -- Ctrl+click in a lane: the transition becomes FREE (two red points at the lowest and highest frequency, plus the new one); the Curve menu says Free; the menu takes it back
   local function ctrl_click(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end

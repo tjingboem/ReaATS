@@ -310,5 +310,28 @@ do
   check("held before the first and after the last point (-6 dB: 0.5 * 0.501)", math.abs(at(d2, 1, 0.1) - 0.5 * 10 ^ (-6 / 20)) < 1e-6 and math.abs(at(d2, 1, 0.9) - 0.5 * 10 ^ (-6 / 20)) < 1e-6)
 end
 
+-- why there may be no threads (the CROSS page says it next to "no threads")
+do
+  local A = sound({ { 200, 0.5 } }, 2.0, HOP)
+  local B = sound({ { 205, 0.5 } }, 2.0, HOP)
+  local B400 = sound({ { 400, 0.5 } }, 2.0, HOP)
+  local function why(a, b, o)
+    o = o or {}
+    local info = cross.count({ a = { d = a, pos = 0 }, b = { d = b, pos = o.pos or 1.0 }, line = o.line or 1.5, tol_time = o.tol or 0.4, tol_cents = o.cents or 100 })
+    return info.pairs, info.reason
+  end
+  local n, r = why(A, B)
+  check("threads found: no reason", n == 1 and r == nil, tostring(r))
+  n, r = why(A, B, { tol = 0 })
+  check("a hard line: no band, so no threads", n == 0 and r == "hard line", tostring(r))
+  n, r = why(A, B400)
+  check("partials 1200 cents apart (a fifth plus an octave): frequencies too far", n == 0 and r == "frequencies too far", tostring(r))
+  n, r = why(A, B, { pos = 5.0 })
+  check("the sounds do not overlap", n == 0 and r == "no overlap", tostring(r))
+  local quiet = sound({}, 2.0, HOP)
+  n, r = why(quiet, B)
+  check("a first sound without partials: first sound silent", n == 0 and (r == "first sound silent" or r == "first sound silent here"), tostring(r))
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

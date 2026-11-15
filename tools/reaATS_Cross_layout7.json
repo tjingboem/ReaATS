@@ -1,0 +1,222 @@
+[
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_title",
+    "label": "CROSS synthesis.",
+    "shape": "box",
+    "x": 460,
+    "y": 26,
+    "w": 200,
+    "h": 22
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_back",
+    "label": "EDITOR",
+    "shape": "box",
+    "x": 970,
+    "y": 24,
+    "w": 90,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_load_a",
+    "label": "LOAD A",
+    "shape": "box",
+    "x": 38,
+    "y": 72,
+    "w": 110,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_edit_a",
+    "label": "EDIT A",
+    "shape": "box",
+    "x": 156,
+    "y": 72,
+    "w": 112,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_use_a",
+    "label": "EDITOR'S SOUND",
+    "shape": "box",
+    "x": 940,
+    "y": 72,
+    "w": 120,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "lane_a",
+    "label": "Lane A (time across)",
+    "shape": "box",
+    "x": 38,
+    "y": 110,
+    "w": 1020,
+    "h": 156
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_load_b",
+    "label": "LOAD B",
+    "shape": "box",
+    "x": 38,
+    "y": 450,
+    "w": 110,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_edit_b",
+    "label": "EDIT B",
+    "shape": "box",
+    "x": 156,
+    "y": 450,
+    "w": 110,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_use_b",
+    "label": "EDITOR'S SOUND",
+    "shape": "box",
+    "x": 940,
+    "y": 450,
+    "w": 120,
+    "h": 24
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "lane_b",
+    "label": "Lane B (time across)",
+    "shape": "box",
+    "x": 38,
+    "y": 290,
+    "w": 1020,
+    "h": 156
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "ruler",
+    "label": "Ruler",
+    "shape": "box",
+    "x": 38,
+    "y": 270,
+    "w": 1020,
+    "h": 16
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_time",
+    "label": "Time tolerance (slider)",
+    "shape": "box",
+    "x": 570,
+    "y": 468,
+    "w": 300,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "sl_freq",
+    "label": "Frequency tolerance (slider)",
+    "shape": "box",
+    "x": 570,
+    "y": 486,
+    "w": 300,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_threads",
+    "label": "Thread count (text)",
+    "shape": "box",
+    "x": 736,
+    "y": 504,
+    "w": 300,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_make",
+    "label": "GENERATE",
+    "shape": "box",
+    "x": 40,
+    "y": 578,
+    "w": 190,
+    "h": 32
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "txt_message",
+    "label": "Message",
+    "shape": "box",
+    "x": 380,
+    "y": 588,
+    "w": 592,
+    "h": 10
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "scale_hz_a",
+    "label": "Hz (lane A)",
+    "shape": "box",
+    "x": 20,
+    "y": 110,
+    "w": 16,
+    "h": 153
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "scale_hz_b",
+    "label": "Hz (lane B)",
+    "shape": "box",
+    "x": 20,
+    "y": 290,
+    "w": 16,
+    "h": 153
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "btn_audition",
+    "label": "AUDITION",
+    "shape": "box",
+    "x": 240,
+    "y": 578,
+    "w": 120,
+    "h": 32
+  },
+  {
+    "panel": "cross",
+    "state": "*",
+    "id": "dd_curve",
+    "label": "Curve (menu)",
+    "shape": "box",
+    "x": 570,
+    "y": 504,
+    "w": 150,
+    "h": 22
+  }
+]
