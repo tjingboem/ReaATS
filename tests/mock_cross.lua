@@ -102,11 +102,12 @@ local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
 local red_w3 = {}
 local red_circles, env_circles, env_xs = 0, 0, {}
+local red_pos = {}
 local old_circle = gfx.circle
 gfx.circle = function(...)
   local c = last_col
   if c[1] and math.abs(c[1] - 0.78) < 1e-6 and math.abs(c[2] - 0.8) < 1e-6 and math.abs(c[3] - 0.84) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 then env_circles = env_circles + 1; env_xs[#env_xs + 1] = select(1, ...) end
-  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then red_circles = red_circles + 1 end
+  if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then red_circles = red_circles + 1; red_pos[#red_pos + 1] = { select(1, ...), select(2, ...) } end
   return old_circle(...)
 end
 local sel_frame, sel_dim, play_rects, lit_rects = 0, 0, 0, 0
@@ -411,6 +412,24 @@ do
   assert(saw("^Free$"), "Free from the menu")
   red_circles = 0; strings = {}; frame()
   assert(red_circles >= 4, "two red points in each lane appear: " .. red_circles)
+  red_pos = {}; strings = {}; frame()
+  local q1 = { red_pos[1][1], red_pos[1][2] }
+  drag(math.floor(q1[1]), math.floor(q1[2]), math.floor(q1[1]) - 30, math.floor(q1[2]) - 20)          -- a red point is dragged
+  red_pos = {}; strings = {}; frame()
+  local moved_pt = false
+  for _, q in ipairs(red_pos) do if math.abs(q[1] - q1[1]) > 1 or math.abs(q[2] - q1[2]) > 1 then moved_pt = true end end
+  assert(moved_pt, "a red point of the free line can be dragged (this broke once when the envelope drag was added)")
+  -- with Ctrl held (as when a point was just added) the press on a point grabs it too, and makes no second point
+  red_pos = {}; strings = {}; frame()
+  local q3 = { red_pos[1][1], red_pos[1][2] }
+  local n_before = #red_pos
+  gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = math.floor(q3[1]), math.floor(q3[2]); frame()
+  gfx.mouse_x, gfx.mouse_y = math.floor(q3[1]) + 25, math.floor(q3[2]) + 10; frame()
+  gfx.mouse_cap = 0; frame()
+  red_pos = {}; strings = {}; frame()
+  local still, moved3 = #red_pos == n_before, false
+  for _, q in ipairs(red_pos) do if math.abs(q[1] - q3[1]) > 1 or math.abs(q[2] - q3[2]) > 1 then moved3 = true end end
+  assert(still and moved3, "Ctrl+drag on a red point moves it and does not add a point: " .. #red_pos .. " / " .. n_before)
   click(740 + 10, 434 + 10); click(740 + 10, 434 + 22 * 1 + 10); strings = {}; frame()      -- (back to Smooth for the rest of the test)
   -- Shift = fine drag: a tenth of the mouse movement
   do
@@ -427,6 +446,15 @@ do
     local w0 = blit_w[21]
     gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 500, 300, 240; strings = {}; frame(); gfx.mouse_wheel = 0; strings = {}; frame()
     assert(blit_w[21] > w0 * 1.3 or blit_sw[21] < 600, "the wheel zooms in (the block grows, or it is cut at the edge of the lanes): " .. w0 .. " -> " .. blit_w[21] .. " " .. tostring(blit_sw[21]))
+    do                                                                                                  -- a drag on the ruler scrolls the timeline (the numbers of the ruler move)
+      local function ruler_labels() local t = {}; for _, x in ipairs(strings) do if x:find("^%d+%.%d%d s$") then t[#t + 1] = x end end; return table.concat(t, ",") end
+      strings = {}; frame()
+      local r0 = ruler_labels()
+      gfx.mouse_cap = 1; gfx.mouse_x, gfx.mouse_y = 500, 370 + 5; frame(); gfx.mouse_x = 400; frame(); gfx.mouse_x = 300; strings = {}; frame()
+      local r1 = ruler_labels()
+      gfx.mouse_cap = 0; frame()
+      assert(r0 ~= "" and r1 ~= r0, "a drag on the ruler scrolls the timeline: " .. r0 .. " -> " .. r1)
+    end
     for i = 1, 6 do gfx.mouse_x, gfx.mouse_y, gfx.mouse_wheel = 1000, 300, 240; strings = {}; frame(); gfx.mouse_wheel = 0 end   -- zoomed far in: blocks run out of the lanes at the left
     strings = {}; frame()
     assert(blit_x[21] >= 40 - 0.01 and blit_x[20] >= 40 - 0.01, "nothing is drawn left of the lanes: " .. tostring(blit_x[20]) .. " " .. tostring(blit_x[21]))

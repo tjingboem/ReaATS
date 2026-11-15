@@ -789,6 +789,14 @@ function Page:mouse(mx, my, cap, wheel)
       end
       self.prev_down = down
       return
+    elseif ctrl and not shift and in_lane and self:point_at(g, mx, my) then
+      -- Ctrl+press on a red point that is there already: it is grabbed (dragged), no second point is made on top of it
+      local hit = self:point_at(g, mx, my)
+      self:push_undo(pre)
+      self.drag = { kind = "fpoint", key = hit.tr.key, tr = hit.tr, pt = hit.pt, lane = hit.lane }
+      self.active = hit.tr.key
+      self.prev_down = down
+      return
     elseif ctrl and not shift and in_lane then
       -- Ctrl+click in a lane: a NEW POINT in the free line of the transition at that moment (a transition that is not Free becomes Free first)
       local t = self:tt(g, mx)
@@ -915,6 +923,13 @@ function Page:mouse(mx, my, cap, wheel)
         end
         d.pt.t = clamp(self:tt(g, mx) - b.origin, lo, hi)
       end
+    elseif d.kind == "pan" then                                                        -- a drag on the ruler scrolls the timeline
+      local dt = -d.acc / g.pps
+      self.view = { d.v0 + dt, d.v1 + dt }
+      self.zoomed = true
+    elseif d.kind == "fpoint" then                                                     -- a red point of a free line: in time (inside the overlap) and in frequency
+      d.pt.t = clamp(self:tt(g, mx), d.tr.lo, d.tr.hi)
+      d.pt.f = self:y_to_f(d.lane, my)
     elseif d.kind == "line" then
       local lo, hi = self:line_bounds(d.tr)
       self.lines[d.key] = clamp(self:tt(g, d.hx + d.acc), lo, hi)
