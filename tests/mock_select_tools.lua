@@ -123,5 +123,21 @@ click_cap(px + pw / 2, y_of(600), 1 + 8)                                        
 gfx.mouse_x, gfx.mouse_y = px + pw / 2, y_of(200)                                              -- the pointer on the 200 Hz line, outside the selection
 script.keys = { 104 }; strings = {}; frame(); frame()
 assert(saw("^selected the harmonics of %d+ Hz: 100 points in 2 partials"), "H inside a selection: only 400 and 600 Hz (the 200 Hz fundamental is outside it): " .. tostring(saw("selected") or saw("no partial") or saw("harmonics")))
+-- T: transpose and level by typed values: +2 semitones and -6 dB for the whole selection
+script.keys = { 27 }; frame()
+select_all()
+script.keys = { 116 }; strings = {}; frame(); frame()
+assert(saw("Transpose and level") and saw("semitones") and saw("cents") and saw("level in dB"), "T opens the panel: " .. tostring(saw("selected") or saw("Transpose")))
+for _, c in ipairs({ 50 }) do script.keys = { c }; frame() end                                   -- 2   (the first key replaces the 0)
+script.keys = { 9 }; frame()                                                                     -- Tab: the cents field
+for _, c in ipairs({ 51, 48 }) do script.keys = { c }; frame() end                               -- 30 cents on top of the 2 semitones
+script.keys = { 9 }; frame()                                                                     -- Tab: the level field
+for _, c in ipairs({ 45, 54 }) do script.keys = { c }; frame() end                               -- -6
+script.keys = { 13 }; strings = {}; frame(); frame()
+assert(saw("transposed %+2%.30 semitones, level %-6%.0 dB"), "Enter applies: " .. tostring(saw("transposed") or saw("nothing")))
+local s3 = save_and_load()
+assert(math.abs(s3.frq[4][10] - 700 * 2 ^ (2.30 / 12)) < 1e-6, "the pitch is 2 semitones and 30 cents up: " .. s3.frq[4][10])
+assert(math.abs(s3.amp[4][10] - 0.3 * 10 ^ (-6 / 20)) < 1e-9, "the level is 6 dB down: " .. s3.amp[4][10])
+script.keys = { 26 }; frame()
 print("selection tools OK: S smooths the selection in small steps, K removes the partials shorter than X ms (a panel), H selects the harmonic series of the partial under the pointer")
 os.remove(work); os.remove(edited_path); os.remove(edited_path2); os.remove(edited_path3); os.remove(edited_path4)

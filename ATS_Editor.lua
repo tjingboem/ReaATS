@@ -2309,6 +2309,122 @@ function W.select_harmonics()
   set_status(string.format("selected the harmonics of %.0f Hz: %d points in %d partials", fun_hz, count, np))
 end
 
+
+-- TRANSPOSE AND LEVEL BY A TYPED VALUE (tjingboem, 15 Nov 2026: "i like to have a shortcut for transposing and gain as well, how about T?"; typed values were on his list): T opens a small panel
+-- under MAX PARTIALS with three number fields, the transposition in SEMITONES (decimals allowed: -12 = an octave down), CENTS (added to the semitones: 50 = a quarter tone) and the level in dB. The selected points get both in
+-- one undo step. Type a number (digits, a minus or plus, a point or a comma); Tab or a click changes the field; the first key typed in a field replaces what was there; Backspace deletes;
+-- Enter applies, Esc cancels. An empty field means 0.
+function W.tv_open()
+  if not sel_info then set_status("nothing selected: select points first"); return end
+  local bx, by, bw, bh = W.max_partials_rect()
+  W.tv = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 154, 4)),
+           text = { "0", "0", "0" }, focus = 1, fresh = true }
+  dirty = true
+end
+function W.tv_rects()
+  local g = W.tv
+  return { box = { g.x, g.y, 260, 150 }, f1 = { g.x + 120, g.y + 32, 124, 20 }, f2 = { g.x + 120, g.y + 60, 124, 20 }, f3 = { g.x + 120, g.y + 88, 124, 20 },
+           cancel = { g.x + 120, g.y + 122, 62, 18 }, apply = { g.x + 188, g.y + 122, 56, 18 } }
+end
+function W.tv_close(msg)
+  W.tv = nil
+  dirty = true
+  if msg then set_status(msg) end
+end
+function W.tv_single(semitones, db)
+  if not sel_info then return end
+  local ratio, k = 2 ^ (semitones / 12), 10 ^ (db / 20)
+  local ny = data.sr / 2 - 1
+  local changes = {}
+  for p, frames in pairs(sel) do
+    for f in pairs(frames) do
+      local a, fr = data.amp[p][f], data.frq[p][f]
+      if a > 0 then changes[#changes + 1] = { p = p, f = f, oa = a, na = a * k, of = fr, nf = clamp(fr * ratio, 1, ny) } end
+    end
+  end
+  if #changes == 0 then return end
+  do_edit(string.format("transpose %+.2f st, level %+.1f dB", semitones, db), changes)
+  update_sel_info()
+end
+function W.tv_do()
+  local g = W.tv
+  W.tv = nil
+  dirty = true
+  local st, cents, db = tonumber(g.text[1]) or 0, tonumber(g.text[2]) or 0, tonumber(g.text[3]) or 0
+  local total = st + cents / 100                                                -- (semitones and cents are added)
+  if total == 0 and db == 0 then set_status("transpose and level: nothing to change"); return end
+  edit_on_channels(function() W.tv_single(total, db) end, "transpose and level")
+  set_status(string.format("transposed %+.2f semitones, level %+.1f dB", total, db))
+end
+function W.tv_input(mx, my, cap, ch)
+  local g, r = W.tv, W.tv_rects()
+  local function inside(rc) return mx >= rc[1] and mx < rc[1] + rc[3] and my >= rc[2] and my < rc[2] + rc[4] end
+  local down = (cap & 1) ~= 0
+  if ch == 27 then W.tv_close("transpose and level cancelled"); return end
+  if ch == 13 or ch == 10 then W.tv_do(); return end
+  if ch == 9 then g.focus = g.focus % 3 + 1; g.fresh = true; dirty = true
+  elseif ch == 8 then
+    if g.fresh then g.text[g.focus] = "" else g.text[g.focus] = g.text[g.focus]:sub(1, -2) end
+    g.fresh = false; dirty = true
+  else
+    local c
+    if (ch >= 48 and ch <= 57) or ch == 46 or ch == 45 or ch == 43 then c = string.char(ch)
+    elseif ch == 44 then c = "." end                                              -- (a comma is a decimal point)
+    if c then
+      if g.fresh then g.text[g.focus] = ""; g.fresh = false end
+      if #g.text[g.focus] < 10 then g.text[g.focus] = g.text[g.focus] .. c end
+      dirty = true
+    end
+  end
+  if down and not prev_down then
+    if inside(r.f1) then g.focus, g.fresh = 1, true; dirty = true
+    elseif inside(r.f2) then g.focus, g.fresh = 2, true; dirty = true
+    elseif inside(r.f3) then g.focus, g.fresh = 3, true; dirty = true
+    elseif inside(r.apply) then W.tv_do(); return
+    elseif inside(r.cancel) or not inside(r.box) then W.tv_close("transpose and level cancelled"); return end
+  end
+end
+function W.draw_tv()
+  local g = W.tv
+  if not g then return end
+  local r = W.tv_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.45, 0.92, 1, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr("Transpose and level")
+  local rows = { { "semitones", r.f1 }, { "cents", r.f2 }, { "level in dB", r.f3 } }
+  for i, row in ipairs(rows) do
+    local rc = row[2]
+    gfx.set(0.75, 0.78, 0.84, 1)
+    gfx.x, gfx.y = bx + 16, rc[2] + 3
+    gfx.drawstr(row[1])
+    gfx.set(0.16, 0.18, 0.22, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(g.focus == i and 1 or 0.35, g.focus == i and 0.9 or 0.38, g.focus == i and 0.5 or 0.43, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+    gfx.set(1, 0.9, 0.5, 1)
+    gfx.x, gfx.y = rc[1] + 6, rc[2] + 3
+    gfx.drawstr(g.text[i] .. ((g.focus == i and not g.fresh and math.floor(reaper.time_precise() * 2) % 2 == 0) and "|" or ""))
+  end
+  local function button(rc, text, rgb)
+    gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
+    gfx.set(rgb[1], rgb[2], rgb[3], 1)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
+    gfx.setfont(1, "Arial", 12)
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "APPLY", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
+end
+
 -- MAX PARTIALS opens a slider panel like the other panels (gain, slant, export notes; tjingboem, 12 Nov 2026: "the only thing that is out of tune with
 -- the rest of the design is when you press the MAX PARTIALS button. That popup is not like the rest"): one slider for how many separate partials of the
 -- selection to keep (1 up to how many there are, it starts at all of them: nothing changes), two buttons for which ones (the LOUDEST or the WEAKEST), a
@@ -4235,11 +4351,11 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
-  if W.gain or W.np or W.sl or W.pk or W.sh then                         -- the gain slider, the export-notes panel, the slant slider, MAX PARTIALS or the short-partials panel is open: it takes the mouse and the keys
+  if W.gain or W.np or W.sl or W.pk or W.sh or W.tv then                         -- the gain slider, the export-notes panel, the slant slider, MAX PARTIALS or the short-partials panel is open: it takes the mouse and the keys
     local ch = gfx.getchar()
     if ch < 0 then stop_audition(); return false end
     gfx.mouse_wheel = 0
-    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) elseif W.pk then W.pk_input(mx, my, cap, ch) elseif W.sh then W.sh_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
+    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) elseif W.pk then W.pk_input(mx, my, cap, ch) elseif W.sh then W.sh_input(mx, my, cap, ch) elseif W.tv then W.tv_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
     prev_down = (cap & 1) ~= 0
     return true
   end
@@ -4463,6 +4579,7 @@ local function handle_input(px, py, pw, ph)
     if not (any_sel() and W.audition_selection()) then audition() end
   elseif ch == 122 or ch == 90 then W.zoom_selection()           -- Z: zoom to the selection
   elseif ch == 115 or ch == 83 then edit_on_channels(W.smooth_single, "smooth")      -- S: smooth the selection a little (press again for more)
+  elseif ch == 116 or ch == 84 then W.tv_open()                  -- T: transpose and level by typed values (a panel)
   elseif ch == 107 or ch == 75 then W.sh_open()                  -- K: remove the partials that are shorter than ... ms (a panel)
   elseif ch == 104 or ch == 72 then W.select_harmonics()         -- H: select the harmonic series of the partial under the pointer
   elseif ch == 32 then stop_audition(); W.say_audition("audition stopped")
@@ -4577,6 +4694,7 @@ local function loop()
   W.draw_slant()
   W.draw_pk()
   W.draw_sh()
+  W.draw_tv()
   W.draw_cross_line()
   W.draw_notes_panel()
   gfx.update()
