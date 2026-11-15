@@ -294,5 +294,21 @@ do
   check("below the lowest point the first piece goes on (50 Hz: 1.05 s)", math.abs(cross.free_time(pts, 50, 0, 9) - 1.05) < 1e-9, cross.free_time(pts, 50, 0, 9))
 end
 
+-- a level envelope on a sound: points (file seconds, dB), straight lines in dB, held outside; the noise energy follows with the square
+do
+  local A = sound({ { 200, 0.5 } }, 1.0, HOP, 4.0)
+  local B = sound({ { 800, 0.5 } }, 1.0, HOP)
+  local d = cross.build({ a = { d = A, pos = 0, env = { { t = 0, db = 0 }, { t = 1.0, db = -20 } } }, b = { d = B, pos = 2.0 }, line = 0, tol_time = 0 })
+  local a0 = at(d, 1, 0.0)
+  local a5 = at(d, 1, 0.5)
+  local a10 = at(d, 1, 1.0)
+  check("the envelope: 0 dB at the start (0.5)", math.abs(a0 - 0.5) < 1e-6, a0)
+  check("-10 dB half way (0.5 * 0.3162)", math.abs(a5 - 0.5 * 10 ^ (-10 / 20)) < 1e-6, a5)
+  check("-20 dB at the end (0.05)", math.abs(a10 - 0.05) < 1e-6, a10)
+  check("the noise energy follows with the square: -10 dB half way = 4.0 * 0.1", math.abs(d.noise[3][51] - 0.4) < 1e-6, d.noise[3][51])
+  local d2 = cross.build({ a = { d = A, pos = 0, env = { { t = 0.4, db = -6 }, { t = 0.6, db = -6 } } }, b = { d = B, pos = 2.0 }, line = 0, tol_time = 0 })
+  check("held before the first and after the last point (-6 dB: 0.5 * 0.501)", math.abs(at(d2, 1, 0.1) - 0.5 * 10 ^ (-6 / 20)) < 1e-6 and math.abs(at(d2, 1, 0.9) - 0.5 * 10 ^ (-6 / 20)) < 1e-6)
+end
+
 print(string.format("%d passed, %d failed", ok, fails))
 os.exit(fails == 0 and 0 or 1)

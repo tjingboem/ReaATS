@@ -35,8 +35,9 @@ local function resample(side, grid)
   for p = 1, d.partials do amp[p], frq[p] = {}, {} end
   if d.has_noise then noise = {}; for b = 1, NB do noise[b] = {} end end
   local nscale = grid.window / d.window_size
-  local gain = side.gain or 1                                         -- the level of this sound (a factor on the amplitudes, its square on the noise energy)
-  local ngain = gain * gain
+  local gain0 = side.gain or 1                                        -- the level of this sound (a factor on the amplitudes, its square on the noise energy)
+  local env = side.env                                                -- a LEVEL ENVELOPE: points { t (file seconds), db }, straight lines in dB, held before the first and after the last
+  local ei = 1
   local i = 1
   for f = 1, F do
     local ts = (t_start + (f - 1) * grid.hop) - side.pos + side.t0
@@ -44,6 +45,17 @@ local function resample(side, grid)
       for p = 1, d.partials do amp[p][f], frq[p][f] = 0, 0 end
       if noise then for b = 1, NB do noise[b][f] = 0 end end
     else
+      local gain = gain0
+      if env and #env > 0 then
+        while ei < #env and env[ei + 1].t <= ts do ei = ei + 1 end
+        local e0, e1 = env[ei], env[math.min(ei + 1, #env)]
+        local db
+        if ts <= env[1].t then db = env[1].db
+        elseif ts >= env[#env].t or e1.t <= e0.t then db = e0.db
+        else db = e0.db + (e1.db - e0.db) * (ts - e0.t) / (e1.t - e0.t) end
+        gain = gain * 10 ^ (db / 20)
+      end
+      local ngain = gain * gain
       while i < n - 1 and times[i + 1] <= ts do i = i + 1 end
       local j, u = i + 1, 0
       if j > n then j = n else u = clamp((ts - times[i]) / math.max(times[j] - times[i], 1e-12), 0, 1) end
@@ -366,10 +378,10 @@ function M.build_timeline(spec)
   for k, o in ipairs(order) do
     local b = o.b
     if k == 1 then
-      acc = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }
+      acc = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain, env = b.env }
     else
       local st = spec.steps and spec.steps[k] or {}
-      d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain }, line = st.line, diag = st.diag, free = st.free,
+      d, info = M.build({ a = acc, b = { d = b.d, t0 = b.t0, t1 = b.t1, pos = b.pos, gain = b.gain, env = b.env }, line = st.line, diag = st.diag, free = st.free,
                           tol_time = st.tol_time or spec.tol_time, tol_cents = st.tol_cents or spec.tol_cents, curve = st.curve or spec.curve })
       if not d then return nil, info end
       pairs_total = pairs_total + info.pairs

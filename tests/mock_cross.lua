@@ -101,10 +101,11 @@ gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b
 local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
 local red_w3 = {}
-local red_circles = 0
+local red_circles, env_circles, env_xs = 0, 0, {}
 local old_circle = gfx.circle
 gfx.circle = function(...)
   local c = last_col
+  if c[1] and math.abs(c[1] - 0.78) < 1e-6 and math.abs(c[2] - 0.8) < 1e-6 and math.abs(c[3] - 0.84) < 1e-6 and math.abs((c[4] or 1) - 0.95) < 1e-6 then env_circles = env_circles + 1; env_xs[#env_xs + 1] = select(1, ...) end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then red_circles = red_circles + 1 end
   return old_circle(...)
 end
@@ -325,29 +326,38 @@ do
     assert(red_full > 0 and red_faint > 0, "the active red line is drawn in full, the other one faint: " .. red_full .. " " .. red_faint)
     click(40 + 120, 434 + 5); strings = {}; frame()                              -- (back to a value, for the rest of the test)
   end
-  -- level of a sound: its slider (layout sl_gain_a at 660, 90; 200 wide, -24 .. +12 dB, sticks at 0)
-  click(660, 90 + 5); strings = {}; frame()
-  assert(saw("^%-24%.0 dB$"), "the level slider at its left end: -24 dB: " .. tostring(saw("dB")))
-  click(660 + 133, 90 + 5); strings = {}; frame()
-  assert(saw("^%+0%.0 dB$"), "and back at 0 dB (it sticks)")
   -- a block shows only its used part: one picture per block and frame (what is cut away is not drawn, so it can never hide another sound)
   do
     blit_seq = {}
     strings = {}; frame()
     assert(#blit_seq >= 3 and #blit_seq <= 5, "one picture per block: " .. #blit_seq)
   end
-  -- ONE selection for both lanes, ONE level slider for the selected block (a block of lane B and one of lane A in turn)
+  -- ONE selection for both lanes; the LEVEL is an ENVELOPE over the selected block (grey line with its points): Ctrl+Shift+click adds a point, Ctrl+Shift+right-click removes it
   do
     local function pick_a() click(math.floor(blit_x[20] + blit_w[20] * 0.3), 150) end
     local function pick_b() click(math.floor(blit_x[21] + blit_w[21] * 0.1), 300) end
-    pick_b(); click(660, 90 + 5); strings = {}; frame()
-    assert(saw("^%-24%.0 dB$"), "the level slider changes the selected block of lane B: " .. tostring(saw("dB")))
-    pick_a(); strings = {}; frame()
-    assert(saw("^%+0%.0 dB$") and not saw("^%-24%.0 dB$"), "select a block of lane A: the slider shows that block's own level")
+    pick_b(); env_circles = 0; strings = {}; frame()
+    assert(env_circles == 2, "the selected block (lane B) shows the two end points of its level envelope: " .. env_circles)
+    -- the first point sticks to the white border of the block: dragged sideways it only changes its level
+    env_xs = {}; env_circles = 0; strings = {}; frame()
+    local x_first, x_last = env_xs[1], env_xs[#env_xs]
+    local lane_y = 260 + 4 + math.floor((12 / 36) * 96)                                              -- (0 dB in lane B)
+    drag(math.floor(x_first), lane_y, math.floor(x_first) + 40, lane_y + 20)
+    env_xs = {}; env_circles = 0; strings = {}; frame()
+    assert(env_circles == 2 and math.abs(env_xs[1] - x_first) < 1 and math.abs(env_xs[#env_xs] - x_last) < 1, "the end points stay at the white borders of the block: " .. tostring(x_first) .. " -> " .. tostring(env_xs[1]))
+    local ex, ey = math.floor(blit_x[21] + blit_w[21] * 0.5), 330
+    gfx.mouse_cap = 1 | 4 | 8; gfx.mouse_x, gfx.mouse_y = ex, ey; frame(); gfx.mouse_cap = 0; frame()          -- Ctrl+Shift+click: a new point
+    env_circles = 0; strings = {}; frame()
+    assert(env_circles == 3, "Ctrl+Shift+click adds a point to the envelope: " .. env_circles)
+    gfx.mouse_cap = 2 | 4 | 8; gfx.mouse_x, gfx.mouse_y = ex, ey; frame(); gfx.mouse_cap = 0; frame()          -- Ctrl+Shift+right-click on it: removed
+    env_circles = 0; strings = {}; frame()
+    assert(env_circles == 2, "Ctrl+Shift+right-click removes it again: " .. env_circles)
+    pick_a(); env_circles = 0; strings = {}; frame()
+    assert(env_circles == 2, "select a block of lane A: its envelope shows its two end points (at the ends of the used part): " .. env_circles)
+    local hx = math.floor(blit_x[20] + blit_w[20])                                    -- the right handle of A: drag it 40 px to the left (the block gets smaller)
+    drag(hx, 150, hx - 40, 150); env_circles = 0; strings = {}; frame()
+    assert(env_circles == 2, "after the block was made smaller the envelope keeps its two end points: " .. env_circles)
     pick_b(); strings = {}; frame()
-    assert(saw("^%-24%.0 dB$"), "and the block of lane B kept its level")
-    click(660 + 133, 90 + 5); strings = {}; frame()                              -- (back to 0 dB)
-    assert(saw("^%+0%.0 dB$"))
     sel_frame, sel_dim = 0, 0
     strings = {}; frame()
     assert(sel_frame >= 3 and sel_dim >= 1, "the selected block has the thick frame, the others are dimmed")

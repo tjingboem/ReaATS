@@ -27,7 +27,7 @@ local function basename(p) return p:match("([^/\\]+)$") or p end
 function M.new(env)
   local self = setmetatable({}, Page)
   self.env = env
-  self.blocks = {}                                  -- { id, lane ("a" / "b"), path, file, name, d, origin (timeline seconds of file time 0), t0, t1 (the used part, file time), gain_db, tid (image buffer) ... }
+  self.blocks = {}                                  -- { id, lane ("a" / "b"), path, file, name, d, origin (timeline seconds of file time 0), t0, t1 (the used part, file time), env (the level envelope), tid (image buffer) ... }
   self.sel = {}                                     -- the selected block of each lane: { a = block, b = block } (what EDIT A / EDIT B open)
   self.cur = nil                                    -- THE selected block (in either lane): the level slider changes it; it is shown with a thick frame
   self.next_id = 1
@@ -152,6 +152,7 @@ function Page:capture()
   for i, b in ipairs(self.blocks) do
     local c = {}
     for k, v in pairs(b) do c[k] = v end
+    if b.env then c.env = {}; for j, q in ipairs(b.env) do c.env[j] = { t = q.t, db = q.db } end end
     blocks[i] = c
     for lane, sb in pairs(self.sel) do if sb == b then sel_id[lane] = b.id end end
     if self.cur == b then sel_id.cur = b.id end
@@ -201,7 +202,15 @@ function Page:redo_step()
 end
 
 -- The recipe for the crossing code: the sounds in the order of starting, a red line (and diagonal) for every transition.
-local function block_spec(self, b) return { d = b.d, t0 = b.t0, t1 = b.t1, pos = self:pos_of(b), gain = 10 ^ ((b.gain_db or 0) / 20) } end
+local function block_spec(self, b)
+  local env
+  if b.env then                                                          -- (what is shown: the end points stick to the borders of the used part)
+    env = {}
+    for i, q in ipairs(self:env_display(b)) do env[i] = { t = q.t, db = q.db } end
+  end
+  return { d = b.d, t0 = b.t0, t1 = b.t1, pos = self:pos_of(b), env = env }
+end
+
 function Page:spec()
   local blocks, steps = {}, {}
   for i, b in ipairs(self:sorted()) do blocks[i] = block_spec(self, b) end
@@ -490,7 +499,6 @@ function Page:geom(W, H, top)
   g.sl_freq = box("sl_freq", 420, 394, 300, 10)
   local function obox(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top, true); if x then return { x = x, y = y, w = w, h = h } end end
   g.dd_curve = obox("dd_curve", 740, 394, 150, 22)
-  g.sl_gain = obox("sl_gain", 660, 52, 200, 10) or obox("sl_gain_a", 660, 52, 200, 10)       -- (one level slider for the selected block; an older layout has sl_gain_a / sl_gain_b: the first is used)
   local function rect(id, dx, dy, dw, dh) local x, y, w, h = self:el(id, dx, dy, dw, dh, top); return { x, y, w, h } end
   g.btn = {
     back = rect("btn_back", W - 120, 6, 90, 24),
@@ -540,17 +548,87 @@ function Page:slider_value(g, which, mx)
   end
 end
 
--- The gain of the selected sound (dB): the one level slider, -24 .. +12, sticks at 0.
-local GAIN_MIN, GAIN_MAX = -24, 12
+-- THE LEVEL of a block is an ENVELOPE over the block (tjingboem, 15 Nov 2026): points { t (file seconds), db } between ENV_MIN and ENV_MAX dB, straight lines in dB, held
+-- before the first and after the last point. A block that was never touched has a flat line at 0 dB (two points at the ends of the file are made when the first one is
+-- needed). The selected block shows it in grey with its points, all other blocks show theirs fainter.
+local ENV_MIN, ENV_MAX = -24, 12
 local CURVES = { { "smooth", "Smooth" }, { "linear", "Linear" }, { "equal", "Equal power" }, { "s", "S curve" }, { "free", "Free" } }
 local function curve_name(k) for _, c in ipairs(CURVES) do if c[1] == k then return c[2] end end return k end
-function Page:gain_value(g, mx)
-  local s, sl = self.cur, g.sl_gain
-  if not (s and sl) then return end
-  local db = GAIN_MIN + clamp((mx - sl.x) / sl.w, 0, 1) * (GAIN_MAX - GAIN_MIN)
-  db = math.floor(db * 2 + 0.5) / 2
+
+function Page:env_of(b)
+  if not b.env then b.env = { { t = b.t0, db = 0 }, { t = b.t1, db = 0 } } end            -- (the two end points are at the ends of the USED part)
+  return b.env
+end
+-- The level of an envelope at a file time (straight lines in dB, held outside the points).
+local function env_level(env, t)
+  if t <= env[1].t then return env[1].db end
+  for i = 1, #env - 1 do
+    local a, c = env[i], env[i + 1]
+    if t <= c.t then return (c.t > a.t) and (a.db + (c.db - a.db) * (t - a.t) / (c.t - a.t)) or c.db end
+  end
+  return env[#env].db
+end
+-- What is shown (and made into sound) of an envelope: its first and last point STICK to the white borders of the used part (they only move in level), and between them the
+-- points that lie inside the used part. Each entry: { t (file seconds), db, pt (the stored point), ends (true for the first and the last) }.
+function Page:env_display(b)
+  local env = self:env_of(b)
+  local out = { { t = b.t0, db = env[1].db, pt = env[1], ends = true } }
+  for i = 2, #env - 1 do
+    local q = env[i]
+    if q.t > b.t0 + 1e-9 and q.t < b.t1 - 1e-9 then out[#out + 1] = { t = q.t, db = q.db, pt = q } end
+  end
+  out[#out + 1] = { t = b.t1, db = env[#env].db, pt = env[#env], ends = true }
+  return out
+end
+-- After a cut (a handle of the block was dragged) the end points are made to match the new borders, at the level the line has there, and the points that lie outside are
+-- dropped: the grey line and its end points stay on the block (tjingboem, 15 Nov 2026).
+function Page:env_trim(b)
+  local env = b.env
+  if not env then return end
+  local lo, hi = b.t0, b.t1
+  local first, last = env_level(env, lo), env_level(env, hi)
+  local out = { { t = lo, db = first } }
+  for i = 2, #env - 1 do if env[i].t > lo + 1e-9 and env[i].t < hi - 1e-9 then out[#out + 1] = env[i] end end
+  out[#out + 1] = { t = hi, db = last }
+  b.env = out
+end
+
+function Page:env_y(g, b, db)
+  local lane = g.lane[b.lane]
+  return lane.y + 4 + (ENV_MAX - clamp(db, ENV_MIN, ENV_MAX)) / (ENV_MAX - ENV_MIN) * (lane.h - 8)
+end
+function Page:env_db(g, b, y)
+  local lane = g.lane[b.lane]
+  local db = ENV_MAX - clamp((y - lane.y - 4) / (lane.h - 8), 0, 1) * (ENV_MAX - ENV_MIN)
+  db = math.floor(db * 2 + 0.5) / 2                                                 -- half dB steps, 0 dB sticks
   if math.abs(db) < 0.75 then db = 0 end
-  s.gain_db = db
+  return db
+end
+-- A point of the envelope of the selected block under the pointer: { b, pt, i } or nil.
+function Page:env_point_at(g, mx, my)
+  local b = self.cur
+  if not (b and b.env) then return nil end
+  for i, q in ipairs(self:env_display(b)) do
+    local x, y = self:tx(g, b.origin + q.t), self:env_y(g, b, q.db)
+    if (mx - x) ^ 2 + (my - y) ^ 2 <= 64 then return { b = b, pt = q.pt, i = i, ends = q.ends } end
+  end
+end
+-- A new point at the pointer (the time inside the file, the level from the height), kept in order of time.
+function Page:env_add(g, b, mx, my)
+  local env = self:env_of(b)
+  local eps = 1e-3
+  local t = clamp(self:tt(g, mx) - b.origin, b.t0 + eps, b.t1 - eps)                      -- (between the two end points)
+  local pt = { t = t, db = self:env_db(g, b, my) }
+  local first, last = env[1], env[#env]
+  local inner = {}
+  for i = 2, #env - 1 do inner[#inner + 1] = env[i] end
+  inner[#inner + 1] = pt
+  table.sort(inner, function(x, y) return x.t < y.t end)
+  local out = { first }
+  for _, q in ipairs(inner) do out[#out + 1] = q end
+  out[#out + 1] = last
+  b.env = out
+  return pt
 end
 
 -- The block under the pointer (the one drawn last wins), or nil.
@@ -649,7 +727,17 @@ function Page:mouse(mx, my, cap, wheel)
   if wheel and wheel ~= 0 and my >= g.laneA.y - 20 and my <= g.laneB.y + g.laneB.h + 40 then self:zoom(g, mx, wheel, shift) end
   if right and not self.prev_right then                           -- right-click on a red point removes it (two stay); on a block it removes that sound
     local hit = self:point_at(g, mx, my)
-    if hit then
+    if (cap & 12) == 12 then                                      -- Ctrl+Shift+right-click: a point of the level envelope of the selected block (never the block itself)
+      local eh = self:env_point_at(g, mx, my)
+      if eh then
+        if eh.ends then
+          self:say("end points stay")
+        else
+          self:push_undo()
+          for i, q in ipairs(eh.b.env) do if q == eh.pt then table.remove(eh.b.env, i); break end end
+        end
+      end
+    elseif hit then
       local pts = self.diags[hit.tr.key]
       if #pts > 2 then
         self:push_undo()
@@ -689,7 +777,18 @@ function Page:mouse(mx, my, cap, wheel)
     local ctrl = (cap & 4) ~= 0
     local dd = g.dd_curve
     local in_lane = my >= g.laneA.y and my < g.laneA.y + g.laneA.h or my >= g.laneB.y and my < g.laneB.y + g.laneB.h
-    if ctrl and not shift and in_lane then
+    if ctrl and shift and in_lane then
+      -- Ctrl+Shift+click on a block: a new point in its LEVEL ENVELOPE (the block is selected; the point can be dragged at once)
+      local bl = self:block_at(g, mx, my)
+      if bl then
+        self:push_undo(pre)
+        self.cur, self.sel[bl.lane] = bl, bl
+        local pt = self:env_add(g, bl, mx, my)
+        self.drag = { kind = "epoint", block = bl, pt = pt }
+      end
+      self.prev_down = down
+      return
+    elseif ctrl and not shift and in_lane then
       -- Ctrl+click in a lane: a NEW POINT in the free line of the transition at that moment (a transition that is not Free becomes Free first)
       local t = self:tt(g, mx)
       local best, bd
@@ -726,20 +825,11 @@ function Page:mouse(mx, my, cap, wheel)
     elseif inside(b.make, mx, my) then self:make()
     elseif b.audition and inside(b.audition, mx, my) then self:audition()
     else
-      for _, which in ipairs({ "sl_time", "sl_freq", "sl_gain" }) do
+      for _, which in ipairs({ "sl_time", "sl_freq" }) do
         local sl = g[which]
         if sl and mx >= sl.x - 6 and mx < sl.x + sl.w + 6 and my >= sl.y - 8 and my < sl.y + sl.h + 8 then
-          if which == "sl_gain" then
-            if self.cur then
-              self.drag = { kind = "gain" }
-              self:gain_value(g, mx)
-            else
-              self:say("select a block first")
-            end
-          else
-            self.drag = { kind = "slider", which = which }
-            self:slider_value(g, which, mx)
-          end
+          self.drag = { kind = "slider", which = which }
+          self:slider_value(g, which, mx)
         end
       end
       if not self.drag and my >= g.ruler - 4 and my <= g.ruler + 16 and mx >= g.x0 and mx <= g.x1 then
@@ -747,6 +837,10 @@ function Page:mouse(mx, my, cap, wheel)
         local lc = self.last_ruler
         if lc and now - lc < 0.45 then self.last_ruler = nil; self:fit_view(true)       -- a double-click on the ruler: the whole timeline again
         else self.last_ruler = now; self.drag = { kind = "pan", x = mx, v0 = self.view[1], v1 = self.view[2], acc = 0 } end
+      end
+      if not self.drag then                                           -- a point of the level envelope of the selected block: dragged in time and level
+        local eh = self:env_point_at(g, mx, my)
+        if eh then self.drag = { kind = "epoint", block = eh.b, pt = eh.pt, i = eh.i, ends = eh.ends } end
       end
       if not self.drag then                                           -- a red point of a free line: dragged in time and frequency
         local hit = self:point_at(g, mx, my)
@@ -806,14 +900,20 @@ function Page:mouse(mx, my, cap, wheel)
       d.x = mx
     end
     if d.kind == "slider" then self:slider_value(g, d.which, mx)
-    elseif d.kind == "gain" then self:gain_value(g, mx)
-    elseif d.kind == "pan" then
-      local dt = -d.acc / g.pps
-      self.view = { d.v0 + dt, d.v1 + dt }
-      self.zoomed = true
-    elseif d.kind == "fpoint" then
-      d.pt.t = clamp(self:tt(g, mx), d.tr.lo, d.tr.hi)
-      d.pt.f = self:y_to_f(d.lane, my)
+    elseif d.kind == "epoint" then                                                     -- a point of a level envelope: in level, and (not the end points) in time between its neighbours
+      local b = d.block
+      d.pt.db = self:env_db(g, b, my)
+      if not d.ends then
+        local list = self:env_display(b)
+        local lo, hi = b.t0 + 1e-3, b.t1 - 1e-3
+        for i, q in ipairs(list) do
+          if q.pt == d.pt then
+            if list[i - 1] then lo = list[i - 1].t + 1e-3 end
+            if list[i + 1] then hi = list[i + 1].t - 1e-3 end
+          end
+        end
+        d.pt.t = clamp(self:tt(g, mx) - b.origin, lo, hi)
+      end
     elseif d.kind == "line" then
       local lo, hi = self:line_bounds(d.tr)
       self.lines[d.key] = clamp(self:tt(g, d.hx + d.acc), lo, hi)
@@ -846,6 +946,7 @@ function Page:mouse(mx, my, cap, wheel)
   if not down then
     if self.drag then
       if self.drag.kind == "move" then self:settle(self.drag.block) end
+      if self.drag.kind == "cut_in" or self.drag.kind == "cut_out" then self:env_trim(self.drag.block) end
       if self.drag.kind == "move" or self.drag.kind == "cut_in" or self.drag.kind == "cut_out" then self:fit_view() end
       self.drag = nil
       self:recount()
@@ -960,6 +1061,27 @@ function Page:draw_block(g, s)
     else
       gfx.set(0, 0, 0, 0.45)
       gfx.rect(cx0, y, cx1 - cx0, h, 1)
+    end
+  end
+  -- the LEVEL ENVELOPE of this block (grey; fainter when the block is not the selected one), with its points when it is the selected one
+  do
+    local d = s.d
+    local act = (self.cur == s)
+    local pts
+    if act or s.env then pts = self:env_display(s) else pts = { { t = s.t0, db = 0 }, { t = s.t1, db = 0 } } end       -- (the selected block gets its two end points to drag)
+    local span = { x0 = math.max(g.x0, ux0), x1 = math.min(g.x1, ux1) }
+    gfx.set(0.78, 0.8, 0.84, act and 0.95 or 0.3)
+    local px0, py0 = ux0, self:env_y(g, s, pts[1].db)
+    for i, q in ipairs(pts) do
+      local x, y = self:tx(g, s.origin + q.t), self:env_y(g, s, q.db)
+      self:cline(span, px0, py0, x, y); self:cline(span, px0, py0 + 1, x, y + 1)
+      px0, py0 = x, y
+    end
+    if act then
+      for _, q in ipairs(pts) do
+        local x = self:tx(g, s.origin + q.t)
+        if x >= span.x0 - 0.5 and x <= span.x1 + 0.5 then gfx.circle(x, self:env_y(g, s, q.db), 5, 1, 1) end
+      end
     end
   end
   gfx.set(1, 1, 1, 0.95)                                                   -- the handles of the cut (only where they are inside the lanes)
@@ -1186,10 +1308,6 @@ function Page:draw(W, H, top)
     gfx.rect(s.x, s.y, s.w, s.h, 0)
   end
   self:draw_threads(g)
-  if g.sl_gain then
-    local db = self.cur and (self.cur.gain_db or 0) or 0
-    slider(g.sl_gain, "Level", self.cur and string.format("%+.1f dB", db) or "-", (db - GAIN_MIN) / (GAIN_MAX - GAIN_MIN))
-  end
   local tt, tc = self:tol_of(self:active_tr())
   slider(g.sl_time, "Time tolerance", tt < 0.005 and "hard line" or string.format("%.2f s", tt), math.sqrt(math.min(tt / self:time_max(), 1)))
   slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", tc), (tc - 10) / 1190)
