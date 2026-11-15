@@ -1292,9 +1292,9 @@ function Page:draw_transition(g, tr)
     if x >= g.x0 and x <= g.x1 then                                                 -- (the red line is only drawn where it is inside the lanes)
       gfx.set(1, 0.23, 0.19, fade)
       gfx.rect(x - 1, g.laneA.y - 12, 3, y1 - y0 + 16, 1)
-      gfx.rect(x - 6, g.laneA.y - 14, 13, 8, 1)
+      gfx.rect(x - 6, g.laneA.y - 9, 13, 8, 1)                                      -- (the handle, 5 px lower than before: tjingboem, 15 Nov 2026)
       gfx.setfont(1, "Arial", 12)
-      text(x + 10, g.laneA.y - 16, string.format("%.3f s", line), 1, 0.45, 0.4, fade)
+      text(x + 10, g.laneA.y - 11, string.format("%.3f s", line), 1, 0.45, 0.4, fade)
     end
   end
 end
