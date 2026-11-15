@@ -179,7 +179,9 @@ assert(not saw("CROSS: sound A flows into sound B"), "the page is left")
 click(394 + 10, 6 + 9); strings = {}; frame()
 assert(saw("CROSS: sound A flows into sound B"), "and the button brings it back")
 click(356 + 10, 40 + 188 + 10); strings = {}; frame()
-assert(saw("cx_second%.ats is on the page already"), "the editor's sound is on the page already (the same table): it is selected, not added again: " .. tostring(saw("loaded") or saw("unsaved") or saw("no sound")))
+assert(saw("the sound of the editor is added"), "the editor's sound is added again, also when it is on the page already (any number of copies): " .. tostring(saw("loaded") or saw("unsaved") or saw("no sound")))
+script.keys = { 26 }; strings = {}; frame()                                         -- (Ctrl+Z takes the extra copy away again)
+assert(saw("undone"), "Ctrl+Z takes the extra copy away")
 -- how many threads the recipe would make is counted (A's 200 and 800 Hz meet B's 205 and 800 Hz inside the overlap)
 assert(saw("^2 threads$"), "the page counts the threads: " .. tostring(saw("thread")))
 do                                                                                 -- the partials of the threads blink in both lanes of the page
@@ -298,13 +300,13 @@ do
   assert(not io.open(scratch .. "cx_second_edit.ats", "rb"), "and nothing was written")
   local fq = io.open(scratch .. "cx_second_edit.ats", "rb"); if fq then fq:close() end
   assert(blit_x[21] and math.abs(blit_x[21] - x_before) < 0.5, "and stays where B was: " .. tostring(x_before) .. " -> " .. tostring(blit_x[21]))
-  -- the editor's sound is that of B: pressing EDITOR'S SOUND for lane B only selects it (it is there already) ...
-  click(356 + 10, 40 + 188 + 10); strings = {}; frame()
-  assert(saw("is on the page already"), "the editor's sound that is in this lane is not added again: " .. tostring(saw("sound")))
-  -- ... but for lane A it is ADDED: the same sound may stand in both lanes (it shares the data; nothing has to be saved)
+  -- the editor's sound is that of B: for lane A it is ADDED (the same sound may stand in both lanes, and several times in one lane; it shares the data; nothing has to be saved)
   click(356 + 10, 40 + 44 + 10); strings = {}; frame()
   assert(saw("the sound of the editor is added"), "USE THE EDITOR'S SOUND AS A adds the sound that is in lane B (no saving needed): " .. tostring(saw("save") or saw("sound") or saw("already")))
   assert(blit_x[22] and blit_x[22] > blit_x[20], "the new block A2 stands behind the first one on lane A: " .. tostring(blit_x[22]) .. " " .. tostring(blit_x[20]))
+  click(356 + 10, 40 + 44 + 10); strings = {}; frame()                          -- again: the same sound a third time in lane A, behind the others
+  assert(saw("the sound of the editor is added") and blit_x[23] and blit_x[23] > blit_x[22], "any number of copies of the editor's sound in one lane: " .. tostring(blit_x[23]) .. " " .. tostring(blit_x[22]))
+  script.keys = { 26 }; strings = {}; frame()                                     -- (Ctrl+Z takes the third copy away)
   assert(not saw("save it first"), "no demand to save")
   -- two transitions now (A1 -> B and B -> A2): the sliders change the ACTIVE one; Tab takes the next. The right end of the time slider is the whole overlap of that transition.
   do

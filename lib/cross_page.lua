@@ -406,15 +406,12 @@ function Page:choose(lane)
   if path then self:load(lane, path) end
 end
 
--- The sound that the editor holds is added to a lane: the table itself, in memory (edits made in the editor are in it; nothing has to be saved). When it is already a
--- block of THAT lane, that block is selected instead. The same sound may stand in both lanes: the two blocks share the data, so a change made in the editor shows in both.
+-- The sound that the editor holds is added to a lane: the table itself, in memory (edits made in the editor are in it; nothing has to be saved). It is always added (also when it is
+-- a block of the page already), as often as you press it: the blocks share the data, so a change made in the editor shows in all of them.
 function Page:use_open_sound(lane)
   local st = self.env.editor_state()
   if not st.data then self:say("no sound is open in the editor"); return end
   local d = st.data
-  for _, o in ipairs(self.blocks) do                                        -- (in THIS lane already: it is only selected; in the other lane it may be added again, so a sound can cross itself)
-    if o.d == d and o.lane == lane then self.sel[o.lane] = o; self.cur = o; self:say(o.name .. " is on the page already"); return end
-  end
   local s = { d = d, path = st.current or st.file, file = st.file, name = basename(st.file or "sound.ats"), bytes = 0, origin = 0,
               t0 = d.times[1], t1 = d.times[d.frames], full = true, edited = st.modified or (st.current ~= st.file) }
   if not self:add_block(lane, s) then return end
