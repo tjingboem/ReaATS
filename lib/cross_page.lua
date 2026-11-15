@@ -110,7 +110,16 @@ end
 
 function Page:tol_of(tr)
   local v = tr and self.tr_set[tr.key]
-  return (v and v.time) or self.tol_time, (v and v.cents) or self.tol_cents
+  local t = (v and v.time) or self.tol_time
+  if tr then t = math.min(t, tr.hi - tr.lo) end                          -- (never more than the overlap that there is: it changes when the blocks are moved)
+  return t, (v and v.cents) or self.tol_cents
+end
+
+-- The red line may stand anywhere where the whole grey band still fits in the overlap (a band as long as the overlap leaves it in the middle).
+function Page:line_bounds(tr)
+  local w = select(1, self:tol_of(tr))
+  if w >= tr.hi - tr.lo - 1e-9 then local m = (tr.lo + tr.hi) / 2; return m, m end
+  return tr.lo + w / 2, tr.hi - w / 2
 end
 
 -- The active transition (its red line is drawn in full, the others fainter; the sliders change its tolerances): the one that was chosen last, else the first.
@@ -121,7 +130,8 @@ function Page:active_tr()
 end
 
 function Page:line_of(tr)
-  local v = clamp(self.lines[tr.key] or (tr.lo + tr.hi) / 2, tr.lo, tr.hi)
+  local lo, hi = self:line_bounds(tr)
+  local v = clamp(self.lines[tr.key] or (tr.lo + tr.hi) / 2, lo, hi)
   self.lines[tr.key] = v
   return v
 end
@@ -397,13 +407,13 @@ function Page:choose(lane)
 end
 
 -- The sound that the editor holds is added to a lane: the table itself, in memory (edits made in the editor are in it; nothing has to be saved). When it is already a
--- block of the page, that block is selected instead.
+-- block of THAT lane, that block is selected instead. The same sound may stand in both lanes: the two blocks share the data, so a change made in the editor shows in both.
 function Page:use_open_sound(lane)
   local st = self.env.editor_state()
   if not st.data then self:say("no sound is open in the editor"); return end
   local d = st.data
-  for _, o in ipairs(self.blocks) do
-    if o.d == d then self.sel[o.lane] = o; self.cur = o; self:say(o.name .. " is on the page already"); return end
+  for _, o in ipairs(self.blocks) do                                        -- (in THIS lane already: it is only selected; in the other lane it may be added again, so a sound can cross itself)
+    if o.d == d and o.lane == lane then self.sel[o.lane] = o; self.cur = o; self:say(o.name .. " is on the page already"); return end
   end
   local s = { d = d, path = st.current or st.file, file = st.file, name = basename(st.file or "sound.ats"), bytes = 0, origin = 0,
               t0 = d.times[1], t1 = d.times[d.frames], full = true, edited = st.modified or (st.current ~= st.file) }
@@ -514,7 +524,7 @@ local function inside(r, mx, my) return mx >= r[1] and mx < r[1] + r[3] and my >
 -- The longest time tolerance: 4 s, or the longest overlap when that is longer (a transition needs time: tjingboem, 13 Nov 2026).
 function Page:time_max()
   local tr = self:active_tr()
-  return tr and math.max(4, tr.hi - tr.lo) or 4
+  return tr and (tr.hi - tr.lo) or 4                                     -- the seconds that there are: from the start of the later block to the end of the earlier one
 end
 
 function Page:slider_value(g, which, mx)
@@ -525,9 +535,10 @@ function Page:slider_value(g, which, mx)
   if tr then v = self.tr_set[tr.key] or { time = self.tol_time, cents = self.tol_cents }; self.tr_set[tr.key] = v end
   if which == "sl_time" then
     local t = math.floor(frac * frac * self:time_max() * 100 + 0.5) / 100        -- finer at the short end
+    if frac >= 0.995 then t = self:time_max() end                                   -- (the right end is exactly the whole overlap)
     if v then v.time = t else self.tol_time = t end
   else
-    local c = math.floor((10 + frac * 590) / 10 + 0.5) * 10
+    local c = math.floor((10 + frac * 1190) / 10 + 0.5) * 10                       -- 10 .. 1200 cents (an octave)
     if v then v.cents = c else self.tol_cents = c end
   end
 end
@@ -807,7 +818,8 @@ function Page:mouse(mx, my, cap, wheel)
       d.pt.t = clamp(self:tt(g, mx), d.tr.lo, d.tr.hi)
       d.pt.f = self:y_to_f(d.lane, my)
     elseif d.kind == "line" then
-      self.lines[d.key] = clamp(self:tt(g, d.hx + d.acc), d.tr.lo, d.tr.hi)
+      local lo, hi = self:line_bounds(d.tr)
+      self.lines[d.key] = clamp(self:tt(g, d.hx + d.acc), lo, hi)
     elseif d.kind == "move" then
       local s = d.block
       local w = s.t1 - s.t0
@@ -1183,7 +1195,7 @@ function Page:draw(W, H, top)
   end
   local tt, tc = self:tol_of(self:active_tr())
   slider(g.sl_time, "Time tolerance", tt < 0.005 and "hard line" or string.format("%.2f s", tt), math.sqrt(math.min(tt / self:time_max(), 1)))
-  slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", tc), (tc - 10) / 590)
+  slider(g.sl_freq, "Frequency tolerance", string.format("%d cents", tc), (tc - 10) / 1190)
   gfx.setfont(1, "Arial", 24)
   local cur_tr = self:active_tr()                                           -- the count of the ACTIVE transition (the one the sliders and the menu work on)
   local est = cur_tr and self.counts and self.counts[cur_tr.key] or self.threads_est      -- only the count (nothing else is written here)

@@ -38,7 +38,8 @@ local load_path = nil
 local strings = {}
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
 for _, n in ipairs({ "set", "rect", "line", "circle", "setimgdim", "setfont", "update", "init", "blit" }) do gfx[n] = function() return 0 end end
-gfx.drawstr = function(s) strings[#strings + 1] = s end
+local str_y = {}
+gfx.drawstr = function(s) strings[#strings + 1] = s; str_y[#strings] = gfx.y end
 gfx.measurestr = function(s) return #s * 7, 14 end
 local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
@@ -73,6 +74,9 @@ local function frame(setup)
   local fn = deferred; deferred = nil
   assert(fn, "viewer stopped unexpectedly")
   fn()
+end
+local function slider_time()                                                  -- the value that is written above the time slider (layout y 434: its text is at 414)
+  for i, x in ipairs(strings) do if str_y[i] and math.abs(str_y[i] - 414) < 3 and (x:find(" s$") or x == "hard line") then return x end end
 end
 local function saw(pattern) for _, s in ipairs(strings) do if s:find(pattern) then return s end end return nil end
 
@@ -294,27 +298,26 @@ do
   assert(not io.open(scratch .. "cx_second_edit.ats", "rb"), "and nothing was written")
   local fq = io.open(scratch .. "cx_second_edit.ats", "rb"); if fq then fq:close() end
   assert(blit_x[21] and math.abs(blit_x[21] - x_before) < 0.5, "and stays where B was: " .. tostring(x_before) .. " -> " .. tostring(blit_x[21]))
-  -- the editor's sound is that of B: it is on the page already, nothing is added
+  -- the editor's sound is that of B: pressing EDITOR'S SOUND for lane B only selects it (it is there already) ...
+  click(356 + 10, 40 + 188 + 10); strings = {}; frame()
+  assert(saw("is on the page already"), "the editor's sound that is in this lane is not added again: " .. tostring(saw("sound")))
+  -- ... but for lane A it is ADDED: the same sound may stand in both lanes (it shares the data; nothing has to be saved)
   click(356 + 10, 40 + 44 + 10); strings = {}; frame()
-  assert(saw("is on the page already"), "the editor's sound that is on the page is not added again: " .. tostring(saw("sound")))
-  -- a sound that is not on the page is ADDED to the lane (A: after the first sound): the editor opens the test file again (key O)
-  script.keys = { 27 }; frame()
-  script.keys = { 111 }; frame(); frame()
-  click(394 + 10, 6 + 9); strings = {}; frame()
-  click(356 + 10, 40 + 44 + 10); strings = {}; frame()
-  assert(saw("the sound of the editor is added"), "USE THE EDITOR'S SOUND AS A adds the sound (no saving needed): " .. tostring(saw("save") or saw("sound")))
+  assert(saw("the sound of the editor is added"), "USE THE EDITOR'S SOUND AS A adds the sound that is in lane B (no saving needed): " .. tostring(saw("save") or saw("sound") or saw("already")))
   assert(blit_x[22] and blit_x[22] > blit_x[20], "the new block A2 stands behind the first one on lane A: " .. tostring(blit_x[22]) .. " " .. tostring(blit_x[20]))
   assert(not saw("save it first"), "no demand to save")
-  -- two transitions now (A1 -> B and B -> A2): the sliders change the ACTIVE one; Tab takes the next (values that are not on the ruler: 0.44 s and 0.16 s)
+  -- two transitions now (A1 -> B and B -> A2): the sliders change the ACTIVE one; Tab takes the next. The right end of the time slider is the whole overlap of that transition.
   do
-    click(40 + 100, 434 + 5); strings = {}; frame()
-    assert(saw("^0%.44 s$"), "the time slider changes the active (first) transition: " .. tostring(saw(" s$")))
+    click(40 + 300, 434 + 5); strings = {}; frame()
+    local v1 = slider_time()
+    assert(v1 and v1 ~= "hard line", "the time slider changes the active (first) transition: " .. tostring(v1))
     script.keys = { 9 }; strings = {}; frame(); strings = {}; frame()
-    assert(not saw("^0%.44 s$"), "Tab: the next transition has its own tolerance, not 0.44 s")
+    assert(slider_time() ~= v1, "Tab: the next transition has its own tolerance, not " .. tostring(v1) .. ": " .. tostring(slider_time()))
     click(40 + 60, 434 + 5); strings = {}; frame()
-    assert(saw("^0%.16 s$"), "and the slider changes that one: " .. tostring(saw(" s$")))
+    local q2 = slider_time()
+    assert(q2 and q2 ~= v1, "and the slider changes that one: " .. tostring(q2))
     script.keys = { 9 }; strings = {}; frame(); strings = {}; frame()
-    assert(saw("^0%.44 s$") and not saw("^0%.16 s$"), "Tab again: the first transition kept 0.44 s")
+    assert(slider_time() == v1, "Tab again: the first transition kept " .. tostring(v1) .. ": " .. tostring(slider_time()))
     red_full, red_faint = 0, 0
     strings = {}; frame()
     assert(red_full > 0 and red_faint > 0, "the active red line is drawn in full, the other one faint: " .. red_full .. " " .. red_faint)
@@ -347,6 +350,12 @@ do
     strings = {}; frame()
     assert(sel_frame >= 3 and sel_dim >= 1, "the selected block has the thick frame, the others are dimmed")
   end
+  -- the frequency tolerance runs from 10 cents to a whole octave (1200 cents)
+  click(420, 434 + 5); strings = {}; frame()
+  assert(saw("^10 cents$"), "the frequency slider starts at 10 cents: " .. tostring(saw("cents")))
+  click(420 + 300, 434 + 5); strings = {}; frame()
+  assert(saw("^1200 cents$"), "and ends at 1200 cents: " .. tostring(saw("cents")))
+  click(420 + 100, 434 + 5); strings = {}; frame()                              -- (back to a smaller value for the rest of the test)
   -- the curve menu (layout dd_curve at 740, 434; the list opens below it)
   click(740 + 10, 434 + 10); strings = {}; frame()
   assert(saw("^Equal power$") and saw("^S curve$"), "the menu lists the curves: " .. tostring(saw("Smooth")))
