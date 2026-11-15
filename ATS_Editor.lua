@@ -2043,6 +2043,272 @@ function W.pk_ranks()
   return { per = per, max = max_count }
 end
 
+
+-- SMOOTH (tjingboem, 15 Nov 2026: "smoothing is in small steps, and, for example shortcut S, i can press many times"): every selected point of a partial moves a quarter of the way towards
+-- the mean of its two neighbours in the same partial (only neighbours that sound), for the FREQUENCY and the LEVEL alike (both in the logarithmic domain: cents and dB), so
+-- a wobble gets smaller with each press. The points are changed from the old values (not one after the other), one undo step per press and channel group.
+function W.smooth_single()
+  if not sel_info then return end
+  local changes = {}
+  local k = 0.25
+  for p, frames in pairs(sel) do
+    local amp, frq = data.amp[p], data.frq[p]
+    for f in pairs(frames) do
+      if amp[f] > 0 and frq[f] > 0 then
+        local sf, sa, n = 0, 0, 0
+        for _, g in ipairs({ f - 1, f + 1 }) do
+          if g >= 1 and g <= data.frames and amp[g] > 0 and frq[g] > 0 then sf, sa, n = sf + math.log(frq[g]), sa + math.log(amp[g]), n + 1 end
+        end
+        if n > 0 then
+          local lf, la = math.log(frq[f]), math.log(amp[f])
+          local nf, na = math.exp(lf + k * (sf / n - lf)), math.exp(la + k * (sa / n - la))
+          if math.abs(nf - frq[f]) > 1e-9 or math.abs(na - amp[f]) > 1e-12 then
+            changes[#changes + 1] = { p = p, f = f, oa = amp[f], na = na, of = frq[f], nf = nf }
+          end
+        end
+      end
+    end
+  end
+  if #changes == 0 then return end
+  do_edit("smooth", changes)
+  update_sel_info()
+end
+
+-- REMOVE SHORT PARTIALS (tjingboem, 15 Nov 2026: "remove everything shorter than X ms would be good to have as an option in the selection"; answers: a slider panel on a key): K opens a
+-- panel like MAX PARTIALS with a slider in milliseconds. A partial here is a run of sounding frames of one row (a "track"); it is silenced where it is selected when the WHOLE run is
+-- shorter than the value (a long partial that is only partly selected is never cut short). The panel says how many partials that is. Enter applies (one undo group), Esc cancels.
+function W.sh_runs()
+  local per, longest, total = {}, 0, 0
+  for _, i in ipairs(on_channels()) do
+    local sl = W.sel_of(i)
+    if sl and next(sl) then
+      local d = chs[i].data
+      local ms_per = d.frame_size / d.sr * 1000
+      local runs, seen = {}, {}
+      for p, frames in pairs(sl) do
+        local amp = d.amp[p]
+        for f in pairs(frames) do
+          if amp[f] > 0 then
+            local f0, f1 = f, f
+            while f0 > 1 and amp[f0 - 1] > 0 do f0 = f0 - 1 end
+            while f1 < d.frames and amp[f1 + 1] > 0 do f1 = f1 + 1 end
+            local key = p .. ":" .. f0
+            if not seen[key] then
+              seen[key] = true
+              local ms = (f1 - f0 + 1) * ms_per
+              runs[#runs + 1] = { p = p, f0 = f0, f1 = f1, ms = ms }
+              if ms > longest then longest = ms end
+              total = total + 1
+            end
+          end
+        end
+      end
+      per[i] = runs
+    end
+  end
+  if total == 0 then return nil end
+  return { per = per, longest = longest, total = total }
+end
+function W.sh_count(g)
+  local n = 0
+  for _, runs in pairs(g.runs.per) do for _, r in ipairs(runs) do if r.ms < g.ms then n = n + 1 end end end
+  return n
+end
+function W.sh_open()
+  local runs = W.sh_runs()
+  if not runs then set_status("nothing selected: select partials first"); return end
+  local bx, by, bw, bh = W.max_partials_rect()
+  W.sh = { x = clamp(bx, 4, math.max(math.floor(gfx.w) - 264, 4)), y = clamp(by + bh + 4, 4, math.max(math.floor(gfx.h) - 118, 4)),
+           ms = 0, max = math.max(math.ceil(runs.longest), 1), runs = runs }
+  dirty = true
+end
+function W.sh_rects()
+  local g = W.sh
+  return { box = { g.x, g.y, 260, 114 }, track = { g.x + 16, g.y + 38, 228, 10 },
+           cancel = { g.x + 120, g.y + 88, 62, 18 }, apply = { g.x + 188, g.y + 88, 56, 18 } }
+end
+function W.sh_set(ms)
+  local g = W.sh
+  g.ms = math.min(math.max(math.floor(ms + 0.5), 0), g.max)
+  dirty = true
+end
+function W.sh_to(mx)
+  local g, r = W.sh, W.sh_rects().track
+  local frac = math.min(math.max((mx - r[1]) / r[3], 0), 1)
+  W.sh_set(frac * g.max)
+end
+function W.sh_close(msg)
+  W.sh = nil
+  dirty = true
+  if msg then set_status(msg) end
+end
+function W.sh_do()
+  local g = W.sh
+  W.sh = nil
+  dirty = true
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  local killed, touched = 0, 0
+  for i, runs in pairs(g.runs.per) do
+    with_channel(i, function()
+      local changes = {}
+      for _, r in ipairs(runs) do
+        if r.ms < g.ms then
+          killed = killed + 1
+          for f = r.f0, r.f1 do
+            if sel[r.p] and sel[r.p][f] and data.amp[r.p][f] > 0 then
+              changes[#changes + 1] = { p = r.p, f = f, oa = data.amp[r.p][f], na = 0, of = data.frq[r.p][f], nf = data.frq[r.p][f] }
+            end
+          end
+        end
+      end
+      if #changes > 0 then do_edit("short partials", changes); touched = touched + 1 end
+    end)
+  end
+  edit_group = nil
+  if touched > 0 then set_status(string.format("silenced %d partial%s shorter than %d ms", killed, killed == 1 and "" or "s", g.ms))
+  else set_status("short partials: nothing is shorter than " .. g.ms .. " ms") end
+end
+function W.sh_input(mx, my, cap, ch)
+  local g, r = W.sh, W.sh_rects()
+  local function inside(rc, pad) pad = pad or 0; return mx >= rc[1] - pad and mx < rc[1] + rc[3] + pad and my >= rc[2] - pad and my < rc[2] + rc[4] + pad end
+  local down = (cap & 1) ~= 0
+  if ch == 27 then W.sh_close("short partials cancelled"); return end
+  if ch == 13 then W.sh_do(); return end
+  if ch == 30064 then W.sh_set(g.ms + 1) elseif ch == 1685026670 then W.sh_set(g.ms - 1)
+  elseif ch == 1919379572 then W.sh_set(g.ms + 10) elseif ch == 1818584692 then W.sh_set(g.ms - 10) end
+  if down and not prev_down then
+    if inside(r.track, 6) then g.drag = true; W.sh_to(mx)
+    elseif inside(r.apply) then W.sh_do(); return
+    elseif inside(r.cancel) or not inside(r.box) then W.sh_close("short partials cancelled"); return end
+  elseif down and g.drag then
+    W.sh_to(mx)
+  end
+  if not down then g.drag = nil end
+end
+function W.draw_sh()
+  local g = W.sh
+  if not g then return end
+  local r = W.sh_rects()
+  local bx, by, bw, bh = table.unpack(r.box)
+  gfx.set(0.10, 0.11, 0.14, 0.97)
+  gfx.rect(bx, by, bw, bh, 1)
+  gfx.set(0.45, 0.92, 1, 1)
+  gfx.rect(bx, by, bw, bh, 0)
+  gfx.setfont(1, "Arial", 13)
+  gfx.set(0.9, 0.92, 0.96, 1)
+  gfx.x, gfx.y = bx + 16, by + 8
+  gfx.drawstr("Short partials")
+  local label = string.format("under %d ms", g.ms)
+  gfx.set(1, 0.9, 0.5, 1)
+  gfx.x, gfx.y = bx + bw - 16 - gfx.measurestr(label), by + 8
+  gfx.drawstr(label)
+  local tx0, ty, tw, th = table.unpack(r.track)
+  local frac = g.ms / g.max
+  gfx.set(0.16, 0.18, 0.22, 1)
+  gfx.rect(tx0, ty, tw, th, 1)
+  gfx.set(0.25, 0.62, 0.7, 0.6)
+  gfx.rect(tx0, ty, tw * frac, th, 1)
+  gfx.set(1, 1, 1, 0.95)
+  gfx.rect(tx0 + math.floor((tw - 3) * frac), ty - 2, 3, th + 4, 1)
+  gfx.set(0.35, 0.38, 0.43, 1)
+  gfx.rect(tx0, ty, tw, th, 0)
+  gfx.setfont(1, "Arial", 11)
+  gfx.set(0.6, 0.64, 0.7, 1)
+  gfx.x, gfx.y = tx0, ty + 12; gfx.drawstr("0")
+  gfx.x, gfx.y = tx0 + tw - gfx.measurestr(g.max .. " ms"), ty + 12; gfx.drawstr(g.max .. " ms")
+  gfx.setfont(1, "Arial", 12)
+  gfx.set(0.75, 0.78, 0.84, 1)
+  gfx.x, gfx.y = bx + 16, by + 66
+  local n = W.sh_count(g)
+  gfx.drawstr(n == 0 and "nothing is silenced" or string.format("silences %d of %d partials", n, g.runs.total))
+  local function button(rc, text, rgb)
+    gfx.set(rgb[1] * 0.4, rgb[2] * 0.4, rgb[3] * 0.4, 1)
+    W.rfill(rc[1], rc[2], rc[3], rc[4])
+    gfx.set(rgb[1], rgb[2], rgb[3], 1)
+    W.rline(rc[1], rc[2], rc[3], rc[4])
+    gfx.setfont(1, "Arial", 12)
+    gfx.x, gfx.y = rc[1] + (rc[3] - gfx.measurestr(text)) / 2, rc[2] + 2
+    gfx.drawstr(text)
+  end
+  button(r.cancel, "CANCEL", { 0.9, 0.55, 0.5 })
+  button(r.apply, "APPLY", { 0.45, 0.85, 0.6 })
+  gfx.setfont(1, "Arial", 14)
+end
+
+-- HARMONICS (tjingboem, 15 Nov 2026: "selecting the harmonic series of a partial: this should work in the selection and indeed makes selecting easier. Shortcut H"; answers: the
+-- partial under the pointer, 50 cents): the partial under the pointer is the FUNDAMENTAL. The selection becomes the partials that lie at whole multiples of it (within 50 cents), frame by frame
+-- while the fundamental sounds, so a vibrato is followed. When something was selected, only its stretch of time and its range of frequencies is searched (the fundamental may lie outside
+-- it); without a selection the whole run of the fundamental is searched. It selects what sits on a harmonic series; it does not separate sources.
+function W.select_harmonics()
+  if not data or not show_partials then return end
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  local px, py, pw, ph = plot_rect()
+  local lane = lane_at(py, ph, my)
+  if not lane then set_status("put the pointer on the partial that is the fundamental, then press H"); return end
+  local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+  local lpy, lph = py + lane.off, lane.h
+  local best, bestd, bestch, bestfi = nil, 9, nil, nil
+  for _, ci in ipairs(lane.chans) do
+    as_channel(ci, function()
+      local fi = frame_at(t)
+      for p = 1, data.partials do
+        if data.amp[p][fi] > amp_thresh and data.frq[p][fi] > 0 then
+          local d = math.abs(lpy + fy(data.frq[p][fi], lph) - my)
+          if d < bestd then best, bestd, bestch, bestfi = p, d, ci, fi end
+        end
+      end
+    end)
+  end
+  if not best then set_status("no partial under the pointer: put it on the line of the fundamental"); return end
+  W.commit()
+  local rt0, rt1, rf0, rf1
+  with_channel(bestch, function() if sel_info then rt0, rt1, rf0, rf1 = sel_info.t0, sel_info.t1, sel_info.f0, sel_info.f1 end end)
+  local found, count, fun_hz = {}, 0, 0
+  local ta, tb, fa, fb = math.huge, -math.huge, math.huge, 0
+  local partials = {}
+  with_channel(bestch, function()
+    local amp, frq = data.amp[best], data.frq[best]
+    local f0, f1 = bestfi, bestfi
+    while f0 > 1 and amp[f0 - 1] > 0 and frq[f0 - 1] > 0 do f0 = f0 - 1 end
+    while f1 < data.frames and amp[f1 + 1] > 0 and frq[f1 + 1] > 0 do f1 = f1 + 1 end
+    fun_hz = frq[bestfi]
+    for f = f0, f1 do
+      local tt = data.times[f]
+      if not rt0 or (tt >= rt0 - 1e-9 and tt <= rt1 + 1e-9) then
+        local fun = frq[f]
+        for p = 1, data.partials do
+          local fr = data.frq[p][f]
+          if data.amp[p][f] > amp_thresh and fr > 0 and (not rf0 or (fr >= rf0 * 0.9999 and fr <= rf1 * 1.0001)) then
+            local h = math.floor(fr / fun + 0.5)
+            if h >= 1 and math.abs(1200 * math.log(fr / (h * fun)) / math.log(2)) <= 50 then
+              found[p] = found[p] or {}
+              found[p][f] = true
+              count = count + 1
+              partials[p] = true
+              if tt < ta then ta = tt end
+              if tt > tb then tb = tt end
+              if fr < fa then fa = fr end
+              if fr > fb then fb = fr end
+            end
+          end
+        end
+      end
+    end
+  end)
+  if count == 0 then set_status("no harmonics of " .. string.format("%.0f Hz", fun_hz) .. " in the selection"); return end
+  clear_selection()
+  with_channel(bestch, function()
+    sel = found
+    update_sel_info()
+  end)
+  local np = 0
+  for _ in pairs(partials) do np = np + 1 end
+  local room = 2 ^ (1 / 12 / 6)
+  W.set_region(ta, tb, fa / room, fb * room, false)
+  set_status(string.format("selected the harmonics of %.0f Hz: %d points in %d partials", fun_hz, count, np))
+end
+
 -- MAX PARTIALS opens a slider panel like the other panels (gain, slant, export notes; tjingboem, 12 Nov 2026: "the only thing that is out of tune with
 -- the rest of the design is when you press the MAX PARTIALS button. That popup is not like the rest"): one slider for how many separate partials of the
 -- selection to keep (1 up to how many there are, it starts at all of them: nothing changes), two buttons for which ones (the LOUDEST or the WEAKEST), a
@@ -3969,11 +4235,11 @@ end
 local function handle_input(px, py, pw, ph)
   local mx, my, cap = gfx.mouse_x, gfx.mouse_y, gfx.mouse_cap
   local inside = mx >= px and mx < px + pw and my >= py and my < py + ph
-  if W.gain or W.np or W.sl or W.pk then                                 -- the gain slider, the export-notes panel or the slant slider is open: it takes the mouse and the keys
+  if W.gain or W.np or W.sl or W.pk or W.sh then                         -- the gain slider, the export-notes panel, the slant slider, MAX PARTIALS or the short-partials panel is open: it takes the mouse and the keys
     local ch = gfx.getchar()
     if ch < 0 then stop_audition(); return false end
     gfx.mouse_wheel = 0
-    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) elseif W.pk then W.pk_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
+    if W.gain then W.gain_input(mx, my, cap, ch) elseif W.sl then W.slant_input(mx, my, cap, ch) elseif W.pk then W.pk_input(mx, my, cap, ch) elseif W.sh then W.sh_input(mx, my, cap, ch) else W.notes_input(mx, my, cap, ch) end
     prev_down = (cap & 1) ~= 0
     return true
   end
@@ -4196,6 +4462,9 @@ local function handle_input(px, py, pw, ph)
   elseif ch == 97 or ch == 65 then                                -- A: the selection only when there is one, else the whole sound from the playhead
     if not (any_sel() and W.audition_selection()) then audition() end
   elseif ch == 122 or ch == 90 then W.zoom_selection()           -- Z: zoom to the selection
+  elseif ch == 115 or ch == 83 then edit_on_channels(W.smooth_single, "smooth")      -- S: smooth the selection a little (press again for more)
+  elseif ch == 107 or ch == 75 then W.sh_open()                  -- K: remove the partials that are shorter than ... ms (a panel)
+  elseif ch == 104 or ch == 72 then W.select_harmonics()         -- H: select the harmonic series of the partial under the pointer
   elseif ch == 32 then stop_audition(); W.say_audition("audition stopped")
   elseif ch == 111 or ch == 79 then open_dialog()
   elseif ch == 114 or ch == 82 then if fname then load_file(fname) end
@@ -4307,6 +4576,7 @@ local function loop()
   W.draw_gain()
   W.draw_slant()
   W.draw_pk()
+  W.draw_sh()
   W.draw_cross_line()
   W.draw_notes_panel()
   gfx.update()
