@@ -96,6 +96,7 @@ local old_set = gfx.set
 gfx.set = function(r, g, b, a) last_col = { r, g, b, a }; return old_set(r, g, b, a) end
 local orange_rects, old_rect = 0, gfx.rect
 local red_full, red_faint = 0, 0
+local red_w3 = {}
 local red_circles = 0
 local old_circle = gfx.circle
 gfx.circle = function(...)
@@ -109,6 +110,7 @@ gfx.rect = function(...)
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.9) < 1e-6 and math.abs(c[3] - 0.3) < 1e-6 then play_rects = play_rects + 1 end
   if c[1] and c[1] == 0 and c[2] == 0 and c[3] == 0 and math.abs((c[4] or 1) - 0.45) < 1e-6 then sel_dim = sel_dim + 1 end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.23) < 1e-6 and math.abs(c[3] - 0.19) < 1e-6 then
+    if select(3, ...) == 3 then red_w3[#red_w3 + 1] = math.floor(select(1, ...) + 0.5) end
     if math.abs((c[4] or 1) - 1) < 1e-6 then red_full = red_full + 1 elseif math.abs((c[4] or 1) - 0.3) < 1e-6 then red_faint = red_faint + 1 end
   end
   if c[1] and math.abs(c[1] - 1) < 1e-6 and math.abs(c[2] - 0.62) < 1e-6 and math.abs(c[3] - 0.1) < 1e-6 then orange_rects = orange_rects + 1 end
@@ -208,7 +210,7 @@ do
   for i = 1, 8 do clock_skew = clock_skew + 0.2; strings = {}; frame() end
   assert(orange_lines > before, "the orange blinking partials are drawn in the editor: " .. orange_lines .. " lines")
 end
--- the threads are told, and the red line can be dragged in the editor: the page takes the new place
+-- the threads are told; the red line in the editor is DISPLAY ONLY (the editor is for the partials, the CROSS page makes the crossing): dragging it does nothing
 assert(saw("%d+ thread"), "the status tells the threads: " .. tostring(saw("thread") or saw("rows")))
 do
   local r0 = assert(ats.load(expected))
@@ -218,14 +220,14 @@ do
   line_before = tonumber((saw("^%d+%.%d%d%d s$") or ""):match("^(%d+%.%d%d%d)"))
   script.keys = { 27 }; frame(); strings = {}; frame()
   assert(line_before, "the page tells where the red line is: " .. tostring(saw("red line")))
-  -- the line in the editor is at (line - start) / tmax of the picture (62 .. 1050); drag its handle 120 px to the right
+  -- the line in the editor is at (line - start) / tmax of the picture (62 .. 1050); try to drag it 120 px to the right: nothing moves
   local x_line = 62 + (line_before - 0) / tmax * 988
   drag(math.floor(x_line), 70 + 4, math.floor(x_line) + 120, 70 + 4)
   strings = {}; frame()
-  assert(saw("^the red line: [%d%.]+ s"), "the line moves in the editor: " .. tostring(saw("red line") or saw("selected")))
+  assert(not saw("^the red line: [%d%.]+ s"), "the red line cannot be dragged in the editor")
   click(394 + 10, 6 + 9); strings = {}; frame()
   local line_after = tonumber((saw("^%d+%.%d%d%d s$") or ""):match("^(%d+%.%d%d%d)"))
-  assert(line_after and line_after > line_before + 0.01, "the CROSS page has the new place: " .. tostring(line_before) .. " -> " .. tostring(line_after))
+  assert(line_after and math.abs(line_after - line_before) < 0.001, "and the CROSS page still has its place: " .. tostring(line_before) .. " -> " .. tostring(line_after))
   script.keys = { 27 }; frame(); strings = {}; frame()
 end
 -- loading a sound again on the page does not make the open result forget its red line and its blinking partials (this was lost once: the result was dropped on every load)
@@ -447,6 +449,21 @@ do
     click(394 + 10, 6 + 9); strings = {}; frame()
     script.keys = { 26 }; strings = {}; frame()                                   -- Ctrl+Z: the fourth sound is gone again
     assert(saw("undone"), "Ctrl+Z takes the added sound away")
+  end
+  -- the red lines in the editor show the crossing AS IT WAS MADE: a line moved on the page afterwards does not move there (it moves when GENERATE is pressed again)
+  do
+    script.keys = { 13 }; strings = {}; frame(); strings = {}; frame(); frame()                      -- MAKE: the editor shows the result and its lines
+    red_w3 = {}; strings = {}; frame()
+    local before = table.concat(red_w3, ",")
+    assert(#red_w3 >= 1, "the editor draws the red line(s) of the result: " .. #red_w3)
+    click(394 + 10, 6 + 9)                                                                          -- back to the page
+    red_w3 = {}; strings = {}; frame()
+    local lx = (red_w3[1] or 0) + 1
+    drag(lx, 150, lx + 45, 150)
+    script.keys = { 27 }; strings = {}; frame()                                                     -- Esc: the editor
+    red_w3 = {}; strings = {}; frame()
+    assert(table.concat(red_w3, ",") == before, "the line in the editor stays where the crossing was made: " .. before .. " / " .. table.concat(red_w3, ","))
+    click(394 + 10, 6 + 9); strings = {}; frame()
   end
   script.keys = { 27 }; frame()
 end

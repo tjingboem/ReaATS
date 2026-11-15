@@ -2251,9 +2251,8 @@ function W.draw_cross_transition(r, tr, px, py, pw, ph, lpy, lph)
   end
   local x = px + tx(tr.line, pw)
   if x >= px - 7 and x <= px + pw + 7 then
-    gfx.set(1, 0.23, 0.19, (W.cross_drag == tr) and 1 or 0.95)
-    gfx.rect(x - 1, py, 3, ph, 1)
-    gfx.rect(x - 7, py, 15, 9, 1)                                         -- the handle
+    gfx.set(1, 0.23, 0.19, 0.95)
+    gfx.rect(x - 1, py, 3, ph, 1)                                         -- (display only: the line is moved on the CROSS page)
   end
 end
 function W.draw_cross_line()
@@ -2283,36 +2282,6 @@ function W.draw_cross_line()
   end
   for _, tr in ipairs(r.transitions) do W.draw_cross_transition(r, tr, px, py, pw, ph, lpy, lph) end
 end
--- A red line is dragged here (the fine tuning); the CROSS page takes the new place (its lines are on the timeline: the result's time + where its 0 lies).
-function W.cross_line_input(px, py, pw, ph, mx, my, cap)
-  local r = W.cross_result()
-  if not r then W.cross_drag = false; return false end
-  local down = (cap & 1) ~= 0
-  if W.cross_drag then
-    local tr = W.cross_drag
-    if down then
-      local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
-      if tr.ov0 then t = clamp(t, tr.ov0, tr.ov1) end
-      local w = (tr.grey1 or t) - (tr.grey0 or t)
-      tr.line, tr.grey0, tr.grey1 = t, t - w / 2, t + w / 2
-      if tr.key then W.cross.lines[tr.key] = r.t_start + t end
-      set_status(string.format("the red line: %.3f s   (the CROSS page uses it when you go back; make the result again there)", t))
-    else
-      W.cross_drag = false
-    end
-    return true
-  end
-  if down and not prev_down then
-    for _, tr in ipairs(r.transitions) do
-      if not tr.diag then                                                 -- (a diagonal is moved on the CROSS page)
-        local x = px + tx(tr.line, pw)
-        if math.abs(mx - x) <= 7 and my >= py - 4 and my < py + ph then W.cross_drag = tr; return true end
-      end
-    end
-  end
-  return false
-end
-
 -- The button's own rectangle: bottom left, where the two keyboard-shortcut hint lines used to be (removed as unreadable clutter,
 -- tjingboem 10 Nov 2026). A field of W, like W.pk_ranks/W.pk_apply, rather than its own local: this file is already at Lua's
 -- 200-local-variable limit for its main chunk (see the comment near "local W =" above), so a plain new local here fails to compile.
@@ -4009,10 +3978,6 @@ local function handle_input(px, py, pw, ph)
     return true
   end
 
-  if W.cross_line_input(px, py, pw, ph, mx, my, cap) then                 -- the red line of a CROSS result is being dragged
-    prev_down = (cap & 1) ~= 0
-    return true
-  end
 
   if gfx.mouse_wheel ~= 0 and data then
     local notches = gfx.mouse_wheel / 120
