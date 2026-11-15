@@ -4342,7 +4342,7 @@ W.cross = dofile(script_dir .. "/lib/cross_page.lua").new({
     return false
   end,
   editor_state = function()                                     -- what the editor holds now: the data table, the file it came from, whether it was changed
-    return { data = data, file = fname, current = current_file, modified = modified, rev = data_rev }
+    return { data = data, file = fname, current = current_file, modified = modified, rev = data_rev, sines = show_partials, noise = show_noise }       -- (sines / noise: the two layer checkboxes: what is heard)
   end,
   set_status = set_status,
   back = function() W.showing_cross = false; dirty = true end,

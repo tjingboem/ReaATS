@@ -288,6 +288,37 @@ function Page:make_thumb(s)
   gfx.dest = id
   gfx.set(0.06, 0.07, 0.09, 1)
   gfx.rect(0, 0, THUMB_W, THUMB_H, 1)
+  if d.has_noise and d.noise then                                                    -- the NOISE BANDS, faintly, behind the partials (a noise-only block is not an empty picture)
+    local edges = ats.CRITICAL_BAND_EDGES
+    local colv, nmax = {}, 0
+    for b = 1, ats.NUM_NOISE_BANDS do
+      local nb, cv = d.noise[b], {}
+      colv[b] = cv
+      for f = 1, d.frames do
+        local x = math.floor((d.times[f] - t0) / span * (THUMB_W - 1))
+        local v = nb[f]
+        if v > (cv[x] or 0) then cv[x] = v end
+        if v > nmax then nmax = v end
+      end
+    end
+    if nmax > 0 then
+      for b = 1, ats.NUM_NOISE_BANDS do
+        local lo, hi = math.max(edges[b], FMIN), math.min(edges[b + 1] or 20000, FMAX)
+        if hi > lo then
+          local y0 = math.floor(math.log(lo / FMIN) / lrange * THUMB_H)
+          local y1 = math.max(y0 + 1, math.floor(math.log(hi / FMIN) / lrange * THUMB_H))
+          for x, v in pairs(colv[b]) do
+            local val = math.min(math.max((10 * math.log(v / nmax, 10) + FLOOR_DB) / FLOOR_DB, 0), 1)
+            if val > 0.02 then
+              val = (val ^ 0.7) * 0.45
+              gfx.set(col[1] * val, col[2] * val, col[3] * val, 1)
+              gfx.rect(x, THUMB_H - y1, 1, y1 - y0, 1)
+            end
+          end
+        end
+      end
+    end
+  end
   for k, a in pairs(cells) do
     local v = math.min(math.max((20 * math.log(a / max, 10) + FLOOR_DB) / FLOOR_DB, 0), 1)
     if v > 0.02 then
@@ -377,7 +408,7 @@ function Page:edit_in_editor(lane, block)
   if not s then return end
   self.sel[s.lane] = s
   self.cur = s
-  if self.env.open_in_editor(s.d, s.file or s.path, (not s.edited) and s.path or nil, s.edited) then
+  if self.env.open_in_editor(s.source or s.d, s.file or s.path, (not s.edited) and s.path or nil, s.edited) then
     self.editing = s
     self.env.set_status(string.format("%s is open in the editor: edit it and press CROSS to come back (nothing needs to be saved)", s.name))
   else
@@ -389,8 +420,9 @@ end
 function Page:enter()
   local st = self.env.editor_state()
   for _, s in ipairs(self.blocks) do
-    if st.data == s.d then
+    if st.data == (s.source or s.d) then
       local changed = st.modified or (st.current ~= s.path)
+      if s.layers then s.d = Page.derive(s.source, s.layers.sines, s.layers.noise) end                -- (the layers are made again from the changed full sound)
       local d = s.d
       if s.full or s.t1 > d.times[d.frames] then s.t0, s.t1 = d.times[1], d.times[d.frames] end
       s.t0 = math.max(s.t0, d.times[1])
@@ -416,16 +448,36 @@ function Page:choose(lane)
   if path then self:load(lane, path) end
 end
 
+-- LAYERS (tjingboem, 15 Nov 2026: what is heard in the editor, with the Sine layer / Noise layer checkboxes, goes to the CROSS page as an ATS block): a sound with only
+-- one layer is the same sound with the other layer switched off: without the sines the partials are none (the noise bands stay), without the noise there are no noise bands
+-- (the partials stay). The arrays are shared with the full sound, nothing is copied; the full sound stays in `source` (that is what the editor opens).
+function Page.derive(source, sines, noise)
+  if sines and noise then return source end
+  local d = {}
+  for k, v in pairs(source) do d[k] = v end
+  if not sines then d.partials, d.amp, d.frq, d.pha, d.has_phase = 0, {}, {}, nil, false end
+  if not noise then d.has_noise, d.noise, d.noise_cache = false, nil, nil end
+  return d
+end
+
 -- The sound that the editor holds is added to a lane: the table itself, in memory (edits made in the editor are in it; nothing has to be saved). It is always added (also when it is
 -- a block of the page already), as often as you press it: the blocks share the data, so a change made in the editor shows in all of them.
 function Page:use_open_sound(lane)
   local st = self.env.editor_state()
   if not st.data then self:say("no sound is open in the editor"); return end
   local d = st.data
-  local s = { d = d, path = st.current or st.file, file = st.file, name = basename(st.file or "sound.ats"), bytes = 0, origin = 0,
+  local sines_on, noise_on = st.sines ~= false, st.noise ~= false
+  if not sines_on and not noise_on then self:say("both layers are off in the editor"); return end
+  if not sines_on and not d.has_noise then self:say("this sound has no noise: nothing to add"); return end
+  local sines, noise = sines_on, noise_on and d.has_noise
+  local layers = nil
+  if (not sines_on) or (d.has_noise and not noise_on) then layers = { sines = sines_on, noise = noise } end     -- (only a restricted block has layers)
+  local s = { d = layers and Page.derive(d, sines, noise) or d, source = layers and d or nil, layers = layers,
+              path = st.current or st.file, file = st.file, name = basename(st.file or "sound.ats"), bytes = 0, origin = 0,
               t0 = d.times[1], t1 = d.times[d.frames], full = true, edited = st.modified or (st.current ~= st.file) }
   if not self:add_block(lane, s) then return end
-  self:say(string.format("the sound of the editor is added: %s%s", s.name, s.edited and " (with the changes made in the editor)" or ""))
+  local what = s.layers and (s.layers.sines and " (sines only)" or " (noise only)") or ""
+  self:say(string.format("the sound of the editor is added: %s%s%s", s.name, what, s.edited and " (with the changes made in the editor)" or ""))
 end
 
 -- Frequency <-> height in a lane (the pictures: log scale, FMIN .. FMAX, 4 px inside the lane).
@@ -694,6 +746,13 @@ function Page:settle(b)
   if best and math.abs(best - pos) > 1e-9 then b.origin = best - b.t0 end
 end
 
+-- The Free transition whose overlap contains this time, or nil (Ctrl+click only adds a point to a line that is Free already; anywhere else it is a normal click).
+function Page:free_tr_at(t)
+  for _, tr in ipairs(self:transitions()) do
+    if t >= tr.lo and t <= tr.hi and self:curve_of(tr) == "free" and self.diags[tr.key] and #self.diags[tr.key] >= 2 then return tr end
+  end
+end
+
 -- A transition becomes Free: two red points appear, one at the lowest and one at the highest frequency of the pictures, on its present red line (when it has points
 -- already, from an earlier time, they come back).
 function Page:start_free(tr)
@@ -797,14 +856,11 @@ function Page:mouse(mx, my, cap, wheel)
       self.active = hit.tr.key
       self.prev_down = down
       return
-    elseif ctrl and not shift and in_lane then
-      -- Ctrl+click in a lane: a NEW POINT in the free line of the transition at that moment (a transition that is not Free becomes Free first)
+    elseif ctrl and not shift and in_lane and self:free_tr_at(self:tt(g, mx)) then
+      -- Ctrl+click in a lane, inside the overlap of a transition that is Free: a NEW POINT in its free line (not on any other transition: there it is a plain click,
+      -- so a block can be selected with Ctrl held, for Ctrl+C)
       local t = self:tt(g, mx)
-      local best, bd
-      for _, tr in ipairs(self:transitions()) do
-        local dist = (t < tr.lo) and (tr.lo - t) or (t > tr.hi and t - tr.hi or 0)
-        if not bd or dist < bd then best, bd = tr, dist end
-      end
+      local best = self:free_tr_at(t)
       if best then
         local lane = (my < g.laneA.y + g.laneA.h) and g.laneA or g.laneB
         self:push_undo(pre)
@@ -971,6 +1027,30 @@ function Page:mouse(mx, my, cap, wheel)
   self.prev_down = down
 end
 
+-- COPY and PASTE of a block (Ctrl+C, Ctrl+V; tjingboem, 15 Nov 2026): the copy has the same sound (shared data), the same cut, level envelope and layers, and is pasted at the end of
+-- the lane of the block it was copied from.
+function Page:copy_selected()
+  local b = self.cur
+  if not b then self:say("select a block first"); return end
+  local c = {}
+  for k, v in pairs(b) do c[k] = v end
+  if b.env then c.env = {}; for i, q in ipairs(b.env) do c.env[i] = { t = q.t, db = q.db } end end
+  if b.layers then c.layers = { sines = b.layers.sines, noise = b.layers.noise } end
+  c.thumb, c.id, c.tid = nil, nil, nil
+  self.clip = c
+  self:say(b.name .. " copied")
+end
+function Page:paste_block()
+  local c = self.clip
+  if not c then self:say("nothing copied"); return end
+  local b = {}
+  for k, v in pairs(c) do b[k] = v end
+  if c.env then b.env = {}; for i, q in ipairs(c.env) do b.env[i] = { t = q.t, db = q.db } end end
+  if c.layers then b.layers = { sines = c.layers.sines, noise = c.layers.noise } end
+  if not self:add_block(c.lane, b) then return end
+  self:say(b.name .. " pasted")
+end
+
 function Page:key(ch)
   if ch == 27 and self.dd_open then self.dd_open = false; return true end                                  -- Esc closes the curve menu
   if ch == 9 then                                                                 -- Tab: the next transition becomes the active one
@@ -978,6 +1058,8 @@ function Page:key(ch)
     for i, tr in ipairs(trs) do if cur and tr.key == cur.key then self.active = trs[i % #trs + 1].key; return true end end
     return #trs > 0
   end
+  if ch == 3 then self:copy_selected(); return true end                           -- Ctrl+C
+  if ch == 22 then self:paste_block(); return true end                            -- Ctrl+V
   if ch == 26 then self:undo_step(); return true end                              -- Ctrl+Z
   if ch == 25 then self:redo_step(); return true end                              -- Ctrl+Y
   if ch == 13 then self:make(); return true end
@@ -1176,7 +1258,7 @@ function Page:draw_tip(g, W, H)
       local col = LANE_COL[s.lane]
       local d = s.d
       local lines = {
-        "sound " .. s.lane:upper() .. ": " .. s.name .. (s.edited and "  (changed in the editor)" or ""),
+        "sound " .. s.lane:upper() .. ": " .. s.name .. (s.layers and (s.layers.sines and "  (sines only)" or "  (noise only)") or "") .. (s.edited and "  (changed in the editor)" or ""),
         string.format("used %.2f - %.2f s of %.2f s", s.t0, s.t1, d.dur),
         string.format("%d partials, %d frames, hop %.1f ms, %d Hz", d.partials, d.frames, d.frame_size / d.sr * 1000, d.sr),
         s.path and s.path ~= "" and s.path or "(not saved as a file)",

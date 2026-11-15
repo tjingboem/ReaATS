@@ -397,10 +397,18 @@ do
     play_rects, lit_rects = 0, 0; strings = {}; frame()
     assert(play_rects == 0 and lit_rects == 0, "and the playhead and the lit block are gone when the sound is stopped")
   end
-  -- Ctrl+click in a lane: the transition becomes FREE (two red points at the lowest and highest frequency, plus the new one); the Curve menu says Free; the menu takes it back
+  -- Ctrl+click in a lane does NOT turn a Smooth transition into Free (it is a plain click there: a block can be selected with Ctrl held, for Ctrl+C); Free comes from the menu
   local function ctrl_click(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
-  ctrl_click(blit_x[21] + 40, 150); ctrl_click(blit_x[21] + 140, 200); strings = {}; frame()
-  assert(saw("^Free$"), "a Ctrl+click makes the transition Free: " .. tostring(saw("^Smooth$") or saw("^Linear$")))
+  ctrl_click(blit_x[21] + 40, 300); ctrl_click(blit_x[21] + 140, 330); strings = {}; frame()
+  assert(not saw("^Free$"), "a Ctrl+click on a block does not make the transition Free: " .. tostring(saw("^Free$") or saw("^Smooth$")))
+  click(740 + 10, 434 + 10); click(740 + 10, 434 + 22 * 5 + 10); strings = {}; frame()            -- Free from the menu: two red points, then Ctrl+click adds one
+  assert(saw("^Free$"), "Free from the menu")
+  red_pos = {}; strings = {}; frame()
+  local n0 = #red_pos
+  local qa = { red_pos[1][1], red_pos[1][2] }
+  ctrl_click(math.floor(qa[1]) + 20, math.floor(qa[2]) + 40)                                       -- (inside the overlap, in a Free transition: a point is added)
+  red_pos = {}; strings = {}; frame()
+  assert(#red_pos > n0, "Ctrl+click in the overlap of a Free transition adds a point: " .. n0 .. " -> " .. #red_pos)
   -- MAKE with the free line: the result file opens in the editor and its free line is drawn over the picture (no crash, the line is not draggable)
   script.keys = { 13 }; strings = {}; frame(); strings = {}; frame(); frame(); frame()
   assert(not saw("CROSS: sound A flows into sound B"), "the page is left after MAKE")
@@ -517,6 +525,38 @@ do
     script.keys = { 27 }; strings = {}; frame()                                                     -- Esc: the editor
     red_w3 = {}; strings = {}; frame()
     assert(table.concat(red_w3, ",") == before, "the line in the editor stays where the crossing was made: " .. before .. " / " .. table.concat(red_w3, ","))
+    click(394 + 10, 6 + 9); strings = {}; frame()
+  end
+  -- Ctrl+click on a block only selects it (also where no Free line is); Ctrl+C copies it, Ctrl+V pastes the copy at the end of its lane, Ctrl+Z takes it away
+  do
+    local function ctrl_click2(x, y) gfx.mouse_cap = 1 | 4; gfx.mouse_x, gfx.mouse_y = x, y; frame(); gfx.mouse_cap = 0; frame() end
+    ctrl_click2(math.floor(blit_x[20] + blit_w[20] * 0.3), 150)
+    strings = {}; frame()
+    assert(not saw("^Free$"), "a Ctrl+click on a block does not make Free: " .. tostring(saw("^Free$")))
+    script.keys = { 3 }; strings = {}; frame()
+    assert(saw("copied"), "Ctrl+C copies the selected block: " .. tostring(saw("copied") or saw("select")))
+    blit_seq = {}; strings = {}; frame(); local n_before = #blit_seq
+    script.keys = { 22 }; strings = {}; frame()
+    assert(saw("pasted"), "Ctrl+V pastes it: " .. tostring(saw("pasted") or saw("nothing")))
+    blit_seq = {}; strings = {}; frame()
+    assert(#blit_seq == n_before + 1, "a block more is drawn: " .. n_before .. " -> " .. #blit_seq)
+    script.keys = { 26 }; strings = {}; frame()
+    assert(saw("undone"), "Ctrl+Z takes the pasted block away")
+  end
+  -- the layer checkboxes of the editor go with the sound: with both off nothing is added (this test sound has no noise bands, so "noise only" is refused too)
+  do
+    script.keys = { 27 }; frame()
+    script.keys = { 112 }; frame()                                                                  -- P: the sine layer off
+    click(394 + 10, 6 + 9); strings = {}; frame()
+    click(356 + 10, 40 + 44 + 10); strings = {}; frame()
+    assert(saw("this sound has no noise: nothing to add"), "noise only for a sound without noise bands is refused: " .. tostring(saw("noise") or saw("sound")))
+    script.keys = { 27 }; frame()
+    script.keys = { 110 }; frame()                                                                  -- N: the noise layer off as well
+    click(394 + 10, 6 + 9); strings = {}; frame()
+    click(356 + 10, 40 + 44 + 10); strings = {}; frame()
+    assert(saw("both layers are off in the editor"), "both layers off: nothing is added: " .. tostring(saw("layer") or saw("sound")))
+    script.keys = { 27 }; frame()
+    script.keys = { 112 }; frame(); script.keys = { 110 }; frame()                                  -- (both layers on again)
     click(394 + 10, 6 + 9); strings = {}; frame()
   end
   script.keys = { 27 }; frame()

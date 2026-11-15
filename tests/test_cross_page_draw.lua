@@ -38,5 +38,47 @@ do
   pg.tol_time = 0
   check("with a hard line it switches at the line", pg:play_intensity(a, line - 0.05) > 0.9 and pg:play_intensity(b, line - 0.05) == 0 and pg:play_intensity(a, line + 0.05) == 0, pg:play_intensity(a, line + 0.05))
 end
+-- LAYERS: what is heard in the editor goes to the page as an ATS block (noise only, sines only)
+do
+  local ats = dofile("lib/ats_file.lua")
+  local cross = dofile("lib/ats_cross.lua")
+  local full = assert(ats.load("examples/sax.ats"))
+  check("the sax example has noise bands", full.has_noise and full.partials > 0)
+  local function page_with(sines, noise)
+    local st = { data = full, file = "sax.ats", current = "sax.ats", modified = false, sines = sines, noise = noise }
+    return dofile("lib/cross_page.lua").new({ layout = layout, editor_state = function() return st end, play_pos = function() return nil end })
+  end
+  local pg = page_with(false, true)
+  pg:use_open_sound("a")
+  local b = pg.blocks[1]
+  check("noise only: the block has the noise bands and no partials", b and b.layers and b.layers.sines == false and b.d.partials == 0 and b.d.has_noise and b.source == full, b and tostring(b.d.partials))
+  check("and the full sound is not changed", full.partials > 0 and full.amp[1] ~= nil)
+  local pg2 = page_with(true, false)
+  pg2:use_open_sound("a")
+  local b2 = pg2.blocks[1]
+  check("sines only: the block has the partials and no noise", b2 and b2.layers and b2.d.partials == full.partials and not b2.d.has_noise and b2.d.noise == nil)
+  local pg3 = page_with(true, true)
+  pg3:use_open_sound("a")
+  check("both layers: the block is the sound itself (shared)", pg3.blocks[1].d == full and pg3.blocks[1].layers == nil)
+  local pg4 = page_with(false, false)
+  pg4:use_open_sound("a")
+  check("both layers off: nothing is added", #pg4.blocks == 0, pg4.message)
+  -- crossing a noise-only block with a sines-only block: before the second starts only noise sounds, no partials
+  local pg5 = page_with(false, true)
+  pg5:use_open_sound("a")
+  local st2 = { data = full, file = "sax.ats", current = "sax.ats", modified = false, sines = true, noise = false }
+  pg5.env.editor_state = function() return st2 end
+  pg5:use_open_sound("b")
+  local d, info = cross.build_timeline(pg5:spec())
+  check("the crossing of the two layers is made", d ~= nil, info)
+  if d then
+    local f = 3
+    local sines_here = 0
+    for p = 1, d.partials do if d.amp[p][f] > 0 then sines_here = sines_here + 1 end end
+    local noise_here = 0
+    if d.has_noise then for bnd = 1, 25 do noise_here = noise_here + d.noise[bnd][f] end end
+    check("at the start only the noise of the first block sounds (no partials)", sines_here == 0 and noise_here > 0, sines_here .. " " .. noise_here)
+  end
+end
 print(ok and "CROSS page draw OK: the real layout, labels beside the sliders, the message fits its element" or "FAILED")
 os.exit(ok and 0 or 1)
