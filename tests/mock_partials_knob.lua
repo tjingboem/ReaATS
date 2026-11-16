@@ -114,7 +114,7 @@ gfx.mouse_x, gfx.mouse_y = px + pw + 50, py + ph + 50; frame()
 gfx.mouse_cap = 0; frame(); frame()
 assert(saw("^selected: %d+ points in 4 partials"), "all 4 partials selected: " .. table.concat(strings, " / ", 1, math.min(#strings, 20)))
 strings = {}; frame()
-assert(saw("MAX PARTIALS"), "the button is drawn: " .. tostring(saw("MAX")))
+assert(saw("^PARTIALS$"), "the button is drawn: " .. tostring(saw("PARTIALS")))
 
 -- the button opens a slider panel (no text box any more); it starts at all of them, nothing is silenced
 click_button(); strings = {}; frame()

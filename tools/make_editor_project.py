@@ -11,7 +11,7 @@ would hide the new elements (and a later export would drop them).
 import json
 import sys
 
-STORAGE_VERSION = 3
+STORAGE_VERSION = 4
 
 
 def q(s):

@@ -24,6 +24,7 @@ return {
     plot_s           = { x = 62, y = 100, w = 988, h = 486, ax = "l", ay = "t", label = "" },
     btn_maxpart_s    = { x = 284, y = 6, w = 104, h = 18, ax = "l", ay = "t", label = "" },
     btn_cross_s      = { x = 394, y = 6, w = 48, h = 18, ax = "l", ay = "t", label = "" },
+    btn_scala_s      = { x = 700, y = 34, w = 62, h = 20, ax = "l", ay = "t", label = "" },
     btn_space_s      = { x = 444, y = 6, w = 96, h = 18, ax = "l", ay = "t", label = "" },
     space_slider_s   = { x = 548, y = 10, w = 96, h = 10, ax = "l", ay = "t", label = "" },
     space_pct_s      = { x = 650, y = 8, w = 70, h = 14, ax = "l", ay = "t", label = "" },

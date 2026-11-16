@@ -449,6 +449,7 @@ local function load_file(path)
   if stop_audition then stop_audition() end
   last_audition = nil
   chs, data = {}, nil
+  W.sc = nil
   sel, sel_info, undo_stack, redo_stack, edited_cells = {}, nil, {}, {}, {}
   box, mover = nil, nil
   collectgarbage("collect")
@@ -2677,7 +2678,7 @@ function W.draw_max_partials_button()
   gfx.set(enabled and 0.45 or 0.3, enabled and 0.92 or 0.34, enabled and 1 or 0.37, 1)
   W.rline(x, y, w, h)
   gfx.setfont(1, "Arial", 13)
-  local label = W.btn_label("btn_maxpart_s", "MAX PARTIALS")
+  local label = W.btn_label("btn_maxpart_s", "PARTIALS")
   gfx.set(enabled and 1 or 0.42, enabled and 1 or 0.44, enabled and 1 or 0.46, 1)
   gfx.x = x + (w - gfx.measurestr(label)) / 2
   gfx.y = y + 2
@@ -4324,7 +4325,385 @@ local function draw_header(px, py, pw, ph, plain)
   gfx.setfont(1, "Arial", 12)
   W.draw_max_partials_button()
   W.draw_cross_button()
+  W.draw_scala_button()
   W.draw_space()
+end
+
+-- ------------------------------------------------------------------ SCALA MODE
+-- Autotune of partials to a Scala scale (tjingboem, 16 Nov 2026; the design is in CLAUDE.md). The button SCALA (next to PARTIALS) starts it: a .scl file is chosen, then
+-- ONE short piece of a partial is selected as the ROOT (its average frequency and its place in time), and the scale is drawn as faint lines over the picture from the root onwards,
+-- all periods up and down. Every further selection becomes a PORTION with its own red envelope under it: the snap INTENSITY over time (100 % = every point goes to its nearest line,
+-- less = a part of the way). A handle on the right end of the grid moves the whole grid up and down (the offset is written in cents). Enter applies (one undo step), Esc or the button leaves.
+-- The maths (parser, nearest line, the way towards it) is in lib/scala.lua. Fields of W, not locals: this file is at Lua's limit of local variables.
+W.scala = dofile(script_dir .. "/lib/scala.lua")
+function W.sc_rect() return W.lay("btn_scala_s") end
+function W.draw_scala_button()
+  local x, y, w, h = W.sc_rect()
+  local on = W.sc ~= nil
+  gfx.set(on and 0.42 or 0.26, on and 0.30 or 0.20, on and 0.58 or 0.36, 1)
+  W.rfill(x, y, w, h)
+  gfx.set(0.78, 0.64, 0.96, 1)
+  W.rline(x, y, w, h)
+  local label = W.btn_label("btn_scala_s", "SCALA")
+  W.fit(label, w, 13)
+  gfx.set(0.97, 0.94, 1, 1)
+  gfx.x = x + (w - gfx.measurestr(label)) / 2
+  gfx.y = y + 2
+  gfx.drawstr(label)
+end
+
+-- The button: starts the mode (a Scala file is chosen first) or leaves it.
+function W.sc_toggle()
+  if W.sc then W.sc_leave("Scala mode off"); return end
+  if not data then set_status("open a file first"); return end
+  local start = reaper.GetExtState(EXT_SECTION, "scala_dir")
+  local ok, path = reaper.GetUserFileNameForRead(start, "Open a Scala file", "scl")
+  if not ok or not path or path == "" then return end
+  local sc, why = W.scala.load(path)
+  if not sc then set_status("Scala file: " .. tostring(why)); return end
+  reaper.SetExtState(EXT_SECTION, "scala_dir", path:match("^(.*)[/\\]") or "", true)
+  W.commit()
+  clear_selection()
+  W.sc = { scl = sc, phase = "root", offset = 0, portions = {}, cur = nil, eat_l = false, eat_r = false }
+  dirty = true
+  set_status("select the root")
+end
+function W.sc_leave(msg)
+  W.sc = nil
+  dirty = true
+  if msg then set_status(msg) end
+end
+
+-- Called after every selection made with the mouse while the mode is on: the first one (a piece of ONE partial) is the root, later ones are portions.
+function W.sc_selected(add)
+  local s = W.sc
+  if not s or not data or not sel_info then return end
+  if s.phase == "root" then
+    local parts, n, sum_log, sum_t = 0, 0, 0, 0
+    for p, frames in pairs(sel) do
+      parts = parts + 1
+      for f in pairs(frames) do
+        local fr = data.frq[p][f]
+        if data.amp[p][f] > 0 and fr > 0 then n, sum_log, sum_t = n + 1, sum_log + math.log(fr), sum_t + data.times[f] end
+      end
+    end
+    if n == 0 then return end
+    if parts > 1 then set_status("one partial only"); clear_selection(); return end
+    s.root = { hz = math.exp(sum_log / n), t = sum_t / n }
+    s.phase = "snap"
+    clear_selection()
+    set_status("root " .. fmt_freq(s.root.hz))
+    return
+  end
+  local cells, n = {}, 0
+  for _, i in ipairs(on_channels()) do
+    local sl = W.sel_of(i)
+    if sl and next(sl) then
+      local cp = {}
+      for p, frames in pairs(sl) do
+        local row = {}
+        for f in pairs(frames) do row[f] = true; n = n + 1 end
+        cp[p] = row
+      end
+      cells[i] = cp
+    end
+  end
+  if n == 0 then return end
+  local si = sel_info
+  local t0, t1 = si.t0, math.max(si.t1, si.t0 + 0.001)
+  local po = add and s.cur and s.portions[s.cur] or nil
+  if po then                                                        -- Shift: the selection grew, the portion grows with it (its ends move, the inner points stay)
+    po.cells, po.t0, po.t1, po.f0, po.f1 = cells, t0, t1, si.f0, si.f1
+    local keep = { { t = t0, v = po.env[1].v } }
+    for k = 2, #po.env - 1 do if po.env[k].t > t0 and po.env[k].t < t1 then keep[#keep + 1] = po.env[k] end end
+    keep[#keep + 1] = { t = t1, v = po.env[#po.env].v }
+    po.env = keep
+  else
+    s.portions[#s.portions + 1] = { cells = cells, t0 = t0, t1 = t1, f0 = si.f0, f1 = si.f1, env = { { t = t0, v = 1 }, { t = t1, v = 1 } } }
+    s.cur = #s.portions
+  end
+  dirty = true
+end
+
+-- Delete in the mode takes the current portion away (not its points).
+function W.sc_remove()
+  local s = W.sc
+  if not s or not s.cur then return end
+  table.remove(s.portions, s.cur)
+  s.cur = (#s.portions > 0) and math.min(s.cur, #s.portions) or nil
+  set_status("portion removed")
+  dirty = true
+end
+
+-- Where a portion's red envelope lives: a strip of 32 px under its lowest point (kept inside the first lane).
+function W.sc_geo(po, px, py, pw, ph)
+  local lane = lane_layout(ph)[1]
+  local ly, lh = py + lane.off, lane.h
+  local ybot = math.min(ly + fy(po.f0, lh) + 6, ly + lh - 3)
+  return { x0 = px + tx(po.t0, pw), x1 = px + tx(po.t1, pw), top = ybot - 32, bot = ybot, h = 32, ly = ly, lh = lh }
+end
+function W.sc_env_xy(po, k, g, px, pw)
+  local pt = po.env[k]
+  return px + tx(pt.t, pw), g.top + (1 - pt.v) * g.h
+end
+-- The handle of the grid: at the right end, at the height of the root's line (kept inside the lane).
+function W.sc_handle(px, py, pw, ph)
+  local s = W.sc
+  if not s or not s.root then return nil end
+  local lane = lane_layout(ph)[1]
+  local ly, lh = py + lane.off, lane.h
+  local y = ly + fy(s.root.hz * 2 ^ (s.offset / 1200), lh)
+  return px + pw - 20, clamp(y, ly + 8, ly + lh - 8), 16, 10
+end
+
+-- The mouse while the mode is on. Returns the button bits (cap) that the rest of the editor may see: what the mode takes is taken away.
+function W.sc_mouse(px, py, pw, ph, mx, my, cap)
+  local s = W.sc
+  local left, right = (cap & 1) ~= 0, (cap & 2) ~= 0
+  local press_l, press_r = left and not s.was_l, right and not s.was_r
+  s.was_l, s.was_r = left, right
+  local lane = lane_layout(ph)[1]
+  local lh = lane.h
+  if s.drag then
+    local d = s.drag
+    if left then
+      local fine = ((cap & 8) ~= 0) and 0.2 or 1
+      d.acc = d.acc + (my - d.ly) * fine
+      d.ly = my
+      if d.kind == "grid" then
+        local cpp = 1200 * math.log(view.f1 / view.f0, 2) / lh                      -- cents per pixel
+        s.offset = clamp(d.off0 - d.acc * cpp, -6000, 6000)
+      else
+        local po = s.portions[d.i]
+        local g = W.sc_geo(po, px, py, pw, ph)
+        local k = d.k
+        local v = clamp(1 - (my - g.top) / g.h, 0, 1)
+        if v > 0.97 then v = 1 elseif v < 0.03 then v = 0 end
+        po.env[k].v = math.floor(v * 100 + 0.5) / 100
+        if k > 1 and k < #po.env then
+          local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+          po.env[k].t = clamp(t, po.env[k - 1].t + 0.001, po.env[k + 1].t - 0.001)
+        end
+      end
+      dirty = true
+      return cap & ~3
+    end
+    s.drag = nil
+    return cap
+  end
+  if s.eat_l then if left then cap = cap & ~1 else s.eat_l = false end end
+  if s.eat_r then if right then cap = cap & ~2 else s.eat_r = false end end
+  if s.phase ~= "snap" or not (press_l or press_r) then return cap end
+  local hx, hy, hw, hh = W.sc_handle(px, py, pw, ph)
+  local function on_handle() return hx and mx >= hx - 3 and mx < hx + hw + 3 and my >= hy - hh / 2 - 4 and my < hy + hh / 2 + 4 end
+  if press_l and on_handle() then
+    s.drag = { kind = "grid", off0 = s.offset, acc = 0, ly = my }
+    s.eat_l = true
+    return cap & ~1
+  end
+  if press_r and on_handle() then
+    s.offset = 0; s.eat_r = true; dirty = true
+    set_status("grid offset 0")
+    return cap & ~2
+  end
+  -- an envelope point (the current portion first), or the strip of a portion
+  local order = {}
+  if s.cur then order[1] = s.cur end
+  for i = 1, #s.portions do if i ~= s.cur then order[#order + 1] = i end end
+  for _, i in ipairs(order) do
+    local po = s.portions[i]
+    local g = W.sc_geo(po, px, py, pw, ph)
+    for k = 1, #po.env do
+      local x, y = W.sc_env_xy(po, k, g, px, pw)
+      if math.abs(mx - x) <= 7 and math.abs(my - y) <= 7 then
+        s.cur = i
+        if press_r then
+          if k > 1 and k < #po.env then table.remove(po.env, k) end         -- (the end points stay)
+          s.eat_r = true; dirty = true
+          return cap & ~2
+        end
+        s.drag = { kind = "pt", i = i, k = k, acc = 0, ly = my }
+        s.eat_l = true; dirty = true
+        return cap & ~1
+      end
+    end
+    if press_l and mx >= math.max(g.x0, px) and mx <= math.min(g.x1, px + pw) and my >= g.top - 3 and my <= g.bot + 3 then
+      s.cur = i
+      local t = view.t0 + (mx - px) / pw * (view.t1 - view.t0)
+      if t > po.t0 and t < po.t1 then
+        local k = 2
+        while k <= #po.env and po.env[k].t < t do k = k + 1 end
+        local v = clamp(1 - (my - g.top) / g.h, 0, 1)
+        table.insert(po.env, k, { t = t, v = math.floor(v * 100 + 0.5) / 100 })
+        s.drag = { kind = "pt", i = i, k = k, acc = 0, ly = my }
+      end
+      s.eat_l = true; dirty = true
+      return cap & ~1
+    end
+  end
+  return cap
+end
+
+-- Enter: every portion snaps its points; the amplitudes stay. Nothing is lost: one undo step. The root and the grid stay for the next round.
+function W.sc_apply()
+  local s = W.sc
+  if not s then return end
+  if s.phase ~= "snap" then set_status("select the root"); return end
+  if #s.portions == 0 then set_status("select partials first"); return end
+  if not W.busy then W.commit() end
+  group_counter = group_counter + 1
+  edit_group = group_counter
+  local total, chans = 0, 0
+  for _, i in ipairs(on_channels()) do
+    local n = with_channel(i, function()
+      local map, ny = {}, data.sr / 2 - 1
+      for _, po in ipairs(s.portions) do
+        local cells = po.cells[i]
+        if cells then
+          for p, frames in pairs(cells) do
+            local amp, frq = data.amp[p], data.frq[p]
+            if amp then
+              for f in pairs(frames) do
+                local a, fr = amp[f], frq[f]
+                if a and a > 0 and fr > 0 then
+                  local nf = clamp(W.scala.snap(s.scl, s.root.hz, s.offset, fr, W.scala.env_at(po.env, data.times[f])), 1, ny)
+                  map[p .. ":" .. f] = { p = p, f = f, oa = a, na = a, of = fr, nf = nf }
+                end
+              end
+            end
+          end
+        end
+      end
+      local changes = {}
+      for _, c in pairs(map) do if math.abs(c.nf - c.of) > 1e-9 then changes[#changes + 1] = c end end
+      if #changes == 0 then return 0 end
+      do_edit("snap to scale", changes)
+      update_sel_info()
+      return #changes
+    end)
+    if n > 0 then total, chans = total + n, chans + 1 end
+  end
+  edit_group = nil
+  W.region = nil
+  if total == 0 then set_status("nothing to change"); return end
+  s.portions, s.cur = {}, nil
+  dirty = true
+  set_status(string.format("snapped %d points", total))
+end
+
+-- The faint lines (every lane), the portions with their red envelopes, the root and the handle.
+function W.draw_scala(px, py, pw, ph)
+  local s = W.sc
+  if not s or not data then return end
+  local sc = s.scl
+  local lanes = lane_layout(ph)
+  if s.root then
+    local x0 = math.max(px, px + tx(s.root.t, pw))
+    local c_lo = 1200 * math.log(view.f0 / s.root.hz, 2) - s.offset
+    local c_hi = 1200 * math.log(view.f1 / s.root.hz, 2) - s.offset
+    local per_lane_lines = (c_hi - c_lo) / sc.period * sc.count
+    for _, lane in ipairs(lanes) do
+      local only_periods = per_lane_lines > lane.h / 3                    -- too many to read: only the period lines (the "octaves")
+      if x0 < px + pw and (not only_periods or (c_hi - c_lo) / sc.period < lane.h / 3) then
+        for _, ln in ipairs(W.scala.lines(sc, c_lo, c_hi)) do
+          if not only_periods or ln.k == 0 then
+            local y = py + lane.off + fy(s.root.hz * 2 ^ ((ln.c + s.offset) / 1200), lane.h)
+            if y >= py + lane.off and y <= py + lane.off + lane.h then
+              gfx.set(0.80, 0.68, 1, ln.k == 0 and 0.50 or 0.24)
+              gfx.line(x0, y, px + pw - 1, y)
+            end
+          end
+        end
+      end
+    end
+  end
+  for i, po in ipairs(s.portions) do
+    local g = W.sc_geo(po, px, py, pw, ph)
+    local cur = (i == s.cur)
+    local x0, x1 = math.max(g.x0, px), math.min(g.x1, px + pw)
+    local fy0, fy1 = g.ly + fy(po.f1, g.lh), g.ly + fy(po.f0, g.lh)
+    if x1 > x0 then
+      gfx.set(1, 0.45, 0.80, cur and 0.7 or 0.35)
+      gfx.rect(x0, math.max(fy0, g.ly), x1 - x0, math.max(math.min(fy1, g.ly + g.lh) - math.max(fy0, g.ly), 1), 0)
+      gfx.set(0, 0, 0, 0.35)
+      gfx.rect(x0, g.top, x1 - x0, g.h, 1)
+      gfx.set(1, 0.18, 0.15, cur and 1 or 0.55)
+      for k = 1, #po.env - 1 do
+        local xa, ya = W.sc_env_xy(po, k, g, px, pw)
+        local xb, yb = W.sc_env_xy(po, k + 1, g, px, pw)
+        if xb >= px and xa <= px + pw then
+          xa, xb = math.max(xa, px), math.min(xb, px + pw)
+          gfx.line(xa, ya, xb, yb); gfx.line(xa, ya + 1, xb, yb + 1)
+        end
+      end
+      if cur then
+        gfx.setfont(1, "Arial", 11)
+        for k = 1, #po.env do
+          local x, y = W.sc_env_xy(po, k, g, px, pw)
+          if x >= px - 4 and x <= px + pw + 4 then
+            gfx.set(1, 0.18, 0.15, 1)
+            gfx.rect(x - 3, y - 3, 7, 7, 1)
+            gfx.set(1, 1, 1, 0.9)
+            gfx.rect(x - 3, y - 3, 7, 7, 0)
+            gfx.set(1, 0.75, 0.7, 1)
+            gfx.x, gfx.y = x + 6, y - 13
+            gfx.drawstr(string.format("%d%%", math.floor(po.env[k].v * 100 + 0.5)))
+          end
+        end
+        gfx.setfont(1, "Arial", 14)
+      end
+    end
+  end
+  if s.root then
+    local x, y = px + tx(s.root.t, pw), py + lanes[1].off + fy(s.root.hz, lanes[1].h)
+    if x >= px and x <= px + pw then
+      gfx.set(1, 0.85, 0.3, 1)
+      gfx.circle(x, y, 6, 0, 1)
+      gfx.circle(x, y, 7, 0, 1)
+      gfx.line(x, y - 11, x, y + 11)
+    end
+    local hx, hy, hw, hh = W.sc_handle(px, py, pw, ph)
+    gfx.set(0.55, 0.40, 0.80, 0.95)
+    W.rfill(hx, hy - hh / 2, hw, hh)
+    gfx.set(1, 1, 1, 0.9)
+    W.rline(hx, hy - hh / 2, hw, hh)
+    gfx.setfont(1, "Arial", 12)
+    local label = string.format("%+d cents", math.floor(s.offset + (s.offset >= 0 and 0.5 or -0.5)))
+    gfx.set(0.92, 0.85, 1, 1)
+    gfx.x, gfx.y = hx - gfx.measurestr(label) - 6, hy - 7
+    gfx.drawstr(label)
+    gfx.setfont(1, "Arial", 14)
+  end
+end
+
+-- What the mode is waiting for (top left of the picture), and the information box of the root: only the root tells about the Scala file.
+function W.draw_scala_info(px, py, pw, ph)
+  local s = W.sc
+  if not s or not data then return end
+  gfx.setfont(1, "Arial", 12)
+  gfx.set(0.85, 0.75, 1, 1)
+  gfx.x, gfx.y = px + 8, py + 6
+  gfx.drawstr(s.phase == "root" and "SCALA: pick root" or "SCALA: select partials")
+  if s.root then
+    local lane = lane_layout(ph)[1]
+    local x, y = px + tx(s.root.t, pw), py + lane.off + fy(s.root.hz, lane.h)
+    if math.abs(gfx.mouse_x - x) <= 9 and math.abs(gfx.mouse_y - y) <= 9 then
+      local sc = s.scl
+      local lines = { sc.name, sc.description ~= "" and sc.description or "(no description)",
+                      string.format("%d notes, period %s", sc.count, W.scala.period_text(sc)),
+                      string.format("root %s (%s)", fmt_freq(s.root.hz), ats.note_name(s.root.hz)) }
+      local w = 0
+      for _, l in ipairs(lines) do w = math.max(w, gfx.measurestr(l)) end
+      local bx, by = clamp(x + 14, 4, math.max(gfx.w - w - 20, 4)), clamp(y + 14, 4, math.max(gfx.h - 80, 4))
+      gfx.set(0.10, 0.11, 0.14, 0.97)
+      gfx.rect(bx, by, w + 16, #lines * 16 + 10, 1)
+      gfx.set(0.78, 0.64, 0.96, 1)
+      gfx.rect(bx, by, w + 16, #lines * 16 + 10, 0)
+      gfx.set(0.92, 0.92, 0.96, 1)
+      for k, l in ipairs(lines) do gfx.x, gfx.y = bx + 8, by + 5 + (k - 1) * 16; gfx.drawstr(l) end
+    end
+  end
+  gfx.setfont(1, "Arial", 14)
 end
 
 -- --------------------------------------------------------------- interaction
@@ -4360,6 +4739,8 @@ local function handle_input(px, py, pw, ph)
     return true
   end
 
+
+  if W.sc then cap = W.sc_mouse(px, py, pw, ph, mx, my, cap) end        -- (Scala mode: its handle and envelopes take the mouse first)
 
   if gfx.mouse_wheel ~= 0 and data then
     local notches = gfx.mouse_wheel / 120
@@ -4445,6 +4826,8 @@ local function handle_input(px, py, pw, ph)
         return any_sel() and mx >= mx2 and mx < mx2 + mw2 and my >= my2 and my < my2 + mh2
       end)() then
       W.pk_apply()
+    elseif data and (function() local sx3, sy3, sw3, sh3 = W.sc_rect(); return mx >= sx3 and mx < sx3 + sw3 and my >= sy3 and my < sy3 + sh3 end)() then
+      W.sc_toggle()
     elseif data and (function() local mx3, my3, mw3, mh3 = W.cross_rect(); return mx >= mx3 and mx < mx3 + mw3 and my >= my3 and my < my3 + mh3 end)() then
       W.cross_open()
     elseif data and W.space_click(mx, my, cap) then
@@ -4527,6 +4910,7 @@ local function handle_input(px, py, pw, ph)
         plf[i] = LOG(view.f0 * (view.f1 / view.f0) ^ ((py + l.off + l.h - q[2]) / l.h))
       end
       select_poly(pt, plf, l.add)
+      if W.sc then W.sc_selected(l.add) end
     end
   elseif (not down) and prev_down and box then
     local b = box
@@ -4534,6 +4918,7 @@ local function handle_input(px, py, pw, ph)
     if math.abs(b.x1 - b.x0) < 4 and math.abs(b.y1 - b.y0) < 4 then
       if b.whole then
         W.select_partial_at(b.x0, b.y0, b.add)               -- Ctrl+click: this whole partial; Shift+click: add it
+        if W.sc then W.sc_selected(b.add) end
       elseif not b.add then
         clear_selection()                                   -- a plain click on empty space clears the selection ...
         set_playhead(view.t0 + (b.x0 - px) / pw * (view.t1 - view.t0))   -- ... and puts the playhead there
@@ -4542,6 +4927,7 @@ local function handle_input(px, py, pw, ph)
       local function t_of(x) return view.t0 + (x - px) / pw * (view.t1 - view.t0) end
       local function f_of(y) return view.f0 * (view.f1 / view.f0) ^ ((py + b.off + b.h - y) / b.h) end
       select_box(t_of(b.x0), t_of(b.x1), f_of(b.y0), f_of(b.y1), b.add)
+      if W.sc then W.sc_selected(b.add) end
     end
   end
   if not down then ruler_drag = false; slider_drag = nil; W.drag = nil; W.space_drag = nil end
@@ -4550,20 +4936,22 @@ local function handle_input(px, py, pw, ph)
   local ch = gfx.getchar()
   if ch < 0 then stop_audition(); return false end
   if ch == 27 then
-    if pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
+    if W.sc then W.sc_leave("Scala mode off")
+    elseif pending and pending.kind == "print" then pending.job.cancel(); pending = nil; set_status("print cancelled")
     elseif W.w and not W.m.is_flat(W.w) then W.w = nil; set_status("bend cancelled")
     elseif any_sel() then clear_selection() else stop_audition() end     -- Esc no longer closes the window (tjingboem, 10 Nov 2026)
   end
   local ctrl, shift = (cap & 4) ~= 0, (cap & 8) ~= 0
-  if ch == 6579564 then delete_selection()                      -- Delete
+  if ch == 6579564 then if W.sc and W.sc.cur then W.sc_remove() else delete_selection() end    -- Delete (in Scala mode: the current portion goes)
   elseif ch == 30064 or ch == 1685026670 then                   -- Up / Down arrow
     local step = ctrl and 12 or (shift and 0.1 or 1)
     transpose_selection(ch == 30064 and step or -step)
   elseif ch == 1818584692 or ch == 1919379572 then              -- Left / Right arrow: move in time
     local frames = ctrl and 10 or 1
     move_selection(ch == 1919379572 and frames or -frames, 1)
-  elseif ch == 13 then                                          -- Enter: apply the bend
-    if W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
+  elseif ch == 13 then                                          -- Enter: apply the bend (in Scala mode: snap the portions)
+    if W.sc then W.sc_apply()
+    elseif W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
   elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
   elseif ch == 1 then W.select_all()                              -- Ctrl+A: the whole sound, with the box round it
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
@@ -4686,10 +5074,12 @@ local function loop()
   end
   draw_selection(px, py, pw, ph)
   W.draw(px, py, pw, ph)
+  W.draw_scala(px, py, pw, ph)
   draw_crosshair(px, py, pw, ph)
   draw_axes(px, py, pw, ph)
   draw_playhead(px, py, pw, ph)
   draw_header(px, py, pw, ph)
+  W.draw_scala_info(px, py, pw, ph)
   W.draw_gain()
   W.draw_slant()
   W.draw_pk()
