@@ -4336,11 +4336,23 @@ end
 -- less = a part of the way). A handle on the right end of the grid moves the whole grid up and down (the offset is written in cents). Enter applies (one undo step), Esc or the button leaves.
 -- The maths (parser, nearest line, the way towards it) is in lib/scala.lua. Fields of W, not locals: this file is at Lua's limit of local variables.
 W.scala = dofile(script_dir .. "/lib/scala.lua")
+W.sc_grid, W.sc_hold = 1, 20                -- the brightness of the grid (0 to 1) and the hold in cents (0 to 50): kept while the editor runs
 function W.sc_rect() return W.lay("btn_scala_s") end
+-- Two small sliders above the information line at the top right: GRID (how bright the lines are) and HOLD (how many cents past the middle between two lines a partial must go
+-- before it jumps to the other line; 0 = always the nearest line).
+function W.sc_sliders(px, pw)
+  local hx, hy, hw = W.lay("hdr_partial_s")
+  local x0, y = hx + hw + 10, hy - 17
+  return { grid = { x0 + 32, y + 3, 56, 9 }, hold = { x0 + 130, y + 3, 56, 9 }, grid_label = { x0, y }, hold_label = { x0 + 98, y }, hold_value = { x0 + 192, y } }
+end
 function W.draw_scala_button()
   local x, y, w, h = W.sc_rect()
   local on = W.sc ~= nil
-  gfx.set(on and 0.42 or 0.26, on and 0.30 or 0.20, on and 0.58 or 0.36, 1)
+  if on and math.floor(reaper.time_precise() * 2.5) % 2 == 0 then      -- (it blinks while the mode is on: tjingboem, 16 Nov 2026; the same button leaves)
+    gfx.set(0.62, 0.45, 0.88, 1)
+  else
+    gfx.set(on and 0.34 or 0.26, on and 0.24 or 0.20, on and 0.48 or 0.36, 1)
+  end
   W.rfill(x, y, w, h)
   gfx.set(0.78, 0.64, 0.96, 1)
   W.rline(x, y, w, h)
@@ -4389,7 +4401,9 @@ function W.sc_selected(add)
     end
     if n == 0 then return end
     if parts > 1 then set_status("one partial only"); clear_selection(); return end
-    s.root = { hz = math.exp(sum_log / n), t = sum_t / n }
+    local cells = {}                                                  -- (the points of the root piece: Ctrl+A leaves them out)
+    for p, frames in pairs(sel) do cells[p] = {}; for f in pairs(frames) do cells[p][f] = true end end
+    s.root = { hz = math.exp(sum_log / n), t = sum_t / n, cells = cells, ch = cur }
     s.phase = "snap"
     clear_selection()
     set_status("root " .. fmt_freq(s.root.hz))
@@ -4423,6 +4437,23 @@ function W.sc_selected(add)
     s.cur = #s.portions
   end
   dirty = true
+end
+
+-- Ctrl+A in the mode: everything except the root piece (the harmonics, the subharmonics, all other partials) becomes one portion.
+function W.sc_select_all()
+  local s = W.sc
+  if s.phase ~= "snap" then set_status("pick the root first"); return end
+  W.select_all()
+  with_channel(s.root.ch, function()
+    for p, frames in pairs(s.root.cells) do
+      if sel[p] then
+        for f in pairs(frames) do sel[p][f] = nil end
+        if not next(sel[p]) then sel[p] = nil end
+      end
+    end
+    update_sel_info()
+  end)
+  W.sc_selected(false)
 end
 
 -- Delete in the mode takes the current portion away (not its points).
@@ -4470,7 +4501,12 @@ function W.sc_mouse(px, py, pw, ph, mx, my, cap)
       local fine = ((cap & 8) ~= 0) and 0.2 or 1
       d.acc = d.acc + (my - d.ly) * fine
       d.ly = my
-      if d.kind == "grid" then
+      if d.kind == "grid_slider" then
+        W.sc_grid = clamp((mx - W.sc_sliders(px, pw).grid[1]) / W.sc_sliders(px, pw).grid[3], 0, 1)
+      elseif d.kind == "hold_slider" then
+        local rc = W.sc_sliders(px, pw).hold
+        W.sc_hold = math.floor(clamp((mx - rc[1]) / rc[3], 0, 1) * 50 + 0.5)
+      elseif d.kind == "grid" then
         local cpp = 1200 * math.log(view.f1 / view.f0, 2) / lh                      -- cents per pixel
         s.offset = clamp(d.off0 - d.acc * cpp, -6000, 6000)
       else
@@ -4490,6 +4526,20 @@ function W.sc_mouse(px, py, pw, ph, mx, my, cap)
     end
     s.drag = nil
     return cap
+  end
+  local sl = W.sc_sliders(px, pw)
+  local function slider_value(rc) return clamp((mx - rc[1]) / rc[3], 0, 1) end
+  if press_l then
+    for _, name in ipairs({ "grid", "hold" }) do
+      local rc = sl[name]
+      if mx >= rc[1] - 3 and mx < rc[1] + rc[3] + 3 and my >= rc[2] - 4 and my < rc[2] + rc[4] + 4 then
+        s.drag = { kind = name .. "_slider", acc = 0, ly = my }
+        s.eat_l = true
+        if name == "grid" then W.sc_grid = slider_value(rc) else W.sc_hold = math.floor(slider_value(rc) * 50 + 0.5) end
+        dirty = true
+        return cap & ~1
+      end
+    end
   end
   if s.eat_l then if left then cap = cap & ~1 else s.eat_l = false end end
   if s.eat_r then if right then cap = cap & ~2 else s.eat_r = false end end
@@ -4563,11 +4613,19 @@ function W.sc_apply()
           for p, frames in pairs(cells) do
             local amp, frq = data.amp[p], data.frq[p]
             if amp then
-              for f in pairs(frames) do
+              local fl = {}
+              for f in pairs(frames) do fl[#fl + 1] = f end
+              table.sort(fl)
+              local prev, prev_f = nil, nil                             -- (the line of the frame before: the hold keeps a wobbling partial on it)
+              for _, f in ipairs(fl) do
                 local a, fr = amp[f], frq[f]
                 if a and a > 0 and fr > 0 then
-                  local nf = clamp(W.scala.snap(s.scl, s.root.hz, s.offset, fr, W.scala.env_at(po.env, data.times[f])), 1, ny)
-                  map[p .. ":" .. f] = { p = p, f = f, oa = a, na = a, of = fr, nf = nf }
+                  if prev_f ~= f - 1 then prev = nil end
+                  local nf, line = W.scala.snap_hold(s.scl, s.root.hz, s.offset, fr, W.scala.env_at(po.env, data.times[f]), prev, W.sc_hold)
+                  prev, prev_f = line, f
+                  map[p .. ":" .. f] = { p = p, f = f, oa = a, na = a, of = fr, nf = clamp(nf, 1, ny) }
+                else
+                  prev, prev_f = nil, nil
                 end
               end
             end
@@ -4598,19 +4656,20 @@ function W.draw_scala(px, py, pw, ph)
   local sc = s.scl
   local lanes = lane_layout(ph)
   if s.root then
-    local x0 = math.max(px, px + tx(s.root.t, pw))
+    local x0 = px                                                       -- (the whole picture: tjingboem, 16 Nov 2026, not only from the root onwards)
     local c_lo = 1200 * math.log(view.f0 / s.root.hz, 2) - s.offset
     local c_hi = 1200 * math.log(view.f1 / s.root.hz, 2) - s.offset
     local per_lane_lines = (c_hi - c_lo) / sc.period * sc.count
     for _, lane in ipairs(lanes) do
       local only_periods = per_lane_lines > lane.h / 3                    -- too many to read: only the period lines (the "octaves")
-      if x0 < px + pw and (not only_periods or (c_hi - c_lo) / sc.period < lane.h / 3) then
+      if W.sc_grid > 0.01 and x0 < px + pw and (not only_periods or (c_hi - c_lo) / sc.period < lane.h / 3) then
         for _, ln in ipairs(W.scala.lines(sc, c_lo, c_hi)) do
           if not only_periods or ln.k == 0 then
             local y = py + lane.off + fy(s.root.hz * 2 ^ ((ln.c + s.offset) / 1200), lane.h)
             if y >= py + lane.off and y <= py + lane.off + lane.h then
-              gfx.set(0.80, 0.68, 1, ln.k == 0 and 0.50 or 0.24)
+              gfx.set(0.78, 0.64, 0.96, (ln.k == 0 and 0.95 or 0.55) * W.sc_grid)       -- (the colour of the SCALA button's border; the GRID slider sets the brightness)
               gfx.line(x0, y, px + pw - 1, y)
+              if ln.k == 0 then gfx.line(x0, y + 1, px + pw - 1, y + 1) end
             end
           end
         end
@@ -4676,33 +4735,59 @@ function W.draw_scala(px, py, pw, ph)
   end
 end
 
--- What the mode is waiting for (top left of the picture), and the information box of the root: only the root tells about the Scala file.
+-- What the mode is waiting for, and the information of the Scala file while the pointer is on the root, in the colour of the SCALA button at the top right just above the picture
+-- (tjingboem, 16 Nov 2026: it was drawn inside the picture, where it sat over the playhead). One line, right-aligned, shortened to the room next to the hover line of the partials.
 function W.draw_scala_info(px, py, pw, ph)
   local s = W.sc
   if not s or not data then return end
-  gfx.setfont(1, "Arial", 12)
-  gfx.set(0.85, 0.75, 1, 1)
-  gfx.x, gfx.y = px + 8, py + 6
-  gfx.drawstr(s.phase == "root" and "SCALA: pick root" or "SCALA: select partials")
+  local text = s.phase == "root" and "SCALA: pick root" or "SCALA: select partials"
   if s.root then
     local lane = lane_layout(ph)[1]
     local x, y = px + tx(s.root.t, pw), py + lane.off + fy(s.root.hz, lane.h)
     if math.abs(gfx.mouse_x - x) <= 9 and math.abs(gfx.mouse_y - y) <= 9 then
       local sc = s.scl
-      local lines = { sc.name, sc.description ~= "" and sc.description or "(no description)",
-                      string.format("%d notes, period %s", sc.count, W.scala.period_text(sc)),
-                      string.format("root %s (%s)", fmt_freq(s.root.hz), ats.note_name(s.root.hz)) }
-      local w = 0
-      for _, l in ipairs(lines) do w = math.max(w, gfx.measurestr(l)) end
-      local bx, by = clamp(x + 14, 4, math.max(gfx.w - w - 20, 4)), clamp(y + 14, 4, math.max(gfx.h - 80, 4))
-      gfx.set(0.10, 0.11, 0.14, 0.97)
-      gfx.rect(bx, by, w + 16, #lines * 16 + 10, 1)
-      gfx.set(0.78, 0.64, 0.96, 1)
-      gfx.rect(bx, by, w + 16, #lines * 16 + 10, 0)
-      gfx.set(0.92, 0.92, 0.96, 1)
-      for k, l in ipairs(lines) do gfx.x, gfx.y = bx + 8, by + 5 + (k - 1) * 16; gfx.drawstr(l) end
+      local per = (math.abs(sc.period - 1200) < 0.01) and "2/1" or string.format("%.0f ct", sc.period)
+      text = { string.format("%s (%s)  %d notes  %s  root %s %s", sc.name, sc.description, sc.count, per, fmt_freq(s.root.hz), ats.note_name(s.root.hz)),
+               string.format("%s  %d notes  %s  root %s %s", sc.name, sc.count, per, fmt_freq(s.root.hz), ats.note_name(s.root.hz)) }
+      if sc.description == "" then table.remove(text, 1) end
     end
   end
+  local hx, hy, hw = W.lay("hdr_partial_s")
+  local right, left = px + pw, hx + hw + 10
+  if type(text) == "table" then                                         -- (the longest version that fits at 12 px, else the shortest)
+    local pick = text[#text]
+    gfx.setfont(1, "Arial", 12)
+    for _, v in ipairs(text) do if gfx.measurestr(v) <= right - left then pick = v; break end end
+    text = pick
+  end
+  local size = 13
+  gfx.setfont(1, "Arial", size)
+  while size > 9 and gfx.measurestr(text) > right - left do size = size - 1; gfx.setfont(1, "Arial", size) end
+  if gfx.measurestr(text) > right - left then                          -- (still too long: cut it)
+    while #text > 4 and gfx.measurestr(text .. "...") > right - left do text = text:sub(1, -2) end
+    text = text .. "..."
+  end
+  gfx.set(0.78, 0.64, 0.96, 1)
+  gfx.x, gfx.y = right - gfx.measurestr(text), hy + 1
+  gfx.drawstr(text)
+  local sl = W.sc_sliders(px, pw)
+  gfx.setfont(1, "Arial", 11)
+  local function slider(rc, frac)
+    gfx.set(0.16, 0.14, 0.22, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 1)
+    gfx.set(0.55, 0.40, 0.80, 0.8)
+    gfx.rect(rc[1], rc[2], rc[3] * frac, rc[4], 1)
+    gfx.set(0.95, 0.9, 1, 1)
+    gfx.rect(rc[1] + math.floor((rc[3] - 3) * frac), rc[2] - 2, 3, rc[4] + 4, 1)
+    gfx.set(0.78, 0.64, 0.96, 1)
+    gfx.rect(rc[1], rc[2], rc[3], rc[4], 0)
+  end
+  gfx.set(0.78, 0.64, 0.96, 1)
+  gfx.x, gfx.y = sl.grid_label[1], sl.grid_label[2]; gfx.drawstr("Grid")
+  gfx.x, gfx.y = sl.hold_label[1], sl.hold_label[2]; gfx.drawstr("Hold")
+  gfx.x, gfx.y = sl.hold_value[1], sl.hold_value[2]; gfx.drawstr(string.format("%d ct", W.sc_hold))
+  slider(sl.grid, W.sc_grid)
+  slider(sl.hold, W.sc_hold / 50)
   gfx.setfont(1, "Arial", 14)
 end
 
@@ -4953,7 +5038,7 @@ local function handle_input(px, py, pw, ph)
     if W.sc then W.sc_apply()
     elseif W.w and not W.m.is_flat(W.w) then W.commit() else set_status("nothing to apply: drag the corner dots or the edges of the box first") end
   elseif ch == 18 then W.w = nil; set_status("bend reset")        -- Ctrl+R: the box flat again
-  elseif ch == 1 then W.select_all()                              -- Ctrl+A: the whole sound, with the box round it
+  elseif ch == 1 then if W.sc then W.sc_select_all() else W.select_all() end                              -- Ctrl+A: the whole sound, with the box round it
   elseif ch == 3 then copy_selection()                           -- Ctrl+C
   elseif ch == 24 then if copy_selection() then edit_on_channels(function() delete_single(true) end, "cut") end   -- Ctrl+X (the noise goes with the sines)
   elseif ch == 22 then paste_clipboard()                        -- Ctrl+V: at the playhead

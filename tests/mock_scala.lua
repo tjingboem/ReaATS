@@ -7,7 +7,9 @@ local root = os.getenv("PWD")
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
 local work = scratch .. "sc_test.ats"
 local scl = scratch .. "st12.scl"
-for _, n in ipairs({ "sc_test_edit.ats", "sc_test_edit2.ats", "sc_test_edit3.ats", "sc_test_edit4.ats" }) do os.remove(scratch .. n) end
+local EDITS = { "sc_test_edit.ats" }
+for k = 2, 12 do EDITS[k] = "sc_test_edit" .. k .. ".ats" end
+for _, n in ipairs(EDITS) do os.remove(scratch .. n) end
 local fh = io.open(scl, "w")
 fh:write("! st12.scl\n!\nTest scale, 12 equal steps\n 12\n!\n")
 for k = 1, 11 do fh:write(string.format(" %d.0\n", k * 100)) end
@@ -15,21 +17,25 @@ fh:write(" 2/1\n"); fh:close()
 
 local ats = dofile("lib/ats_file.lua")
 local NF, HOP = 50, 0.01
-local d = { sr = 44100, frame_size = 441, window_size = 1764, partials = 3, frames = NF, dur = NF * HOP,
+local d = { sr = 44100, frame_size = 441, window_size = 1764, partials = 4, frames = NF, dur = NF * HOP,
             has_phase = false, has_noise = false, amp = {}, frq = {}, times = {} }
 for f = 1, NF do d.times[f] = (f - 1) * HOP end
-for p = 1, 3 do d.amp[p], d.frq[p] = {}, {} end
+for p = 1, 4 do d.amp[p], d.frq[p] = {}, {} end
 for f = 1, NF do
   local wob = (f % 2 == 0) and 1 or -1
   d.amp[1][f], d.frq[1][f] = 0.5, 200 * (1 + 0.01 * wob)
   d.amp[2][f], d.frq[2][f] = 0.4, 430 * (1 + 0.01 * wob)
   d.amp[3][f], d.frq[3][f] = 0.3, 900
+  d.amp[4][f], d.frq[4][f] = 0.3, 200 * 2 ^ (150 / 1200) * (1 + 0.01 * wob)            -- (wobbles round the middle between the lines at 100 and 200 cents)
 end
 assert(ats.save(work, d))
 
 local strings, lines = {}, {}
 gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel = 0, x = 0, y = 0, a = 1, dest = -1 }
-for _, n in ipairs({ "set", "rect", "circle", "setimgdim", "setfont", "update", "init", "blit" }) do gfx[n] = function() return 0 end end
+for _, n in ipairs({ "circle", "setimgdim", "setfont", "update", "init", "blit" }) do gfx[n] = function() return 0 end end
+local cur_col, btn_cols = {}, {}
+gfx.set = function(r, g, b) cur_col = { r, g, b } end
+gfx.rect = function(x, y, w, h) if x == 705 and y == 34 then btn_cols[#btn_cols + 1] = cur_col[1] .. "," .. cur_col[2] .. "," .. cur_col[3] end end
 gfx.line = function(x1, y1, x2, y2) lines[#lines + 1] = { x1, y1, x2, y2 } end
 gfx.drawstr = function(s) strings[#strings + 1] = s end
 gfx.measurestr = function(s) return #s * 7, 14 end
@@ -37,7 +43,7 @@ local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
 reaper = {
-  time_precise = function() return os.clock() end,
+  time_precise = function() return os.clock() + (CLOCK_SKEW or 0) end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
   get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
@@ -75,7 +81,7 @@ local function key(k) script.keys = { k }; strings = {}; frame(); frame() end
 local function save_and_load()
   script.keys = { 19 }; strings = {}; frame(); frame()
   local name
-  for _, n in ipairs({ "sc_test_edit.ats", "sc_test_edit2.ats", "sc_test_edit3.ats", "sc_test_edit4.ats" }) do
+  for _, n in ipairs(EDITS) do
     local f = io.open(scratch .. n, "rb"); if f then f:close(); name = scratch .. n end
   end
   return assert(ats.load(name)), name
@@ -86,9 +92,13 @@ local function spread(a) local lo, hi = math.huge, -math.huge; for f = 1, NF do 
 -- the button starts the mode (the Scala file is chosen), it asks for the root
 frame(); strings = {}; frame()
 assert(saw("^SCALA$"), "the button is drawn: " .. tostring(saw("SCALA")))
+btn_cols = {}; CLOCK_SKEW = 0; frame(); CLOCK_SKEW = 100.2; frame(); CLOCK_SKEW = 0
+assert(btn_cols[1] == btn_cols[2], "the button does not blink while the mode is off")
 click(731, 44)
 strings = {}; frame()
 assert(saw("SCALA: pick root"), "the mode waits for the root: " .. tostring(saw("SCALA")))
+btn_cols = {}; CLOCK_SKEW = 0.0; frame(); CLOCK_SKEW = 0.4; frame(); CLOCK_SKEW = 0
+assert(btn_cols[1] ~= btn_cols[2], "the button blinks while the mode is on: " .. tostring(btn_cols[1]) .. " / " .. tostring(btn_cols[2]))
 
 -- the root: a few frames of the 200 Hz partial. It is taken as the root and the mode asks for partials; the selection is cleared
 drag(px, y_of(200 * 1.05), x_of(0.035), y_of(200 / 1.05))
@@ -107,15 +117,16 @@ for k = -12, 24 do
   if f > F0 * 1.05 and f < F1 / 1.05 then
     local l = hline(f)
     assert(l, "a faint line at " .. k .. " steps (" .. string.format("%.1f", f) .. " Hz)")
-    assert(math.abs(l[1] - rx) < 1.5, "the line starts at the root's time: " .. l[1] .. " vs " .. rx)
+    assert(math.abs(l[1] - px) < 1.5, "the lines run over the whole picture, also left of the root: " .. l[1])
   end
 end
 
 -- hover on the root: only the root tells about the Scala file; away from it nothing
 gfx.mouse_x, gfx.mouse_y = rx, y_of(200); strings = {}; frame()
-assert(saw("st12.scl") and saw("Test scale, 12 equal steps") and saw("12 notes, period 2/1") and saw("root 20"), "hover on the root: " .. tostring(saw("st12") or saw("root")))
+assert(saw("^st12%.scl  12 notes  2/1  root 20%d? Hz G3"), "hover on the root: one line at the top right: " .. tostring(saw("st12")))
 gfx.mouse_x, gfx.mouse_y = x_of(0.3), y_of(500); strings = {}; frame()
 assert(not saw("st12.scl"), "nothing away from the root")
+
 
 -- the portion: p2 whole. Enter: every point goes to the nearest line (1300 cents above the root: 424.6 Hz), the wobble is gone
 drag(px, y_of(430 * 1.05), px + pw + 30, y_of(430 / 1.05))
@@ -163,6 +174,46 @@ gfx.mouse_cap = 2; gfx.mouse_x, gfx.mouse_y = hx, hy - 20; frame(); gfx.mouse_ca
 strings = {}; frame()
 assert(saw("^%+0 cents$"), "right-click: back at 0: " .. tostring(saw("cents")))
 
+-- Ctrl+A in the mode: everything but the root piece becomes one portion (p1 frames 1-4 are the root: 46 points of p1 + 50 + 50 + 50)
+click(x_of(0.3), y_of(700))
+key(1)
+strings = {}; frame()
+assert(saw("^selected: 196 points in 4 partials"), "Ctrl+A leaves the root piece out: " .. tostring(saw("selected")))
+key(13)
+assert(saw("snapped"), "and it snaps: " .. tostring(saw("snapped")))
+local s3 = save_and_load()
+for f = 1, 4 do assert(s3.frq[1][f] == d.frq[1][f], "the root piece itself stays at frame " .. f) end
+for f = 5, NF do assert(math.abs(s3.frq[1][f] - 200) < 0.05, "the rest of p1 is on its line at frame " .. f) end
+for f = 1, NF do assert(math.abs(s3.frq[4][f] - 200 * 2 ^ (1 / 12)) < 0.05, "the hold keeps p4 on ONE line (default 20 ct) at frame " .. f .. ": " .. s3.frq[4][f]) end
+key(26)
+
+-- the HOLD slider at 0: the wobbling partial flips between the two lines again
+local L = dofile(REAATS_TEST_LAYOUT).el
+local sx0, sy = L.hdr_partial_s.x + L.hdr_partial_s.w + 10, L.hdr_partial_s.y - 17
+strings = {}; frame()
+assert(saw("^20 ct$"), "the hold says 20 ct: " .. tostring(saw("ct")))
+drag(sx0 + 130 + 28, sy + 7, sx0 + 130 - 20, sy + 7)
+strings = {}; frame()
+assert(saw("^0 ct$"), "the hold slider goes to 0: " .. tostring(saw("ct")))
+click(x_of(0.3), y_of(700))
+key(1)
+key(13)
+local s4 = save_and_load()
+local seen = {}
+for f = 1, NF do seen[string.format("%.2f", s4.frq[4][f])] = true end
+local n = 0; for _ in pairs(seen) do n = n + 1 end
+assert(n == 2, "without hold p4 flips between two lines: " .. n)
+key(26)
+drag(sx0 + 130, sy + 7, sx0 + 130 + 28, sy + 7)                                          -- (back to 25 ct)
+
+-- the GRID slider: at 0 the lines are gone, at the right end they are at full strength
+drag(sx0 + 32 + 28, sy + 7, sx0 + 32 - 20, sy + 7)
+lines = {}; frame()
+assert(not hline(212), "grid at 0: no lines")
+drag(sx0 + 32, sy + 7, sx0 + 32 + 80, sy + 7)
+lines = {}; frame()
+assert(hline(212), "grid at full strength: the lines are back")
+
 -- Esc leaves the mode: the lines and the text go
 key(27)
 strings = {}; lines = {}; frame()
@@ -176,4 +227,4 @@ click(731, 44)
 strings = {}; frame()
 assert(not saw("SCALA:"), "the same button leaves")
 
-print("SCALA mode OK: button, root, faint lines from the root, hover on the root only, portion + Enter snaps (one undo step), red envelope intensity, the handle and its cents, Esc / the button leave")
+print("SCALA mode OK: button, root, faint lines over the whole picture, blinking button, Ctrl+A, hover on the root only, portion + Enter snaps (one undo step), red envelope intensity, the handle and its cents, Esc / the button leave")

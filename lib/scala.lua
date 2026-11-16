@@ -112,6 +112,18 @@ function M.snap(sc, root_hz, offset, f, intensity)
   return root_hz * 2 ^ (c2 / 1200)
 end
 
+-- The same, with a HOLD against flickering (tjingboem, 16 Nov 2026: a partial that wobbles round the middle between two lines jumped between them at every frame):
+-- `prev` is the line (cents, the grid's offset included) this partial was on in the frame before, `hold` how many cents beyond the middle it must go before it leaves that line
+-- (0 or nil = always the nearest line). Returns the new frequency and the line that was chosen (give it back as `prev` for the next frame).
+function M.snap_hold(sc, root_hz, offset, f, intensity, prev, hold)
+  local c = 1200 * log2(f / root_hz)
+  local line = M.nearest(sc, c, offset)
+  if prev and hold and hold > 0 and math.abs(prev - line) > 1e-6 and math.abs(c - prev) <= math.abs(c - line) + 2 * hold then line = prev end
+  if intensity <= 0 then return f, line end
+  local c2 = c + math.min(intensity, 1) * (line - c)
+  return root_hz * 2 ^ (c2 / 1200), line
+end
+
 -- The intensity of an envelope { {t, v}, ... } (sorted by t, v in 0..1) at the time t: straight lines between the points, held before the first and after the last.
 function M.env_at(points, t)
   local n = #points

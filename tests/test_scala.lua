@@ -52,6 +52,26 @@ check("a pitch glide turns into steps: 40 -> 0 and 60 -> 100 at full intensity",
   and near(1200 * math.log(S.snap(sc2, root, 0, root * 2 ^ (60 / 1200), 1) / root) / math.log(2), 100, 1e-6))
 check("with an offset the root frequency itself is moved", near(1200 * math.log(S.snap(sc2, root, 25, root, 1) / root) / math.log(2), 25, 1e-6))
 
+-- hold: a partial wobbling +-17 cents round the middle (150 cents) between the lines at 100 and 200
+local prev, lines_seen, flips0, flips20 = nil, {}, 0, 0
+for _, hold in ipairs({ 0, 20 }) do
+  prev = nil
+  local last, flips = nil, 0
+  for i = 1, 20 do
+    local c = 150 + ((i % 2 == 0) and 17 or -17)
+    local nf, line = S.snap_hold(sc2, 200, 0, 200 * 2 ^ (c / 1200), 1, prev, hold)
+    prev = line
+    if last and math.abs(line - last) > 1e-6 then flips = flips + 1 end
+    last = line
+    check("the new frequency is on the chosen line", near(1200 * math.log(nf / 200) / math.log(2), line, 1e-6))
+  end
+  if hold == 0 then flips0 = flips else flips20 = flips end
+end
+check("without hold it flips at every frame", flips0 == 19, flips0)
+check("with 20 cents of hold it stays on one line", flips20 == 0, flips20)
+check("hold lets go when the partial is clearly past the middle (150 + 30 cents, hold 20)", select(2, S.snap_hold(sc2, 200, 0, 200 * 2 ^ (181 / 1200), 1, 100, 20)) == 200)
+check("hold keeps it just before that (150 + 15 cents)", select(2, S.snap_hold(sc2, 200, 0, 200 * 2 ^ (165 / 1200), 1, 100, 20)) == 100)
+check("hold with intensity 0 leaves the frequency", S.snap_hold(sc2, 200, 0, 200 * 2 ^ (165 / 1200), 0, 100, 20) == 200 * 2 ^ (165 / 1200))
 -- envelope
 local env = { { t = 0, v = 1 }, { t = 1, v = 0 }, { t = 2, v = 0.5 } }
 check("env before", S.env_at(env, -1) == 1)
