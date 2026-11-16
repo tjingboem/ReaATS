@@ -35,9 +35,11 @@ gfx = { w = 1100, h = 640, mouse_x = 0, mouse_y = 0, mouse_cap = 0, mouse_wheel 
 for _, n in ipairs({ "circle", "setimgdim", "setfont", "update", "init", "blit" }) do gfx[n] = function() return 0 end end
 local cur_col, btn_cols = {}, {}
 gfx.set = function(r, g, b) cur_col = { r, g, b } end
-gfx.rect = function(x, y, w, h) if x == 705 and y == 34 then btn_cols[#btn_cols + 1] = cur_col[1] .. "," .. cur_col[2] .. "," .. cur_col[3] end end
+local rects = {}
+gfx.rect = function(x, y, w, h) rects[#rects + 1] = { x, y, w, h }; if x == 705 and y == 34 then btn_cols[#btn_cols + 1] = cur_col[1] .. "," .. cur_col[2] .. "," .. cur_col[3] end end
 gfx.line = function(x1, y1, x2, y2) lines[#lines + 1] = { x1, y1, x2, y2 } end
-gfx.drawstr = function(s) strings[#strings + 1] = s end
+local str_y = {}
+gfx.drawstr = function(s) strings[#strings + 1] = s; str_y[s] = gfx.y end
 gfx.measurestr = function(s) return #s * 7, 14 end
 local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
@@ -53,7 +55,7 @@ reaper = {
   JS_Dialog_BrowseForSaveFile = function() return 0, "" end,
   GetUserInputs = function() return false, "" end,
   file_exists = function(p) local f = io.open(p, "rb"); if f then f:close() return true end return false end,
-  GetUserFileNameForRead = function(_, _, ext) if ext == "scl" then return true, scl end return true, work end,
+  GetUserFileNameForRead = function(_, _, ext) if ext == "scl" then return true, scl end return true, OPEN_PATH or work end,
   defer = function(fn) deferred = fn end,
 }
 dofile("ATS_Editor.lua")
@@ -189,10 +191,11 @@ key(26)
 
 -- the HOLD slider at 0: the wobbling partial flips between the two lines again
 local L = dofile(REAATS_TEST_LAYOUT).el
-local sx0, sy = L.hdr_partial_s.x + L.hdr_partial_s.w + 10, L.hdr_partial_s.y - 17
+local sx0, sy = math.max(px + pw - 154 - 22 - 200, L.hdr_partial_s.x + L.hdr_partial_s.w - 30), L.hdr_partial_s.y                             -- (one channel: next to the information line, which is 154 px wide here)
 strings = {}; frame()
 assert(saw("^20 ct$"), "the hold says 20 ct: " .. tostring(saw("ct")))
-drag(sx0 + 130 + 28, sy + 7, sx0 + 130 - 20, sy + 7)
+assert(str_y["Grid"] == str_y["SCALA: select partials"] and str_y["Hold"] == str_y["Grid"], "one channel: the labels are on the line of the information: " .. tostring(str_y["Grid"]) .. " / " .. tostring(str_y["SCALA: select partials"]))
+drag(sx0 + 118 + 23, sy + 7, sx0 + 118 - 20, sy + 7)
 strings = {}; frame()
 assert(saw("^0 ct$"), "the hold slider goes to 0: " .. tostring(saw("ct")))
 click(x_of(0.3), y_of(700))
@@ -204,13 +207,13 @@ for f = 1, NF do seen[string.format("%.2f", s4.frq[4][f])] = true end
 local n = 0; for _ in pairs(seen) do n = n + 1 end
 assert(n == 2, "without hold p4 flips between two lines: " .. n)
 key(26)
-drag(sx0 + 130, sy + 7, sx0 + 130 + 28, sy + 7)                                          -- (back to 25 ct)
+drag(sx0 + 118, sy + 7, sx0 + 118 + 23, sy + 7)                                          -- (back to 25 ct)
 
 -- the GRID slider: at 0 the lines are gone, at the right end they are at full strength
-drag(sx0 + 32 + 28, sy + 7, sx0 + 32 - 20, sy + 7)
+drag(sx0 + 30 + 23, sy + 7, sx0 + 30 - 20, sy + 7)
 lines = {}; frame()
 assert(not hline(212), "grid at 0: no lines")
-drag(sx0 + 32, sy + 7, sx0 + 32 + 80, sy + 7)
+drag(sx0 + 30, sy + 7, sx0 + 30 + 80, sy + 7)
 lines = {}; frame()
 assert(hline(212), "grid at full strength: the lines are back")
 
@@ -226,5 +229,22 @@ assert(saw("SCALA: pick root"), "the button starts again")
 click(731, 44)
 strings = {}; frame()
 assert(not saw("SCALA:"), "the same button leaves")
+
+-- with a channel set (2 channels) the information and the two sliders sit on the row of the channel sliders and the STACK / OVERLAY button
+for k = 1, 2 do local dd = {}; for kk, v in pairs(d) do dd[kk] = v end; assert(ats.save(scratch .. "scm_ch" .. k .. ".ats", dd)) end
+OPEN_PATH = scratch .. "scm_ch1.ats"
+key(111); frame(); frame()
+click(731, 44)
+rects = {}; strings = {}; frame()
+local rowy = L.btn_stackmode.y + math.floor((L.btn_stackmode.h - 13) / 2)
+assert(str_y["SCALA: pick root"] == rowy, "the information is on the row of the STACK / OVERLAY button: " .. tostring(str_y["SCALA: pick root"]) .. " vs " .. rowy)
+assert(str_y["Grid"] == rowy and str_y["Hold"] == rowy, "the slider labels too")
+local found = 0
+for _, r in ipairs(rects) do if r[2] == L.ch1_slider.y and r[3] == 46 and r[4] == L.ch1_slider.h then found = found + 1 end end
+assert(found >= 2, "the two sliders have the Y and the height of the channel sliders: " .. found)
+local right_end = 0
+for _, r in ipairs(rects) do if r[2] == L.ch1_slider.y and r[3] == 46 then right_end = math.max(right_end, r[1] + r[3]) end end
+assert(px + pw - 154 - right_end > 40 and px + pw - 154 - right_end < 120, "the sliders sit close to the information line: " .. (px + pw - 154 - right_end))
+click(731, 44)
 
 print("SCALA mode OK: button, root, faint lines over the whole picture, blinking button, Ctrl+A, hover on the root only, portion + Enter snaps (one undo step), red envelope intensity, the handle and its cents, Esc / the button leave")

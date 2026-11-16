@@ -4341,9 +4341,23 @@ function W.sc_rect() return W.lay("btn_scala_s") end
 -- Two small sliders above the information line at the top right: GRID (how bright the lines are) and HOLD (how many cents past the middle between two lines a partial must go
 -- before it jumps to the other line; 0 = always the nearest line).
 function W.sc_sliders(px, pw)
-  local hx, hy, hw = W.lay("hdr_partial_s")
-  local x0, y = hx + hw + 10, hy - 17
-  return { grid = { x0 + 32, y + 3, 56, 9 }, hold = { x0 + 130, y + 3, 56, 9 }, grid_label = { x0, y }, hold_label = { x0 + 98, y }, hold_value = { x0 + 192, y } }
+  gfx.setfont(1, "Arial", 13)
+  local info_w = math.max(gfx.measurestr("SCALA: pick root"), gfx.measurestr("SCALA: select partials"))
+  gfx.setfont(1, "Arial", 14)
+  local ty, sy, sh, left, minx
+  if #chs > 1 then                                                      -- (a channel set: the row of the channel sliders and the STACK / OVERLAY button, tjingboem 16 Nov 2026: the same Y)
+    local bx, by, bw, bh = W.lay("btn_stackmode")
+    local _, y2, _, h2 = W.lay("ch1_slider")
+    ty, sy, sh, left = by + math.floor((bh - 13) / 2), y2, h2, bx + bw + 24
+    minx = left
+  else                                                                  -- (one channel: the line of the information itself, which is above the picture)
+    local hx, hy, hw = W.lay("hdr_partial_s")
+    ty, sy, sh, left = hy + 1, hy + 3, 9, hx + hw + 10
+    minx = hx + hw - 30                                                 -- (may reach 30 px into the hover line of the partials: it is rarely that long)
+  end
+  local x0 = math.max(px + pw - info_w - 22 - 200, minx)                -- (the block sits right next to the information line: the same distance in both cases)
+  return { grid = { x0 + 30, sy, 46, sh }, hold = { x0 + 118, sy, 46, sh }, grid_label = { x0, ty }, hold_label = { x0 + 88, ty }, hold_value = { x0 + 168, ty },
+           info_left = left, info_y = ty, info_w = info_w }
 end
 function W.draw_scala_button()
   local x, y, w, h = W.sc_rect()
@@ -4752,8 +4766,10 @@ function W.draw_scala_info(px, py, pw, ph)
       if sc.description == "" then table.remove(text, 1) end
     end
   end
-  local hx, hy, hw = W.lay("hdr_partial_s")
-  local right, left = px + pw, hx + hw + 10
+  local sl = W.sc_sliders(px, pw)
+  local hovering = type(text) == "table"                                -- (the root's information takes the room of the sliders while the pointer is on the ring)
+  local right = px + pw
+  local left = hovering and sl.info_left or (right - sl.info_w - 6)
   if type(text) == "table" then                                         -- (the longest version that fits at 12 px, else the shortest)
     local pick = text[#text]
     gfx.setfont(1, "Arial", 12)
@@ -4768,9 +4784,9 @@ function W.draw_scala_info(px, py, pw, ph)
     text = text .. "..."
   end
   gfx.set(0.78, 0.64, 0.96, 1)
-  gfx.x, gfx.y = right - gfx.measurestr(text), hy + 1
+  gfx.x, gfx.y = right - gfx.measurestr(text), sl.info_y
   gfx.drawstr(text)
-  local sl = W.sc_sliders(px, pw)
+  if hovering then gfx.setfont(1, "Arial", 14); return end
   gfx.setfont(1, "Arial", 11)
   local function slider(rc, frac)
     gfx.set(0.16, 0.14, 0.22, 1)
