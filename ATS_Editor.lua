@@ -1536,7 +1536,7 @@ finish_print = function(p, job)
     local ok_g, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
     if ok_g and guid ~= "" then
       local ok_enc, encoded = pcall(Serial.serialize, build_state(ats_path, job.t_start, p.files))
-      if ok_enc then reaper.SetProjExtState(0, "ReaATS_ItemSettings", guid, encoded) end
+      if ok_enc then Serial.write_item_state(item, "ReaATS", encoded) end
     end
     local take = reaper.GetActiveTake(item)
     if take then reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "ReaATS " .. (wav:match("([^/\\]+)$") or wav), true) end

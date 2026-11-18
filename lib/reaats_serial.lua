@@ -292,4 +292,23 @@ local function deserialize_table(str)
     end
 end
 
-return { serialize = serialize_table, deserialize = deserialize_table }
+-- ===== Item state: settings that travel with the item =====
+-- The settings of an item are kept ON the item (item P_EXT, key "<tool>_ItemSettings"), not in a project table keyed
+-- by the item GUID: REAPER gives a copy of an item a new GUID but copies the item's P_EXT, so a copy carries the
+-- settings of its original. Stored as base64 ("b64:" + text) so line breaks and quotes in the encoded settings cannot
+-- upset REAPER's item chunk. Same format and key as in ReaSnap, which reads it (ReaSnap_Core.lua, ReaSnapItemState).
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function write_item_state(item, tool, encoded)
+  local out = {}
+  for i = 1, #encoded, 3 do
+    local a, b, c = encoded:byte(i, i + 2)
+    local n = (a << 16) | ((b or 0) << 8) | (c or 0)
+    local c1, c2, c3, c4 = (n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63
+    out[#out + 1] = B64:sub(c1 + 1, c1 + 1) .. B64:sub(c2 + 1, c2 + 1)
+      .. (b and B64:sub(c3 + 1, c3 + 1) or "=") .. (c and B64:sub(c4 + 1, c4 + 1) or "=")
+  end
+  return reaper.GetSetMediaItemInfo_String(item, "P_EXT:" .. tool .. "_ItemSettings", "b64:" .. table.concat(out), true)
+end
+
+
+return { serialize = serialize_table, deserialize = deserialize_table, write_item_state = write_item_state }

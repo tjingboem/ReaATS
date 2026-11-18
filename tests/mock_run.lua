@@ -17,6 +17,22 @@ local script = { keys = {}, frame = 0 }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 local deferred
 local project, projext = { tracks = {} }, {}
+local function b64_item_state(it, tool)  -- what the tool wrote onto the item (P_EXT, "b64:" + base64), decoded
+  local v = it.ext and it.ext["P_EXT:" .. tool .. "_ItemSettings"]
+  if not v or v:sub(1, 4) ~= "b64:" then return nil end
+  local A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  local rev = {}; for i = 1, 64 do rev[A:byte(i)] = i - 1 end
+  local s, out = v:sub(5), {}
+  for i = 1, #s, 4 do
+    local a, b, c, d = s:byte(i, i + 3)
+    local n = (rev[a] << 18) | (rev[b] << 12) | ((rev[c] or 0) << 6) | (rev[d] or 0)
+    out[#out + 1] = string.char((n >> 16) & 255)
+    if c ~= 61 then out[#out + 1] = string.char((n >> 8) & 255) end
+    if d ~= 61 then out[#out + 1] = string.char(n & 255) end
+  end
+  return table.concat(out)
+end
+
 local previews = {}
 local clock_skew = 0
 local destroyed, stops = 0, 0
@@ -56,7 +72,14 @@ reaper = {
   GetActiveTake = function(it) return it end,
   GetMediaItemTake_Source = function(take) return take end,
   GetMediaSourceFileName = function(src) return src.src end,
-  GetSetMediaItemInfo_String = function(it, what, val, set) return true, it.guid end,
+  GetSetMediaItemInfo_String = function(it, what, val, set)
+    if what:sub(1, 6) == "P_EXT:" then
+      it.ext = it.ext or {}
+      if set then it.ext[what] = val; return true, val end
+      return it.ext[what] ~= nil, it.ext[what] or ""
+    end
+    return true, it.guid
+  end,
   GetSetMediaItemTakeInfo_String = function(take, what, val, set) if set then take.name = val end return true, take.name end,
   SetProjExtState = function(_, sec, key, val) projext[sec .. "|" .. key] = val; return 1 end,
   GetProjExtState = function(_, sec, key) return 1, projext[sec .. "|" .. key] or "" end,
@@ -386,8 +409,8 @@ do
   assert(item and item.src:match("_print1%.wav$"), "print item missing: " .. tostring(item and item.src))
   local f = io.open(item.src, "rb"); assert(f, "printed WAV missing"); local size = f:seek("end"); f:close()
   assert(size > 300000, "printed WAV too small")
-  local stored = projext["ReaATS_ItemSettings|" .. item.guid]
-  assert(stored and stored ~= "", "item settings not written under the item's GUID")
+  local stored = b64_item_state(item, "ReaATS")
+  assert(stored and stored ~= "", "item settings not written onto the item")
   local st = ser.deserialize(stored)
   assert(st and st.file:match("_edit%d*%.ats$") and io.open(st.file, "rb"), "stored state should name the saved edited .ats file")
   assert(st.view.t1 > st.view.t0 and st.view.f1 > st.view.f0 and st.partials == true and st.noise == true, "stored view/switches wrong")
@@ -411,7 +434,7 @@ do
                    (function(p) local f = io.open(p, "rb"); local n = f:seek("end"); f:close(); return n end)(third.src)
   assert(sz3 < 0.7 * sz1, "a print from 1.0 s is about half as long as the whole: " .. sz3 .. " vs " .. sz1)
   assert(saw("^printed [%d%.]+ s from 1%.0%d s"), "the status says where the print started: " .. tostring(saw("^printed")))
-  local st3 = ser.deserialize(projext["ReaATS_ItemSettings|" .. third.guid])
+  local st3 = ser.deserialize(b64_item_state(third, "ReaATS"))
   assert(st3 and math.abs(st3.from - 1.0) < 0.0101, "the item remembers where the print started, saw " .. tostring(st3 and st3.from))
   print("PRINT starts at the playhead and remembers it")
   ruler_click(0)

@@ -33,6 +33,22 @@ copy(scratch .. "mc_ch1.ats", scratch .. "mm_ch1.ats")
 -- fakes
 local ext, strings, deferred = {}, {}, nil
 local project, projext = { tracks = {} }, {}
+
+local function b64_item_state(it, tool)  -- what the tool wrote onto the item (P_EXT, "b64:" + base64), decoded
+  local v = it.ext and it.ext["P_EXT:" .. tool .. "_ItemSettings"]
+  if not v or v:sub(1, 4) ~= "b64:" then return nil end
+  local A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  local rev = {}; for i = 1, 64 do rev[A:byte(i)] = i - 1 end
+  local s, out = v:sub(5), {}
+  for i = 1, #s, 4 do
+    local a, b, c, d = s:byte(i, i + 3)
+    local n = (rev[a] << 18) | (rev[b] << 12) | ((rev[c] or 0) << 6) | (rev[d] or 0)
+    out[#out + 1] = string.char((n >> 16) & 255)
+    if c ~= 61 then out[#out + 1] = string.char((n >> 8) & 255) end
+    if d ~= 61 then out[#out + 1] = string.char(n & 255) end
+  end
+  return table.concat(out)
+end
 local previews = {}
 local clock_skew = 0
 local chosen_save, mb_answer = nil, 6
@@ -97,7 +113,14 @@ reaper = {
   GetActiveTake = function(it) return it end,
   GetMediaItemTake_Source = function(take) return take end,
   GetMediaSourceFileName = function(src) return src.src end,
-  GetSetMediaItemInfo_String = function(it) return true, it.guid end,
+  GetSetMediaItemInfo_String = function(it, what, val, set)
+    if what:sub(1, 6) == "P_EXT:" then
+      it.ext = it.ext or {}
+      if set then it.ext[what] = val; return true, val end
+      return it.ext[what] ~= nil, it.ext[what] or ""
+    end
+    return true, it.guid
+  end,
   GetSetMediaItemTakeInfo_String = function(take, what, val, set) if set then take.name = val end return true, take.name end,
   SetProjExtState = function(_, sec, k, v) projext[sec .. "|" .. k] = v; return 1 end,
   GetProjExtState = function(_, sec, k) return 1, projext[sec .. "|" .. k] or "" end,
@@ -662,7 +685,7 @@ local item = project.tracks[1].items[1]
 local pinfo = wavinfo.read(item.src)
 assert(pinfo.channels == 3, "the printed WAV has 3 channels")
 assert(project.tracks[1].nchan >= 4 and project.tracks[1].nchan % 2 == 0, "the track needs an even number of channels, at least 3: " .. project.tracks[1].nchan)
-local state = dofile("lib/reaats_serial.lua").deserialize(projext["ReaATS_ItemSettings|" .. item.guid])
+local state = dofile("lib/reaats_serial.lua").deserialize(b64_item_state(item, "ReaATS"))
 assert(state and #state.files == 3 and type(state.channel) == "number" and state.files[2]:match("mc_ch2%.ats$"), "the item remembers the files of the set")
 print("PRINT: a 3-channel WAV, the track has " .. project.tracks[1].nchan .. " channels, the item remembers all 3 files")
 
