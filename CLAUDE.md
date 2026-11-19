@@ -983,3 +983,25 @@ Csound's `atsa` (or pyatsyn / ATSA) until it is ported.
 - NO OS-SPECIFIC FOLDERS OR MEMORY CALLS (tjingboem 11 Nov 2026: "if we can use memory instead of disk, we are not depending on Linux folders or Windows folders or a Mac" -> memory only is not possible for the three hand-offs (sound to REAPER's preview, edits to Python, progress back), so: yes to both alternatives): `Analysis.temp_dir()` now = `<reaper.GetResourcePath()>/ReaATS_temp` (made once with `RecursiveCreateDirectory`), and only when REAPER does not answer (the tests) TMPDIR / TEMP / TMP / /tmp. `python/reaats_analyse.py --memory` prints `MEMORY <free bytes>` (Linux /proc/meminfo MemAvailable; Windows GlobalMemoryStatusEx via ctypes; macOS vm_stat: only Linux tried); `Page:available_memory()` runs it; the editor's guard (`available_memory(need)`) asks Python only when the set needs > 100 MB and falls back to /proc/meminfo. Only Python-finding stays OS-specific (`python_candidates`). Tests: test_analysis_page (temp dir via REAPER), test_engine (--memory), mock_channels 15 (a sparse 60 MB file: asked once, refused; a small file: not asked). Side effect: the temp files are now in REAPER's resource folder, on the disk where REAPER lives (the stale-file cleanup works on that folder).
 - TEMP / TMP FALLBACK REMOVED (tjingboem 11 Nov 2026: "we don't need the Windows mod anymore, do we?"): REAPER names the temp folder, so `Analysis.temp_dir()` without REAPER (only the tests) is TMPDIR else /tmp. KEPT: `--args-file` (a resource folder under a Windows user name with a space puts a space in every temp path).
 - MAC MODIFIER (tjingboem 11 Nov 2026: "How about the MAC?" -> "yes" to making Ctrl follow the system): NO CODE CHANGE NEEDED, my first answer overstated it. REAPER's `gfx.mouse_cap` bit 4 is Control on Windows/Linux and COMMAND on macOS (bit 16 Alt / Option, bit 32 Windows key / Control on macOS), so ReaATS's `cap & 4` is already Cmd on a Mac. Only the manual needed a sentence ("On a Mac ... use Cmd"). Not verified on a Mac: that Cmd+C/V/Z/S arrive from `gfx.getchar` as the control codes 3/22/26/19 (REAPER documents Ctrl+letter that way; I believe Cmd on macOS does the same).
+
+## Pin, follow and one window (19 November 2026) — BUILT, tested with the real editor in a REAPER of its own, NOT yet seen in the real window
+
+tjingboem: add the pin and the follow to ReaATS (as ReaMaskM, ReaShapeM, ReaGestM, ReaNvelopes), and "1 window is allowed except when pinned". All of it hangs on ONE local,
+`X`, in `ATS_Editor.lua` (the file is close to Lua's limit of 200 locals).
+- Pin: ReaATS is a gfx window (no ReaImGui, no title bar of its own), so the handle is "tjingboem productions" written VERTICALLY (top to bottom) at the bottom right,
+  clickable (tjingboem's idea; blue when pinned; `lib/credit.lua`, `X.credit_frame()` on every page). gfx has no rotated text: the text is drawn into an off-screen
+  image, read back pixel by pixel and turned a quarter turn (`Credit.rotate_cw`, tested on a synthetic picture). In a REAPER without a visible screen the read-back gave
+  nothing, so there is a fallback: the letters stacked upright under each other (`mode "stacked"`). Which mode the real window uses is NOT known yet (`X.credit.mode`).
+  The right margin is 50 px wide (`lib/layout.lua`); the text is about 105-170 px tall and sits in it, bottom right: check that it covers nothing.
+- Follow (`X.follow_selection`): a window that ReaSnap launched (project identity known) loads the settings of the selected media item that carries ReaATS settings
+  (`Serial.read_item_state`, new in lib/reaats_serial.lua). tjingboem's answer to "loading replaces what is open and loses unsaved edits": ASK FIRST. With unsaved
+  edits in any channel (`X.any_modified`) a menu asks: save them, then load / discard them and load / stay (`X.request_state`, `gfx.showmenu`). Nothing is loaded while a
+  sound is being prepared (`pending`). A file that is open already is not reloaded (only the view, the switches and the playhead are applied). Pinned, it does not follow.
+  A window opened from the Actions list never follows. Piece 4 (startup) now goes through the same `X.apply_settings`.
+- One window (`lib/window_registry.lua`, the same as ReaNvelopes' WindowRegistry with section ReaATS_Windows): a window started while another UNPINNED one is open hands
+  the settings ReaSnap left for it over and ends; the open window asks/loads as above. A pinned window is left alone. Needs REAPER's "Terminate or New instance?" answered
+  "New instance" (Remember). gfx has no focus call, so the open window does not come to the front by itself. ReaSnap: `SINGLE_INSTANCE_SCRIPTS.ReaATS = true`.
+- Tests: `tests/selftest_credit.lua` (8 checks), `tests/hub_smoke.lua` (12 checks: the real editor draws frames, one window rule, hand-over, pinned window left alone, an item
+  with a missing file does not crash). Not tested: loading a real .ats by following (no fixture), the ask-first menu, the click on the credit, how it looks. The older
+  mock tests (mock_run, mock_channels, mock_snap) still need their .ats fixtures and were not run.
+

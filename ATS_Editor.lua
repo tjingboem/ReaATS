@@ -66,6 +66,23 @@ end
 local closecheck_last = 0
 
 -- ------------------------------------------------------------------ settings
+-- One window is enough, except when pinned (tjingboem, 19 November 2026). X holds everything of the pin / follow / one-window feature
+-- (one local instead of a dozen: this file is close to Lua's limit of 200 locals). A window that is started while another, UNPINNED window is
+-- open does not open: it hands what ReaSnap left for it (the settings of an item) over to that window and ends. See lib/window_registry.lua.
+local X = { pinned = false, shown_key = nil, credit_down = false }
+X.WindowRegistry = dofile(script_dir .. "/lib/window_registry.lua")
+X.reg = X.WindowRegistry.new()
+do
+  local other = X.reg.other_unpinned_alive()
+  if other then
+    X.WindowRegistry.hand_over(other, reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_settings"))
+    reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_settings", "", false)
+    return
+  end
+end
+X.reg.register()
+reaper.atexit(X.reg.unregister)
+
 local TITLE = "ATS Editor" .. (reasnap_instance_number and (" #" .. reasnap_instance_number) or "")
 local DB_FLOOR = -80            -- partials quieter than this (relative to the loudest) are not drawn
 local NOISE_RANGE_DB = 60       -- noise shading spans this many dB below the loudest band
@@ -5082,6 +5099,87 @@ local function handle_input(px, py, pw, ph)
   return true
 end
 
+-- ---------------------------------------------------------------------- pin, follow, one window (19 Nov 2026)
+-- Settings that an item or a snapshot holds (piece 4, and what the window follows). The open sound is not reloaded when the file is open already.
+function X.file_is_open(path)
+  if fname == path or current_file == path then return true end
+  for _, c in ipairs(chs) do if c.fname == path or c.current_file == path then return true end end
+  return false
+end
+
+-- Unsaved edits in any channel of the open set?
+function X.any_modified()
+  capture_channel()
+  for _, c in ipairs(chs) do
+    if c.modified or (c.undo_stack and c.saved_depth and #c.undo_stack ~= c.saved_depth) then return true end
+  end
+  return false
+end
+
+-- Returns true when the settings were applied.
+function X.apply_settings(st)
+  if type(st) ~= "table" or type(st.file) ~= "string" then return false end
+  if not X.file_is_open(st.file) then
+    if not (reaper.file_exists(st.file) and load_file(st.file)) then
+      set_status("file not found: " .. st.file)
+      return false
+    end
+  end
+  local v = st.view
+  if type(v) == "table" and type(v.t0) == "number" and type(v.t1) == "number" and v.t1 > v.t0
+     and type(v.f0) == "number" and type(v.f1) == "number" and v.f0 > 0 and v.f1 > v.f0 then
+    view.t0, view.t1, view.f0, view.f1 = v.t0, v.t1, v.f0, v.f1
+  end
+  show_partials = st.partials ~= false
+  show_noise = st.noise ~= false
+  if data and type(st.from) == "number" then playhead = clamp(st.from, 0, data.times[data.frames]) end   -- where the print started
+  dirty = true
+  return true
+end
+
+-- Load the settings of an item the window follows, or what another window handed over. Loading a file replaces the open sound, so when it has
+-- UNSAVED EDITS the window asks first (tjingboem: "ask first"): save them and load, discard them and load, or stay. Nothing is loaded while a sound is
+-- being prepared (AUDITION / PRINT) either.
+function X.request_state(st)
+  if type(st) ~= "table" or type(st.file) ~= "string" then return end
+  if pending then set_status("busy preparing a sound: not following"); return end
+  if not X.file_is_open(st.file) and X.any_modified() then
+    gfx.x, gfx.y = gfx.mouse_x, gfx.mouse_y
+    local c = gfx.showmenu("Unsaved edits: save them, then load|Discard the edits and load|Stay on this sound")
+    if c == 1 then
+      save_file()
+      if X.any_modified() then set_status("could not save the edits: not loading"); return end
+    elseif c ~= 2 then
+      return
+    end
+  end
+  X.apply_settings(st)
+end
+
+-- A window that ReaSnap launched (it has a project identity) follows the selected item that carries ReaATS settings. Pinned, it does not. A window
+-- opened from the Actions list never follows, so what is open is never replaced because some other item was selected.
+function X.follow_selection()
+  if not reasnap_project_identity or X.pinned then return end
+  local item = reaper.GetSelectedMediaItem(0, 0)
+  if not item then return end
+  local _, guid = reaper.GetSetMediaItemInfo_String(item, "GUID", "", false)
+  if guid == "" or guid == X.shown_key then return end
+  X.shown_key = guid
+  local text = Serial.read_item_state(item, "ReaATS")
+  if not text then return end                      -- not a ReaATS item: leave the window as it is
+  X.request_state(Serial.deserialize(text))
+end
+
+-- "tjingboem productions", vertical, bottom right: drawn on every page, and a click on it is the PIN (blue when pinned). See lib/credit.lua.
+function X.credit_frame()
+  if not X.credit then return end
+  local x0, y0 = X.credit.corner(gfx.w, gfx.h, 6)
+  local down = (gfx.mouse_cap & 1) == 1
+  if down and not X.credit_down and X.credit.hit(x0, y0, gfx.mouse_x, gfx.mouse_y) then X.pinned = not X.pinned end
+  X.credit_down = down
+  if X.pinned then X.credit.draw(x0, y0, 0.30, 0.60, 0.95) else X.credit.draw(x0, y0, 0.55, 0.55, 0.55) end
+end
+
 -- ---------------------------------------------------------------------- main
 -- ReaSnap "Close All" (piece 5): only for an instance ReaSnap launched (it knows its project then).
 local function close_signal_received()
@@ -5106,6 +5204,12 @@ local function draw_analysis_frame()
 end
 
 local function loop()
+  X.reg.heartbeat(X.pinned)
+  do                                                           -- what another window handed over (one started while this one was open)
+    local payload = X.reg.take_handover()
+    if payload and payload ~= "" then X.request_state(Serial.deserialize(payload)) end
+  end
+  X.follow_selection()
   analysis:poll()                                              -- looks at a background analysis, if one runs
   advance_pending()                                            -- prepares the AUDITION sound a little each frame
   if W.showing_cross then                                      -- the CROSS page (lib/cross_page.lua) instead of the picture
@@ -5125,6 +5229,7 @@ local function loop()
       gfx.set(0.09, 0.10, 0.12, 1)
       gfx.rect(0, 0, gfx.w, gfx.h, 1)
       W.cross:draw(math.floor(gfx.w), math.floor(gfx.h), ANALYSIS_TOP)
+      X.credit_frame()
       gfx.update()
       if keep then reaper.defer(loop) end
       return
@@ -5144,6 +5249,7 @@ local function loop()
     if not keep then stop_audition() end
     if showing_analysis or not keep then
       draw_analysis_frame()
+      X.credit_frame()
       gfx.update()
       if keep then reaper.defer(loop) end
       return
@@ -5188,11 +5294,13 @@ local function loop()
   W.draw_tv()
   W.draw_cross_line()
   W.draw_notes_panel()
+  X.credit_frame()
   gfx.update()
   if keep then reaper.defer(loop) end
 end
 
 gfx.init(TITLE, 1100, 640)
+X.credit = dofile(script_dir .. "/lib/credit.lua").new("tjingboem productions", 12, "Arial", 13).build()
 analysis = Analysis.new({
   layout = dofile(rawget(_G, "REAATS_TEST_ANALYSIS_LAYOUT") or (script_dir .. "/lib/analysis_layout.lua")),
   serial = Serial, wav_info = wav_info, script_dir = script_dir, ext_section = EXT_SECTION,
@@ -5231,25 +5339,12 @@ Analysis.check_python_once(script_dir, EXT_SECTION)      -- once ever (tjingboem
 -- apply touches exists (load_file, view, the switches). The snapshot names a file: if it has gone, say so.
 local applied = false
 do
-  local pending = reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_settings")
-  if pending ~= "" then
+  local pending_text = reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_settings")
+  if pending_text ~= "" then
     reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_settings", "", false)   -- consume it
-    local st = Serial.deserialize(pending)                                         -- nil + a console message on failure
+    local st = Serial.deserialize(pending_text)                                    -- nil + a console message on failure
     if type(st) == "table" and type(st.file) == "string" then
-      if reaper.file_exists(st.file) and load_file(st.file) then
-        local v = st.view
-        if type(v) == "table" and type(v.t0) == "number" and type(v.t1) == "number" and v.t1 > v.t0
-           and type(v.f0) == "number" and type(v.f1) == "number" and v.f0 > 0 and v.f1 > v.f0 then
-          view.t0, view.t1, view.f0, view.f1 = v.t0, v.t1, v.f0, v.f1
-        end
-        show_partials = st.partials ~= false
-        show_noise = st.noise ~= false
-        if type(st.from) == "number" then playhead = clamp(st.from, 0, data.times[data.frames]) end   -- where the print started
-        dirty = true
-        applied = true
-      else
-        set_status("snapshot file not found: " .. st.file)
-      end
+      applied = X.apply_settings(st)             -- (a snapshot whose file has gone is reported in the status line, not applied)
     end
   end
 end
