@@ -16,6 +16,9 @@ local function finish()
 end
 
 local real_ctx = reaper.get_action_context
+-- the editor asks once (a popup) whether Python is there; nobody answers a popup in a test
+reaper.MB = function() return 1 end
+reaper.ShowMessageBox = reaper.MB
 reaper.get_action_context = function() return true, ATS .. "/ATS_Editor.lua", 0, 0, 0, 0, 0 end
 local queue = {}
 reaper.defer = function(f) queue[#queue + 1] = f end

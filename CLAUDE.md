@@ -1005,3 +1005,15 @@ tjingboem: add the pin and the follow to ReaATS (as ReaMaskM, ReaShapeM, ReaGest
   with a missing file does not crash). Not tested: loading a real .ats by following (no fixture), the ask-first menu, the click on the credit, how it looks. The older
   mock tests (mock_run, mock_channels, mock_snap) still need their .ats fixtures and were not run.
 
+
+## Window place (19 November 2026) — BUILT, tested in a REAPER of its own, NOT yet seen by tjingboem
+
+Corrections list item 21, last tool (design in ReaMaskM's CLAUDE.md). `lib/window_place.lua` is the same file as `WindowPlace.lua` in the other tools. ReaATS is a gfx window:
+- Opening: `X.open_window()` (a function, because the main chunk of ATS_Editor.lua is at Lua's limit of 200 locals; a `do` block with locals does not help) asks `Place.initial()` and calls
+  `gfx.init(TITLE, w, h, 0, x, y)` with the saved place and size (without a saved place: `gfx.init(TITLE, 1100, 640)` as before). `X.place_frame()` runs at the top of every frame: it reads the inside of the window
+  (`gfx.clienttoscreen(0, 0)`, `gfx.w`, `gfx.h`) and hands it to `Place.frame(..., X.pinned)`; the place is saved when an unpinned window was moved/resized and stayed for 0.5 s, and at exit (`reaper.atexit`).
+  A docked window (`gfx.dock(-1) & 1`) has no place of its own and is skipped.
+- gfx.init may count the position from the OUTSIDE of the window on some systems (title bar, frame). That difference (`X.off`) is measured once, at frame 8 after a window that was asked for a position,
+  and kept in REAPER's settings (key gfx_offset_ReaATS); the saved place is in gfx.init's own coordinates (inside minus `X.off`). On this machine (KDE, X11) it is 0,0. Windows and macOS: not tested.
+- The editor asks once (a popup) whether Python is there; the tests answer that popup (`reaper.MB` stand-in), because a fresh settings folder always gets it and nobody answers it in a test.
+- Tests: `tests/selftest_place.lua` (copy, 31 checks in plain Lua), `tests/hub_smoke_place.lua` (6 checks: the real editor is given the saved place and size and reports it; the offset is learned), `tests/hub_smoke.lua` (12, still pass).

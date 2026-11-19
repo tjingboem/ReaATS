@@ -5170,6 +5170,26 @@ function X.follow_selection()
   X.request_state(Serial.deserialize(text))
 end
 
+-- Window place (19 November 2026, corrections list item 21): the editor opens where it was last dragged to, at the size it was left at, unless a pinned window is there
+-- (lib/window_place.lua, the same code as in the other tools). A gfx window has no GetWindowPos: the place is the INSIDE of the window (gfx.clienttoscreen), and
+-- gfx.init is asked for a position that the window manager may count from the outside (title bar, frame). That difference, X.off, is learned once (it is the
+-- same every time on one system) and kept in REAPER's settings; the saved place is in the coordinates gfx.init wants (inside minus X.off). A docked window has no place of its own.
+function X.place_frame()
+  if not X.place then return end
+  X.frames = (X.frames or 0) + 1
+  if gfx.dock(-1) & 1 == 1 then return end
+  local cx, cy = gfx.clienttoscreen(0, 0)
+  if X.init_req and not X.off_learned and X.frames == 8 then          -- the window has settled: how far from the requested position did the inside land?
+    X.off_learned = true
+    local dx, dy = math.floor(cx - X.init_req.x + 0.5), math.floor(cy - X.init_req.y + 0.5)
+    if math.abs(dx) <= 200 and math.abs(dy) <= 200 then
+      X.off = { x = dx, y = dy }
+      reaper.SetExtState("tjingboem_WindowPlace", "gfx_offset_ReaATS", string.format("%d,%d", dx, dy), true)
+    end
+  end
+  X.place.frame(cx - X.off.x, cy - X.off.y, gfx.w, gfx.h, X.pinned)
+end
+
 -- "tjingboem productions", vertical, bottom right: drawn on every page, and a click on it is the PIN (blue when pinned). See lib/credit.lua.
 function X.credit_frame()
   if not X.credit then return end
@@ -5205,6 +5225,7 @@ end
 
 local function loop()
   X.reg.heartbeat(X.pinned)
+  X.place_frame()
   do                                                           -- what another window handed over (one started while this one was open)
     local payload = X.reg.take_handover()
     if payload and payload ~= "" then X.request_state(Serial.deserialize(payload)) end
@@ -5299,7 +5320,24 @@ local function loop()
   if keep then reaper.defer(loop) end
 end
 
-gfx.init(TITLE, 1100, 640)
+-- (X.place is made here, after everything else is loaded: a failure in lib/window_place.lua must never stop the editor. A function, because the main
+-- chunk of this file is at Lua's limit of 200 locals.)
+function X.open_window()
+  local ok, mod = pcall(dofile, script_dir .. "/lib/window_place.lua")
+  X.place = (ok and type(mod) == "table") and mod.new("ReaATS") or nil
+  X.off = { x = 0, y = 0 }
+  local dx, dy = reaper.GetExtState("tjingboem_WindowPlace", "gfx_offset_ReaATS"):match("^(-?%d+),(-?%d+)$")
+  if dx then X.off = { x = tonumber(dx), y = tonumber(dy) } end
+  local r = X.place and X.place.initial() or nil
+  if r then
+    X.init_req = { x = r.x, y = r.y }
+    gfx.init(TITLE, r.w, r.h, 0, r.x, r.y)
+  else
+    gfx.init(TITLE, 1100, 640)
+  end
+  if X.place then reaper.atexit(X.place.close) end
+end
+X.open_window()
 X.credit = dofile(script_dir .. "/lib/credit.lua").new("tjingboem productions", 12, "Arial", 13).build()
 analysis = Analysis.new({
   layout = dofile(rawget(_G, "REAATS_TEST_ANALYSIS_LAYOUT") or (script_dir .. "/lib/analysis_layout.lua")),
