@@ -1,4 +1,4 @@
--- hub_smoke.lua (19 November 2026): runs the real ATS_Editor.lua for a number of frames inside a REAPER of its own (RT_ATS = the ReaATS folder,
+-- hub_smoke.lua (19 November 2026): runs the real ReaATS.lua for a number of frames inside a REAPER of its own (RT_ATS = the ReaATS folder,
 -- RT_OUT = results folder) and checks that it starts and draws without a script error, that it keeps to one window unless pinned, that a window
 -- started while another unpinned one is open hands its settings over and does not open, and that a window that follows an item whose file is
 -- missing says so and carries on. The editor runs by reaper.defer(loop): driven here frame by frame.
@@ -19,7 +19,7 @@ local real_ctx = reaper.get_action_context
 -- the editor asks once (a popup) whether Python is there; nobody answers a popup in a test
 reaper.MB = function() return 1 end
 reaper.ShowMessageBox = reaper.MB
-reaper.get_action_context = function() return true, ATS .. "/ATS_Editor.lua", 0, 0, 0, 0, 0 end
+reaper.get_action_context = function() return true, ATS .. "/ReaATS.lua", 0, 0, 0, 0, 0 end
 local queue = {}
 reaper.defer = function(f) queue[#queue + 1] = f end
 local function frames(n)
@@ -36,7 +36,7 @@ local Serial = dofile(ATS .. "/lib/reaats_serial.lua")
 
 -- 1. started the way ReaSnap starts a window: with a project identity, so it follows
 reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_project_identity", "/test/project.rpp", false)
-local ok, err = pcall(dofile, ATS .. "/ATS_Editor.lua")
+local ok, err = pcall(dofile, ATS .. "/ReaATS.lua")
 report(ok, "the editor starts", err)
 report(#queue == 1, "it has a frame loop")
 report(frames(20), "20 frames are drawn without a script error")
@@ -54,7 +54,7 @@ report(Serial.read_item_state(item, "ReaATS") ~= nil, "the item's settings can b
 -- 3. a second editor while the first is open: does not open, hands over
 reaper.SetExtState("ReaSculpt_Registry", "pending_ReaATS_settings", Serial.serialize({ file = "/nonexistent/other_ch1.ats", name = "other" }), false)
 local n_before = #queue
-local ok2, err2 = pcall(dofile, ATS .. "/ATS_Editor.lua")
+local ok2, err2 = pcall(dofile, ATS .. "/ReaATS.lua")
 report(ok2, "a second editor starts without an error", err2)
 report(#queue == n_before, "the second editor did not open a window", #queue - n_before)
 report(reaper.GetExtState("ReaSculpt_Registry", "pending_ReaATS_settings") == "", "it took the pending settings away so nobody applies them twice")
@@ -64,7 +64,7 @@ report(frames(10), "the first window runs on and takes what was handed over")
 local id = reaper.GetExtState("ReaATS_Windows", "ids"):match("[^;]+")
 reaper.SetExtState("ReaATS_Windows", "w_" .. id, string.format("%.3f|1", reaper.time_precise()), false)
 n_before = #queue
-local ok3, err3 = pcall(dofile, ATS .. "/ATS_Editor.lua")
+local ok3, err3 = pcall(dofile, ATS .. "/ReaATS.lua")
 report(ok3 and #queue == n_before + 1, "with the open window pinned, a new editor opens its own window", err3 or (#queue - n_before))
 report(frames(10), "both windows run")
 

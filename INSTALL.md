@@ -31,7 +31,7 @@ folder directly, on any OS.)
 
 ## 3. Install
 
-Copy the whole ReaATS folder (`ATS_Editor.lua`, `lib/`, `python/`, `icons/`, etc.)
+Copy the whole ReaATS folder (`ReaATS.lua`, `lib/`, `python/`, `icons/`, etc.)
 into that Scripts folder, e.g. as `Scripts/ReaATS/` (any subfolder name works).
 
 - **Linux/macOS**: `rsync` and `bash` are available by default. This repo ships
@@ -45,7 +45,7 @@ into that Scripts folder, e.g. as `Scripts/ReaATS/` (any subfolder name works).
   ```
 
 Then in REAPER: Actions > Show action list > New action... > Load ReaScript...,
-and pick `ATS_Editor.lua` from the copy you just placed in the Scripts folder.
+and pick `ReaATS.lua` from the copy you just placed in the Scripts folder.
 
 ## 4. Updating
 

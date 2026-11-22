@@ -4,7 +4,7 @@
     python3 tools/gen_analysis_layout.py tools/reaATS_Analyses_layout.json
 
 The JSON comes from the layout editor (github.com/tjingboem/ReaLayout, project 'reaats_analysis'): a list of elements {panel, state, id, label, shape,
-x, y, w, h} in pixels of the default window, 1100 x 640 (the page starts 40 px from the top). ATS_Editor.lua hands the table to the page
+x, y, w, h} in pixels of the default window, 1100 x 640 (the page starts 40 px from the top). ReaATS.lua hands the table to the page
 (lib/analysis_page.lua), which draws and clicks everything at these places. The page is not anchored: it is drawn at exactly these places.
 Ids: hdr_* (headings), btn_* (buttons), txt_file / txt_fileinfo / txt_result / txt_derived (texts), fld_<key> (a field's box, or a whole switch),
 lbl_<key> (a field's label) and unit_<key> (its unit). Elements that are left out of the layout are simply not drawn (see Page:draw).

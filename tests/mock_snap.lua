@@ -16,7 +16,7 @@ gfx.measurestr = function(s) return #s * 7, 14 end
 gfx.drawstr = function(s) strings[#strings + 1] = s end
 gfx.getchar = function() return 0 end
 reaper = {
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(sec, k) return ext[key(sec, k)] or "" end,
   SetExtState = function(sec, k, v) ext[key(sec, k)] = v end,
   ShowConsoleMsg = function(s) io.write("[console] ", s) end,
@@ -39,7 +39,7 @@ ext[key("ReaSculpt_Registry", "pending_ReaATS_instance_number")] = "2"
 ext[key("ReaSculpt_Registry", "pending_ReaATS_project_identity")] = "projA"
 ext[key("tjingboem_ATSViewer", "last_file")] = "/nonexistent/other.ats"          -- must be ignored
 
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 assert(title == "ATS Editor #2", "window title should carry the instance number, got " .. tostring(title))
 assert(ext[key("ReaSculpt_Registry", "pending_ReaATS_settings")] == "", "pending settings must be consumed")
 assert(ext[key("ReaSculpt_Registry", "pending_ReaATS_instance_number")] == "", "instance number must be consumed")
@@ -68,7 +68,7 @@ ext = {}
 ext[key("ReaSculpt_Registry", "pending_ReaATS_settings")] = Serial.serialize({ file = "/nonexistent/gone.ats", view = {} })
 ext[key("tjingboem_ATSViewer", "last_file")] = file
 strings = {}; deferred = nil
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 frame()
 assert(saw("^snapshot file not found: /nonexistent/gone%.ats"), "missing-file message expected")
 assert(not saw("^snap_sax%.ats"), "the window stays empty: the last file is not reopened")
@@ -77,13 +77,13 @@ ext = {}
 ext[key("ReaSculpt_Registry", "pending_ReaATS_settings")] = 'os.execute("echo no")'
 ext[key("tjingboem_ATSViewer", "last_file")] = file
 deferred = nil
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 frame()
 -- no snapshot at all: the window starts empty, even though a last file is remembered
 ext = {}
 ext[key("tjingboem_ATSViewer", "last_file")] = file
 strings = {}; deferred = nil
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 frame()
 assert(not saw("^snap_sax%.ats"), "the last file must not be reopened at the start")
 assert(not saw("Press O to open"), "the hint text was removed")

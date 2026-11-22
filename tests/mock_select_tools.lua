@@ -3,7 +3,7 @@ REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua
 -- Run: lua5.4 tests/mock_select_tools.lua   (from the ReaATS folder)
 -- S (smooth), K (short partials panel) and H (harmonics of the partial under the pointer): hand-built fixture;
 -- opens REAPER's own text-input dialog (positive: keep that many loudest, negative: that many weakest) and applies right away, one
--- undo step. Runs ATS_Editor.lua against a fake gfx/reaper, on a hand-built, single-channel fixture of 4 separate, flat partials
+-- undo step. Runs ReaATS.lua against a fake gfx/reaper, on a hand-built, single-channel fixture of 4 separate, flat partials
 -- with known, distinct energies, so the ranking is fully predictable.
 local root = os.getenv("PWD")
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
@@ -47,7 +47,7 @@ local clock_skew = 0
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -58,7 +58,7 @@ reaper = {
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end          -- O: open the fixture
 
 local function frame(setup)

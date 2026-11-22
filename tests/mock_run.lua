@@ -3,7 +3,7 @@ REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua
 REAATS_SHOW_AUDITION_TEXT = true                         -- (the messages of AUDITION are not shown in the real editor; these tests read them)
 no_py_synth = false
 -- Run: lua5.4 tests/mock_run.lua   (from the ATSEditor folder)
--- Runs ATS_Editor.lua against a fake `gfx` and `reaper` with scripted input, to catch
+-- Runs ReaATS.lua against a fake `gfx` and `reaper` with scripted input, to catch
 -- runtime errors (nothing is drawn). Also counts the draw calls of one cache render.
 local root = os.getenv("PWD")
 local calls = {}
@@ -51,7 +51,7 @@ reaper = {
   PCM_Source_Destroy = function() destroyed = destroyed + 1 end,
   Xen_StartSourcePreview = function(src) previews[#previews + 1] = src.path; return true end,
   Xen_StopSourcePreview = function() stops = stops + 1 end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(sec, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -89,7 +89,7 @@ reaper = {
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end            -- the window starts empty: O opens the file
 local function frame(setup)
   if setup then setup() end

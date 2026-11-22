@@ -185,7 +185,7 @@ do
   check("warp: nothing selected: nil", edit.plan_warp(d8, {}, function(t, fr) return t, fr end) == nil)
 end
 
--- 8b. plan_warp with a REAL (ats_warp) mapper, box t0/t1 exactly the extent of the selected frames (as ATS_Editor.lua's W.get must give
+-- 8b. plan_warp with a REAL (ats_warp) mapper, box t0/t1 exactly the extent of the selected frames (as ReaATS.lua's W.get must give
 -- it -- it used to pad a narrow box out to a minimum size for grabbable dots, which left the box's u=0/u=1 short of the true first/last
 -- selected frame; those frames then picked up a fractional, unintended displacement from the stretch, could land outside the destination
 -- range plan_warp computes, and were silenced as source cells with nothing left to rewrite them: a real gap, right at the selection's own

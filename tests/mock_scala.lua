@@ -47,7 +47,7 @@ local deferred
 reaper = {
   time_precise = function() return os.clock() + (CLOCK_SKEW or 0) end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -58,7 +58,7 @@ reaper = {
   GetUserFileNameForRead = function(_, _, ext) if ext == "scl" then return true, scl end return true, OPEN_PATH or work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end
 
 local function frame(setup)

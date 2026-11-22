@@ -65,7 +65,7 @@ gfx.drawstr = function(s) strings[#strings + 1] = s end
 local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 reaper = {
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(sec, k) return ext[key(sec, k)] or "" end,
   SetExtState = function(sec, k, v) ext[key(sec, k)] = v end,
   ShowConsoleMsg = function(s) io.write("[console] ", s) end,
@@ -133,7 +133,7 @@ local function press(code, cap) gfx.mouse_cap = cap or 0; script.keys = { code }
 local function start(last)                                      -- the window starts empty; O opens the file
   ext[key("tjingboem_ATSViewer", "last_file")] = last
   deferred = nil
-  dofile("ATS_Editor.lua")
+  dofile("ReaATS.lua")
   open_choice = last
   script.keys = { 111 }; frame()
   open_choice = nil

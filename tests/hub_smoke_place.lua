@@ -1,4 +1,4 @@
--- hub_smoke_place.lua (19 November 2026): the real ATS_Editor.lua opens at the saved place in a REAPER of its own and writes its place back. RT_ATS = the ReaATS folder, RT_OUT = results folder.
+-- hub_smoke_place.lua (19 November 2026): the real ReaATS.lua opens at the saved place in a REAPER of its own and writes its place back. RT_ATS = the ReaATS folder, RT_OUT = results folder.
 local ATS, out_dir = os.getenv("RT_ATS"), os.getenv("RT_OUT")
 local lines, pass, fail = {}, 0, 0
 local function report(ok, name, detail)
@@ -14,7 +14,7 @@ end
 -- the editor asks once (a popup) whether Python is there; nobody answers a popup in a test
 reaper.MB = function() return 1 end
 reaper.ShowMessageBox = reaper.MB
-reaper.get_action_context = function() return true, ATS .. "/ATS_Editor.lua", 0, 0, 0, 0, 0 end
+reaper.get_action_context = function() return true, ATS .. "/ReaATS.lua", 0, 0, 0, 0, 0 end
 local queue = {}
 reaper.defer = function(f) queue[#queue + 1] = f end
 local function frames(n)
@@ -29,7 +29,7 @@ local function frames(n)
 end
 reaper.SetExtState("tjingboem_WindowPlace", "place_ReaATS", "150,120,900,600", true)     -- dragged and resized there in an earlier run
 reaper.DeleteExtState("tjingboem_WindowPlace", "gfx_offset_ReaATS", true)
-local ok, err = pcall(dofile, ATS .. "/ATS_Editor.lua")
+local ok, err = pcall(dofile, ATS .. "/ReaATS.lua")
 report(ok, "the editor starts", err)
 report(frames(20), "20 frames are drawn without a script error")
 local ids = reaper.GetExtState("tjingboem_WindowPlace", "wins")

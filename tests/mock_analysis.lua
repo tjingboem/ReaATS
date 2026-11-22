@@ -2,7 +2,7 @@ REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layo
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_analysis.lua   (from the ReaATS folder)
 -- The Analysis page end to end: fake gfx and reaper, but the REAL Python engine runs. Clicks use the layout of the page
--- (see lib/analysis_page.lua: left column x 24.., right column x 556.., rows of 25 px from the top margin of 40, ATS_Editor.lua's ANALYSIS_TOP).
+-- (see lib/analysis_page.lua: left column x 24.., right column x 556.., rows of 25 px from the top margin of 40, ReaATS.lua's ANALYSIS_TOP).
 local root = os.getenv("PWD")
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
 local stereo, text_file, sax = scratch .. "an_stereo.wav", scratch .. "an_notwav.txt", scratch .. "an_sax.ats"
@@ -62,7 +62,7 @@ local script = { keys = {} }
 gfx.getchar = function() return table.remove(script.keys, 1) or 0 end
 gfx.showmenu = function() return 0 end
 reaper = {
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(sec, k) return ext[key(sec, k)] or "" end,
   SetExtState = function(sec, k, v) ext[key(sec, k)] = v end,
   ShowConsoleMsg = function(s) io.write("[console] ", s) end,
@@ -135,7 +135,7 @@ end
 local function start(last_file)
   ext[key("tjingboem_ATSViewer", "last_file")] = last_file          -- the other remembered values stay, as in REAPER
   deferred = nil
-  dofile("ATS_Editor.lua")
+  dofile("ReaATS.lua")
   if last_file ~= "" then                                            -- the window starts empty: O opens the file
     local keep = chosen_file
     chosen_file = last_file

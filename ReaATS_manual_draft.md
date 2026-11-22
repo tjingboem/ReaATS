@@ -16,7 +16,7 @@ ReaATS is a Lua script that runs inside REAPER on Linux. It makes the sound itse
 
 Only Linux has been tried. ReaATS is written so that it should also run on Windows and macOS, but that has not been tried yet. On a Mac, REAPER reports its Ctrl shortcuts on the Cmd key, so wherever this manual says Ctrl, use Cmd (and Option where it says Alt). Temporary files (the sounds of AUDITION, the edits handed to the Python program) go to a folder named ReaATS_temp inside REAPER's own resource folder, which REAPER chooses on every system; they are removed when the editor closes. Before a very large analysis is loaded, ReaATS asks the Python program how much memory the computer has free, so that it can refuse an analysis that would not fit.
 
-Put the ReaATS folder (ATS_Editor.lua and the lib folder next to it) in REAPER's Scripts folder, for example Scripts/tjingboem/ReaATS. In REAPER open Actions, Show action list, choose ReaScript: Load and pick ATS_Editor.lua. Run it from the list, or give it a shortcut or a toolbar button.
+Put the ReaATS folder (ReaATS.lua and the lib folder next to it) in REAPER's Scripts folder, for example Scripts/tjingboem/ReaATS. In REAPER open Actions, Show action list, choose ReaScript: Load and pick ReaATS.lua. Run it from the list, or give it a shortcut or a toolbar button.
 
 ReaATS starts with an empty window: it does not reopen the file you used last. The lib folder must stay next to the script: it holds the reader and writer for .ats files and the editing logic.
 
@@ -323,7 +323,7 @@ ReaATS works the same without ReaSnap. If you use ReaSnap, it can remember and b
 - Restoring a snapshot opens the editor on that file with the same view. If the .ats file has been moved or deleted, the editor says so and stays empty.
 - The window title carries the number ReaSnap gives it, such as ATS Editor #2, and Close All in ReaSnap closes the editor of that project.
 
-ReaATS is in ReaSnap's list of tools. The command ID in that list depends on where the script was loaded in REAPER, so on another computer ReaSnap needs the ID of that computer's ATS_Editor.lua.
+ReaATS is in ReaSnap's list of tools. The command ID in that list depends on where the script was loaded in REAPER, so on another computer ReaSnap needs the ID of that computer's ReaATS.lua.
 
 ## All controls
 

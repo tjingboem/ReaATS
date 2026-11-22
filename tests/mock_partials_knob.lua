@@ -3,7 +3,7 @@ REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua
 -- Run: lua5.4 tests/mock_partials_knob.lua   (from the ReaATS folder)
 -- The MAX PARTIALS button (bottom left, where the keyboard-shortcut hint lines used to be): greyed out with no selection, otherwise
 -- opens REAPER's own text-input dialog (positive: keep that many loudest, negative: that many weakest) and applies right away, one
--- undo step. Runs ATS_Editor.lua against a fake gfx/reaper, on a hand-built, single-channel fixture of 4 separate, flat partials
+-- undo step. Runs ReaATS.lua against a fake gfx/reaper, on a hand-built, single-channel fixture of 4 separate, flat partials
 -- with known, distinct energies, so the ranking is fully predictable.
 local root = os.getenv("PWD")
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
@@ -47,7 +47,7 @@ local dialog_calls, dialog_ok, dialog_text = 0, false, ""
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -58,7 +58,7 @@ reaper = {
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end          -- O: open the fixture
 
 local function frame(setup)
@@ -69,7 +69,7 @@ local function frame(setup)
 end
 local function saw(pattern) for _, s in ipairs(strings) do if s:find(pattern) then return s end end return nil end
 
--- the exact plot geometry for one channel at 1100x640 (ATS_Editor.lua's own MARGIN_L/T/R/B), and the view fit_view() lands on
+-- the exact plot geometry for one channel at 1100x640 (ReaATS.lua's own MARGIN_L/T/R/B), and the view fit_view() lands on
 local px, py, pw, ph = 62, 70, 988, 516
 
 -- the button's own geometry (W.max_partials_rect, from the layout): (284, 6), 150 x 18, in the top row

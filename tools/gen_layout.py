@@ -5,7 +5,7 @@
 
 The JSON comes from the layout editor (github.com/tjingboem/ReaLayout, project 'reaats'): a list of elements
 {panel, state, id, label, shape, x, y, w, h} in pixels of the default window, 1100 x 640. The opening screen (no sound yet) is NOT part of
-this: ATS_Editor.lua keeps drawing that as it always did. The elements ATS_Editor.lua reads are the REQUIRED ids below (the '_s' ones are
+this: ReaATS.lua keeps drawing that as it always did. The elements ReaATS.lua reads are the REQUIRED ids below (the '_s' ones are
 used for one file and for a channel set alike; 'plot' and 'plot_s' are the picture without and with the channel row).
 
 Anchors, decided from the position in the default window (the window can be resized):

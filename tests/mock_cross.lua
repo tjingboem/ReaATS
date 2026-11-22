@@ -2,7 +2,7 @@ REAATS_TEST_ANALYSIS_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/analysis_layo
 REAATS_TEST_LAYOUT = (os.getenv("PWD") or ".") .. "/tests/editor_layout_test.lua"            -- the editor layout the clicks below are made for
 -- Run: lua5.4 tests/mock_cross.lua   (from the ReaATS folder)
 -- The CROSS button and page: two blocks (A, B), dragging, the cut, the red line, the sliders, MAKE RESULT (a new file that opens in the editor).
--- Runs ATS_Editor.lua against a fake gfx/reaper; A = the 4 flat partials of the shared fixture, B = a second analysis with two partials.
+-- Runs ReaATS.lua against a fake gfx/reaper; A = the 4 flat partials of the shared fixture, B = a second analysis with two partials.
 local root = os.getenv("PWD")
 REAATS_TEST_CROSS_LAYOUT = root .. "/tests/cross_layout_test.lua"            -- the layout the clicks below are made for
 local scratch = "/tmp/claude-1000/-home-tjingboem/6ca29d3f-340f-46ca-9b11-e579b6c375ee/scratchpad/"
@@ -50,7 +50,7 @@ local dialog_calls, dialog_ok, dialog_text = 0, false, ""
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -65,7 +65,7 @@ reaper = {
   GetUserFileNameForRead = function() return true, work end,
   defer = function(fn) deferred = fn end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end          -- O: open the fixture
 
 local blit_seq = {}
@@ -80,7 +80,7 @@ local function slider_time()                                                  --
 end
 local function saw(pattern) for _, s in ipairs(strings) do if s:find(pattern) then return s end end return nil end
 
--- the exact plot geometry for one channel at 1100x640 (ATS_Editor.lua's own MARGIN_L/T/R/B), and the view fit_view() lands on
+-- the exact plot geometry for one channel at 1100x640 (ReaATS.lua's own MARGIN_L/T/R/B), and the view fit_view() lands on
 local px, py, pw, ph = 62, 70, 988, 516
 
 -- the button's own geometry (W.max_partials_rect, from the layout): (284, 6), 150 x 18, in the top row

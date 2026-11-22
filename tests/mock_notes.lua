@@ -48,7 +48,7 @@ local dialog_calls, dialog_ok, dialog_text = 0, false, ""
 reaper = {
   time_precise = function() return os.clock() + clock_skew end,
   ExecProcess = function(cmd) local ph = io.popen(cmd .. " 2>&1"); local out = ph:read("a"); ph:close(); return out end,
-  get_action_context = function() return true, root .. "/ATS_Editor.lua", 0, 0 end,
+  get_action_context = function() return true, root .. "/ReaATS.lua", 0, 0 end,
   GetExtState = function(_, key) return (key == "last_file") and work or "" end,
   SetExtState = function() end,
   ShowConsoleMsg = function() end,
@@ -91,7 +91,7 @@ reaper = {
   UpdateItemInProject = function() end,
   Undo_BeginBlock = function() end, Undo_EndBlock = function() end,
 }
-dofile("ATS_Editor.lua")
+dofile("ReaATS.lua")
 script.keys = { 111 }; do local f = deferred; deferred = nil; f() end          -- O: open the fixture
 
 

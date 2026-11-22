@@ -1,5 +1,5 @@
 --[[----------------------------------------------------------------------------
-  ATS_Editor.lua  --  a SPEAR-like partial editor for Csound/ATS ".ats" files, in REAPER.
+  ReaATS.lua  --  a SPEAR-like partial editor for Csound/ATS ".ats" files, in REAPER.
 
   Shows the sine partials as lines (time across, frequency up on a log axis,
   brighter = louder) and the 25 noise bands as a faint shaded layer behind them
@@ -2033,7 +2033,7 @@ end
 -- A plain button, not a custom-drawn slider: three different slider designs in a row (in the plot, at the plot's own top, up in
 -- the header) never rendered at all for tjingboem despite every one of them working in a from-scratch reproduction of the real
 -- input/draw code against real data (lib/ats_edit.lua's rank_partials/plan_keep_loudest are fine, and tested; this was purely the
--- ATS_Editor.lua-side widget) -- including a version that drew an unconditional, oversized, solid-colour bar across the entire top
+-- ReaATS.lua-side widget) -- including a version that drew an unconditional, oversized, solid-colour bar across the entire top
 -- of the window, confirmed (by recording every gfx.rect call) to actually fire in a plain reproduction, and confirmed functionally
 -- dead (no status change on click either) after closing every open window and fully restarting REAPER, ruling out a stale window
 -- and a stale script load. Rather than keep chasing an unreproducible rendering difference, this uses only mechanisms already
