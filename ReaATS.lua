@@ -48,6 +48,23 @@ local Serial = dofile(script_dir .. "/lib/reaats_serial.lua")     -- the tool's 
 
 -- ReaSnap Integration Contract, optional: pieces 2 and 5. The editor works exactly the same without ReaSnap;
 -- these only read values ReaSnap may have left for it, once, at the very start.
+-- BEGIN REASNAP-CLAIM (same in every tool: canonical copy in ReaSnap/tools/claim_snippet.lua; tools/test_claim_offline.lua checks the copies)
+-- A tool opened without ReaSnap's Launcher (Actions list, toolbar) takes its instance number and project identity itself, but ONLY
+-- while ReaSnap's Browser is running (its heartbeat is fresh). Without ReaSnap it does nothing: no dependency, plain window title.
+do
+  local tool = "ReaATS"
+  local S = "ReaSculpt_Registry"
+  local alive = tonumber(reaper.GetExtState(S, "reasnap_alive"))
+  if reaper.GetExtState(S, "pending_" .. tool .. "_instance_number") == "" and alive and reaper.time_precise() - alive < 2 then
+    local _, cur = reaper.GetProjExtState(0, "ReaSnap_ScriptInstances", tool .. "_next_number")
+    local n = (tonumber(cur) or 0) + 1
+    reaper.SetProjExtState(0, "ReaSnap_ScriptInstances", tool .. "_next_number", tostring(n))
+    reaper.SetExtState(S, "pending_" .. tool .. "_instance_number", tostring(n), false)
+    reaper.SetExtState(S, "pending_" .. tool .. "_project_identity", reaper.GetProjectPath("") .. "/" .. reaper.GetProjectName(0, ""), false)
+  end
+end
+-- END REASNAP-CLAIM
+
 local reasnap_instance_number = nil          -- piece 2: "ATS Editor #2" in the window title
 local reasnap_project_identity = nil         -- piece 5: which project this instance belongs to (Close All)
 local reasnap_launch_time = reaper.time_precise()
