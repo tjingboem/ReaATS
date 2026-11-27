@@ -1017,3 +1017,7 @@ Corrections list item 21, last tool (design in ReaMaskM's CLAUDE.md). `lib/windo
   and kept in REAPER's settings (key gfx_offset_ReaATS); the saved place is in gfx.init's own coordinates (inside minus `X.off`). On this machine (KDE, X11) it is 0,0. Windows and macOS: not tested.
 - The editor asks once (a popup) whether Python is there; the tests answer that popup (`reaper.MB` stand-in), because a fresh settings folder always gets it and nobody answers it in a test.
 - Tests: `tests/selftest_place.lua` (copy, 31 checks in plain Lua), `tests/hub_smoke_place.lua` (6 checks: the real editor is given the saved place and size and reports it; the offset is learned), `tests/hub_smoke.lua` (12, still pass).
+
+
+## Items ReaATS makes: name + date + time, teal (27 Nov 2026) — built, NOT tried in REAPER, NOT committed
+His rule: the PRINT item is named `ReaATS <wav file name> <date> <time>` and the EXPORT NOTES MIDI item `ReaATS notes <date> <time>` (the second name is Claude's choice), both teal (7,136,140). `W.tag_item` in ReaATS.lua. Audition items untouched. The manual says it (PRINT).
