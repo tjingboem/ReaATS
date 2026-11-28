@@ -1021,3 +1021,6 @@ Corrections list item 21, last tool (design in ReaMaskM's CLAUDE.md). `lib/windo
 
 ## Items ReaATS makes: name + date + time, teal (27 Nov 2026) — built, NOT tried in REAPER, NOT committed
 His rule: the PRINT item is named `ReaATS <wav file name> <date> <time>` and the EXPORT NOTES MIDI item `ReaATS notes <date> <time>` (the second name is Claude's choice), both teal (7,136,140). `W.tag_item` in ReaATS.lua. Audition items untouched. The manual says it (PRINT).
+
+## ReaLayout files moved into their own folder (28 Nov 2026)
+His rule: every script's layout files live in their own folder in ReaLayout. The ReaATS projects and saved layouts are now in `~/Claude/ReaLayout/projects/ReaATS/` (`reaats.js`, `reaats_analysis.js`, `reaats_cross.js` and the .json layouts); open them as `index.html?project=ReaATS/reaats` (and `ReaATS/reaats_analysis`, `ReaATS/reaats_cross`). The three `tools/make_*_project.py` docstrings now give that output path; older entries above name the old place. After adding or moving a project file run `python3 make_index.py` in ReaLayout. Not committed.

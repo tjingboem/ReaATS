@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the ReaLayout project file of the ReaATS editor window from its layout JSON, so that ReaLayout starts from the layout the editor really uses.
 
-    python3 tools/make_editor_project.py tools/reaATS_layout.json ~/Claude/ReaLayout/projects/reaats.js
+    python3 tools/make_editor_project.py tools/reaATS_layout.json ~/Claude/ReaLayout/projects/ReaATS/reaats.js
 
 (Open it with index.html?project=reaats. After editing in ReaLayout, Save to file, put the JSON in tools/ and run tools/gen_layout.py.)
 The '_s' elements are the ones the editor reads (for one file and for a channel set alike); 'plot' and 'plot_s' are the picture without and with the channel row.

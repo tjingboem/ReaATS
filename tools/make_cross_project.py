@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the ReaLayout project file of the CROSS page from its layout JSON, so that ReaLayout starts from the layout the page really uses.
 
-    python3 tools/make_cross_project.py tools/reaATS_Cross_layout.json ~/Claude/ReaLayout/projects/reaats_cross.js
+    python3 tools/make_cross_project.py tools/reaATS_Cross_layout.json ~/Claude/ReaLayout/projects/ReaATS/reaats_cross.js
 
 (Open it with index.html?project=reaats_cross. After editing in ReaLayout, Save to file, put the JSON in tools/ and run tools/gen_cross_layout.py.)
 """

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the ReaLayout project file of the Analysis page from its layout JSON, so that ReaLayout starts from the layout the page really uses.
 
-    python3 tools/make_analysis_project.py tools/reaATS_Analyses_layout.json ~/Claude/ReaLayout/projects/reaats_analysis.js
+    python3 tools/make_analysis_project.py tools/reaATS_Analyses_layout.json ~/Claude/ReaLayout/projects/ReaATS/reaats_analysis.js
 
 (Open it with index.html?project=reaats_analysis. After editing in ReaLayout, Save to file, put the JSON in tools/ and run tools/gen_analysis_layout.py.)
 """
